@@ -1,0 +1,157 @@
+﻿#!/usr/bin/env python3
+"""
+Integration - Orchestrate all analysis modules
+"""
+
+from .sec_parser import SECParser
+from .insider_tracker import InsiderTracker
+from .backtester import Backtester
+from .price_technical import PriceTechnical
+from .news_processor import NewsProcessor
+from .macro_fred import MacroFRED
+from .scoring_fundamentals import ScoringFundamentals
+from .scoring_signal import ScoringSignal
+from .report_generator import ReportGenerator
+from datetime import datetime
+import json
+
+
+class Integration:
+    """Orchestrate all analysis modules"""
+    
+    def __init__(self):
+        self.sec = SECParser()
+        self.insider = InsiderTracker()
+        self.backtester = Backtester()
+        self.technical = PriceTechnical()
+        self.news = NewsProcessor()
+        self.macro = MacroFRED()
+        self.fundamentals = ScoringFundamentals()
+        self.signal = ScoringSignal()
+        self.report = ReportGenerator()
+    
+    def run_full_analysis(self, ticker):
+        """Complete analysis for one ticker"""
+        print(f"\n[ANALYZING {ticker}]\n")
+        
+        results = {
+            'ticker': ticker,
+            'timestamp': datetime.now().isoformat(),
+            'modules': {}
+        }
+        
+        # 1. SEC Parser
+        print("[SEC PARSER] " + ticker)
+        print("=" * 60)
+        sec_data = self.sec.run(ticker)
+        results['modules']['sec'] = sec_data
+        
+        # 2. Insider Tracker
+        print("\n[INSIDER TRACKER] " + ticker)
+        print("=" * 60)
+        insider_data = self.insider.run(ticker)
+        results['modules']['insider'] = insider_data
+        
+        # 3. Backtester
+        print("\n[BACKTESTER] " + ticker)
+        print("=" * 60)
+        backtest_data = self.backtester.run(ticker)
+        results['modules']['backtest'] = backtest_data
+        
+        # 4. Technical Analysis
+        print("\n[TECHNICAL ANALYSIS] " + ticker)
+        print("=" * 60)
+        tech_data = self.technical.analyze(ticker)
+        print(f"  ✓ Signal: {tech_data.get('signal')}, Score: {tech_data.get('technical_score')}")
+        results['modules']['technical'] = tech_data
+        
+        # 5. News Analysis
+        print("\n[NEWS ANALYSIS] " + ticker)
+        print("=" * 60)
+        news_data = self.news.analyze(ticker)
+        print(f"  ✓ Signal: {news_data.get('signal')}, Articles: {news_data.get('articles_count')}")
+        results['modules']['news'] = news_data
+        
+        # 6. Fundamentals
+        print("\n[FUNDAMENTALS] " + ticker)
+        print("=" * 60)
+        fund_data = self.fundamentals.analyze(ticker)
+        print(f"  ✓ Signal: {fund_data.get('signal')}, Score: {fund_data.get('fundamental_score')}")
+        results['modules']['fundamentals'] = fund_data
+        
+        # 7. Combined Signal
+        print("\n[COMBINED SIGNAL] " + ticker)
+        print("=" * 60)
+        signal_data = self.signal.analyze(ticker)
+        print(f"  ✓ Recommendation: {signal_data.get('recommendation')}")
+        results['modules']['signal'] = signal_data
+        
+        return results
+    
+    def run_daily_batch(self):
+        """Run complete daily analysis for all tickers"""
+        print("\n" + "=" * 80)
+        print("[TRADING AGENT PRO - DAILY BATCH ANALYSIS]")
+        print("=" * 80)
+        
+        all_results = []
+        
+        for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+            try:
+                result = self.run_full_analysis(ticker)
+                all_results.append(result)
+            except Exception as e:
+                print(f"\n❌ ERROR {ticker}: {str(e)}")
+                all_results.append({
+                    'ticker': ticker,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        # 8. Macro Context (once, not per ticker)
+        print("\n[MACRO CONTEXT]")
+        print("=" * 60)
+        try:
+            macro_data = self.macro.run()
+        except Exception as e:
+            print(f"  ⚠️  Macro data error: {str(e)}")
+            macro_data = {
+                'cpi_inflation': None,
+                'unemployment_rate': None,
+                'federal_funds_rate': None
+            }
+        
+        # Add macro to all results
+        for result in all_results:
+            if 'modules' in result:
+                result['modules']['macro'] = macro_data
+        
+        # Generate reports
+        print("\n" + "=" * 80)
+        print("[REPORT GENERATION]")
+        print("=" * 80)
+        
+        html_report = self.report.generate_html(all_results)
+        json_report = json.dumps(all_results, indent=2, ensure_ascii=False)
+        
+        # Save reports with UTF-8 encoding
+        with open('reports/analysis.html', 'w', encoding='utf-8') as f:
+            f.write(html_report)
+        
+        with open('reports/analysis.json', 'w', encoding='utf-8') as f:
+            f.write(json_report)
+        
+        print("  ✓ HTML report: reports/analysis.html")
+        print("  ✓ JSON report: reports/analysis.json")
+        print("=" * 80)
+        
+        # Print summary
+        summary = self.report.generate_summary(all_results)
+        print(summary)
+        
+        return all_results
+
+
+if __name__ == "__main__":
+    integration = Integration()
+    integration.run_daily_batch()

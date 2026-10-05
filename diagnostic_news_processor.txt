@@ -1,0 +1,153 @@
+﻿#!/usr/bin/env python3
+"""
+News Processor - Real sentiment analysis from NewsAPI
+"""
+
+import requests
+import os
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+
+class NewsProcessor:
+    """Fetch and analyze real news sentiment"""
+    
+    def __init__(self):
+        self.api_key = os.getenv('NEWSAPI_KEY')
+        if not self.api_key:
+            print("  ⚠️  NEWSAPI_KEY not in .env - using placeholder")
+            self.api_key = None
+        self.base_url = "https://newsapi.org/v2/everything"
+    
+    def fetch_news(self, ticker, days=7):
+        """Fetch real news from NewsAPI"""
+        if not self.api_key:
+            return []
+        
+        try:
+            from_date = (datetime.now() - timedelta(days=days)).isoformat()
+            
+            params = {
+                'q': ticker,
+                'from': from_date,
+                'sortBy': 'publishedAt',
+                'language': 'en',
+                'apiKey': self.api_key
+            }
+            
+            response = requests.get(self.base_url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('articles', [])
+            else:
+                print(f"  ⚠️  NewsAPI error: {response.status_code}")
+                return []
+        
+        except Exception as e:
+            print(f"  ⚠️  Error fetching news: {str(e)}")
+            return []
+    
+    def calculate_sentiment(self, text):
+        """Calculate sentiment score (-1 to +1) from text"""
+        if not text:
+            return 0
+        
+        text = text.lower()
+        
+        # Positive keywords
+        positive = ['surge', 'jump', 'gain', 'profit', 'growth', 'strong', 'beat',
+                   'upgrade', 'bullish', 'soar', 'rally', 'win', 'success', 'boom',
+                   'outperform', 'analyst upgrade', 'positive', 'excellent']
+        
+        # Negative keywords
+        negative = ['fall', 'drop', 'loss', 'decline', 'weak', 'miss', 'downgrade',
+                   'bearish', 'crash', 'plunge', 'slump', 'fail', 'risk', 'concern',
+                   'outflow', 'analyst downgrade', 'negative', 'worst', 'breach']
+        
+        pos_count = sum(1 for word in positive if word in text)
+        neg_count = sum(1 for word in negative if word in text)
+        
+        if pos_count + neg_count == 0:
+            return 0
+        
+        sentiment = (pos_count - neg_count) / (pos_count + neg_count)
+        return max(-1, min(1, sentiment))
+    
+    def generate_sentiment_signal(self, sentiment_score, volume):
+        """Generate signal from sentiment analysis"""
+        signal = 'HOLD'
+        score = 50
+        
+        # Sentiment impact
+        if sentiment_score > 0.5 and volume > 0:
+            signal = 'BUY'
+            score = 70 + (sentiment_score * 20)
+        elif sentiment_score < -0.5 and volume > 0:
+            signal = 'SELL'
+            score = 30 - (abs(sentiment_score) * 20)
+        else:
+            score = 50 + (sentiment_score * 20)
+        
+        score = max(0, min(100, score))
+        return signal, round(score, 2)
+    
+    def analyze(self, ticker):
+        """Complete news sentiment analysis"""
+        print(f"  [NEWS] {ticker}...")
+        
+        articles = self.fetch_news(ticker, days=7)
+        
+        if not articles:
+            return {
+                'ticker': ticker,
+                'signal': 'HOLD',
+                'news_score': 50,
+                'articles_count': 0,
+                'sentiment': 0,
+                'timestamp': datetime.now().isoformat(),
+                'source': 'NewsAPI (no articles found)',
+                'confidence': 30
+            }
+        
+        # Calculate average sentiment
+        sentiments = []
+        for article in articles[:20]:  # Use top 20 articles
+            title = article.get('title', '')
+            description = article.get('description', '')
+            content = f"{title} {description}"
+            
+            sentiment = self.calculate_sentiment(content)
+            sentiments.append(sentiment)
+        
+        avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
+        signal, score = self.generate_sentiment_signal(avg_sentiment, len(sentiments))
+        
+        return {
+            'ticker': ticker,
+            'signal': signal,
+            'news_score': score,
+            'articles_count': len(articles),
+            'sentiment': round(avg_sentiment, 3),
+            'top_articles': [
+                {
+                    'title': article.get('title', ''),
+                    'source': article.get('source', {}).get('name', 'Unknown'),
+                    'published': article.get('publishedAt', '')
+                }
+                for article in articles[:3]
+            ],
+            'timestamp': datetime.now().isoformat(),
+            'source': 'NewsAPI Real Data',
+            'confidence': min(100, len(sentiments) * 5)
+        }
+
+
+if __name__ == "__main__":
+    news = NewsProcessor()
+    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+        result = news.analyze(ticker)
+        print(f"    ✓ {ticker}: Signal={result['signal']}, Articles={result['articles_count']}")

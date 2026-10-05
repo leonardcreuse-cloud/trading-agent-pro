@@ -1,0 +1,234 @@
+﻿import yfinance as yf
+from datetime import datetime, timedelta
+import numpy as np
+
+class SectorAnalysis:
+    """
+    Sector Analysis & Peer Comparison
+    - Compares ticker performance vs sector peers
+    - Valuation metrics vs sector average
+    - Relative attractiveness
+    - Source: Yahoo Finance (Tier 2)
+    """
+    
+    def __init__(self):
+        self.sector_peers = {
+            'CRWD': {
+                'sector': 'Information Technology - Cybersecurity',
+                'peers': ['PANW', 'ZS', 'PSTG', 'TENB', 'CrowdStrike'],
+                'etf': 'XLK'
+            },
+            'NET': {
+                'sector': 'Information Technology - Cloud',
+                'peers': ['CDE', 'NET', 'OKTA', 'DDOG', 'PEGA'],
+                'etf': 'XLK'
+            },
+            'RKLB': {
+                'sector': 'Aerospace & Defense',
+                'peers': ['RKLB', 'MAXR', 'SPCL', 'ASTRA', 'VSAT'],
+                'etf': 'XAR'
+            },
+            'MP': {
+                'sector': 'Energy - Oil & Gas',
+                'peers': ['MP', 'CLNE', 'MTTR', 'FUSL', 'KTOS'],
+                'etf': 'XLE'
+            }
+        }
+    
+    def get_pe_ratio_vs_sector(self, ticker: str) -> dict:
+        """
+        Compare P/E ratio to sector average
+        
+        Returns: {ticker, ticker_pe, sector_avg_pe, premium_discount, valuation_signal}
+        """
+        
+        try:
+            ticker_data = yf.Ticker(ticker)
+            ticker_pe = ticker_data.info.get('trailingPE', None)
+            
+            if ticker_pe is None:
+                return {
+                    'ticker': ticker,
+                    'ticker_pe': 'UNAVAILABLE',
+                    'source': 'Yahoo Finance'
+                }
+            
+            sector_info = self.sector_peers.get(ticker, {})
+            peers = sector_info.get('peers', [])
+            
+            peer_pes = []
+            for peer in peers:
+                try:
+                    peer_data = yf.Ticker(peer)
+                    peer_pe = peer_data.info.get('trailingPE', None)
+                    if peer_pe and peer_pe > 0:
+                        peer_pes.append(peer_pe)
+                except:
+                    pass
+            
+            if peer_pes:
+                sector_avg_pe = np.mean(peer_pes)
+                discount_pct = ((ticker_pe - sector_avg_pe) / sector_avg_pe) * 100
+                
+                if discount_pct < -15:
+                    valuation_signal = 'UNDERVALUED'
+                elif discount_pct < -5:
+                    valuation_signal = 'SLIGHT_DISCOUNT'
+                elif discount_pct < 5:
+                    valuation_signal = 'FAIRLY_VALUED'
+                elif discount_pct < 15:
+                    valuation_signal = 'SLIGHT_PREMIUM'
+                else:
+                    valuation_signal = 'EXPENSIVE'
+                
+                return {
+                    'ticker': ticker,
+                    'ticker_pe': round(ticker_pe, 2),
+                    'sector_avg_pe': round(sector_avg_pe, 2),
+                    'discount_premium_pct': round(discount_pct, 2),
+                    'valuation_signal': valuation_signal,
+                    'peers_analyzed': len(peer_pes),
+                    'source': 'Yahoo Finance',
+                    'source_tier': 2,
+                    'confidence': 0.85
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'ticker_pe': ticker_pe,
+                    'error': 'Insufficient peer data',
+                    'source': 'Yahoo Finance'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Yahoo Finance'
+            }
+    
+    def get_growth_vs_sector(self, ticker: str, growth_metric: str = 'revenue') -> dict:
+        """
+        Compare growth rate to sector peers
+        
+        Returns: {ticker, ticker_growth, sector_avg_growth, relative_growth}
+        """
+        
+        return {
+            'ticker': ticker,
+            'ticker_growth': 'REQUIRES_PARSING',
+            'sector_avg_growth': 'REQUIRES_AGGREGATION',
+            'relative_growth': None,
+            'metric': growth_metric,
+            'source': 'Yahoo Finance',
+            'source_tier': 2,
+            'status': 'PENDING'
+        }
+    
+    def get_margin_vs_sector(self, ticker: str) -> dict:
+        """
+        Compare profit margins to sector
+        
+        Returns: {ticker, ticker_margin, sector_avg_margin, efficiency}
+        """
+        
+        try:
+            ticker_data = yf.Ticker(ticker)
+            
+            # Try multiple margin metrics
+            gross_margin = ticker_data.info.get('grossMargins', None)
+            operating_margin = ticker_data.info.get('operatingMargins', None)
+            profit_margin = ticker_data.info.get('profitMargins', None)
+            
+            return {
+                'ticker': ticker,
+                'gross_margin': gross_margin,
+                'operating_margin': operating_margin,
+                'profit_margin': profit_margin,
+                'sector_avg_margin': 'REQUIRES_AGGREGATION',
+                'source': 'Yahoo Finance',
+                'source_tier': 2,
+                'confidence': 0.82
+            }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Yahoo Finance'
+            }
+    
+    def get_relative_attractiveness(self, ticker: str) -> dict:
+        """
+        Calculate overall relative attractiveness score
+        
+        Combines:
+        - Valuation (P/E)
+        - Growth
+        - Profitability vs peers
+        
+        Returns: {attractiveness_score, rank_in_sector, recommendation}
+        """
+        
+        pe_analysis = self.get_pe_ratio_vs_sector(ticker)
+        margins = self.get_margin_vs_sector(ticker)
+        
+        score = 50  # Neutral baseline
+        factors = {}
+        
+        # Valuation component
+        if 'discount_premium_pct' in pe_analysis:
+            discount = pe_analysis['discount_premium_pct']
+            
+            if discount < -15:
+                score += 25
+                factors['valuation'] = 'STRONG_ADVANTAGE'
+            elif discount < 0:
+                score += 12
+                factors['valuation'] = 'SLIGHT_ADVANTAGE'
+            elif discount < 15:
+                score -= 12
+                factors['valuation'] = 'SLIGHT_DISADVANTAGE'
+            else:
+                score -= 25
+                factors['valuation'] = 'SIGNIFICANT_DISADVANTAGE'
+        
+        # Profitability component
+        if margins.get('profit_margin') and margins.get('sector_avg_margin'):
+            if margins['profit_margin'] > 0:
+                score += 15
+                factors['profitability'] = 'POSITIVE'
+            else:
+                score -= 15
+                factors['profitability'] = 'NEGATIVE'
+        
+        score = max(0, min(100, score))
+        
+        if score > 65:
+            recommendation = 'ATTRACTIVE'
+        elif score > 50:
+            recommendation = 'NEUTRAL'
+        else:
+            recommendation = 'LESS_ATTRACTIVE'
+        
+        return {
+            'ticker': ticker,
+            'attractiveness_score': score,
+            'max_score': 100,
+            'factors': factors,
+            'recommendation': recommendation,
+            'source': 'sector_analysis.py'
+        }
+
+if __name__ == "__main__":
+    sector = SectorAnalysis()
+    
+    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+        print(f"\n{ticker} - Sector Analysis:")
+        
+        pe = sector.get_pe_ratio_vs_sector(ticker)
+        print(f"  P/E: {pe.get('ticker_pe', 'N/A')} (sector: {pe.get('sector_avg_pe', 'N/A')})")
+        
+        attract = sector.get_relative_attractiveness(ticker)
+        print(f"  Attractiveness: {attract['attractiveness_score']}/100 ({attract['recommendation']})")
+

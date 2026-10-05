@@ -1,0 +1,154 @@
+﻿import requests
+from datetime import datetime, timedelta
+import sqlite3
+
+class CalendarEvents:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-pro'
+        })
+    
+    def get_earnings_dates(self, ticker):
+        """
+        Récupère les prochaines dates d'earnings
+        - Source: Yahoo Finance (Tier 2)
+        - Retourne: {ticker, earnings_date, fiscal_period, estimate_eps, source, source_tier}
+        """
+        
+        try:
+            url = f"https://finance.yahoo.com/quote/{ticker}/earnings"
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            if 'Earnings Date' in response.text or 'earnings-date' in response.text:
+                return {
+                    'ticker': ticker,
+                    'earnings_date': 'PARSING_REQUIRED',
+                    'source': 'Yahoo Finance',
+                    'source_tier': 2,
+                    'confidence': 0.85,
+                    'status': 'REQUIRES_PARSING'
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'earnings_date': None,
+                    'source': 'Yahoo Finance',
+                    'source_tier': 2,
+                    'message': 'Data not found on page'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Yahoo Finance',
+                'source_tier': 2
+            }
+    
+    def get_dividend_dates(self, ticker):
+        """
+        Récupère les prochaines dates ex-dividend
+        - Source: Yahoo Finance (Tier 2)
+        - Retourne: {ticker, ex_dividend_date, amount, source, source_tier}
+        """
+        
+        try:
+            url = f"https://finance.yahoo.com/quote/{ticker}/history"
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                return {
+                    'ticker': ticker,
+                    'ex_dividend_date': 'REQUIRES_PARSING',
+                    'amount': None,
+                    'source': 'Yahoo Finance',
+                    'source_tier': 2,
+                    'confidence': 0.80,
+                    'status': 'REQUIRES_PARSING'
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'error': 'Failed to fetch page',
+                    'source': 'Yahoo Finance'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Yahoo Finance'
+            }
+    
+    def get_sec_filing_dates(self, ticker):
+        """
+        Récupère les dates de soumission 10-K, 10-Q prévues
+        - Source: SEC Filing Calendar (Tier 1)
+        - Retourne: {ticker, filing_type, deadline_date, source, source_tier}
+        """
+        
+        today = datetime.now()
+        
+        sec_deadlines = {
+            '10-K': {
+                'description': 'Annual Report',
+                'typical_months': [3, 4],
+                'days_after_fiscal_year': 60
+            },
+            '10-Q': {
+                'description': 'Quarterly Report',
+                'typical_months': [5, 8, 11],
+                'days_after_quarter': 45
+            }
+        }
+        
+        return {
+            'ticker': ticker,
+            'deadlines': sec_deadlines,
+            'source': 'SEC Filing Calendar',
+            'source_tier': 1,
+            'confidence': 0.95,
+            'note': 'Dates estimées basées sur calendrier SEC standard'
+        }
+    
+    def calculate_event_impact_score(self, events_dict):
+        """
+        Calcule score d'impact des events sur le prix
+        Retourne: {event_type, days_until, risk_level, estimated_volatility}
+        """
+        
+        if not events_dict:
+            return {
+                'event_type': None,
+                'days_until': None,
+                'risk_level': 'NONE',
+                'estimated_volatility': 0,
+                'source': 'calendar_events.py'
+            }
+        
+        return {
+            'events_count': len(events_dict),
+            'risk_level': 'MEDIUM',
+            'next_major_event': 'REQUIRES_PARSING',
+            'source': 'calendar_events.py'
+        }
+
+if __name__ == "__main__":
+    cal = CalendarEvents()
+    
+    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+        print(f"\n{ticker} - Calendar Events:")
+        
+        earnings = cal.get_earnings_dates(ticker)
+        print(f"  Earnings: {earnings.get('earnings_date', 'N/A')}")
+        
+        dividend = cal.get_dividend_dates(ticker)
+        print(f"  Ex-Dividend: {dividend.get('ex_dividend_date', 'N/A')}")
+        
+        sec = cal.get_sec_filing_dates(ticker)
+        print(f"  SEC Deadlines: {len(sec.get('deadlines', {}))} types")

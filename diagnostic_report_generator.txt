@@ -1,0 +1,193 @@
+﻿#!/usr/bin/env python3
+"""
+Report Generator - Create HTML and JSON reports
+"""
+
+from datetime import datetime
+
+
+class ReportGenerator:
+    """Generate analysis reports in HTML and JSON"""
+    
+    def generate_html(self, all_results):
+        """Generate comprehensive HTML report"""
+        html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Agent Pro - Daily Analysis</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { color: #333; border-bottom: 3px solid #0066cc; padding-bottom: 10px; }
+        h2 { color: #0066cc; margin-top: 30px; }
+        .ticker-section { margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #0066cc; }
+        .metric { margin: 10px 0; padding: 10px; background: white; border-radius: 4px; }
+        .metric-label { font-weight: bold; color: #333; }
+        .metric-value { color: #0066cc; font-size: 1.1em; }
+        .buy { color: green; font-weight: bold; }
+        .sell { color: red; font-weight: bold; }
+        .hold { color: orange; font-weight: bold; }
+        .timestamp { color: #666; font-size: 0.9em; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #0066cc; color: white; }
+        tr:hover { background: #f5f5f5; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ðŸš€ Trading Agent Pro - Daily Analysis Report</h1>
+        <p class="timestamp">Generated: """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
+"""
+        
+        # Summary table
+        html += """
+        <h2>Summary</h2>
+        <table>
+            <tr>
+                <th>Ticker</th>
+                <th>Signal</th>
+                <th>Combined Score</th>
+                <th>Confidence</th>
+                <th>Technical</th>
+                <th>Fundamentals</th>
+                <th>News</th>
+            </tr>
+"""
+        
+        for result in all_results:
+            if 'error' in result:
+                html += f"<tr><td>{result['ticker']}</td><td colspan='6'>ERROR: {result['error']}</td></tr>"
+                continue
+            
+            signal_data = result.get('modules', {}).get('signal', {})
+            signal = signal_data.get('signal', 'N/A')
+            score = signal_data.get('combined_score', 'N/A')
+            confidence = signal_data.get('confidence', 'N/A')
+            
+            tech = result.get('modules', {}).get('technical', {}).get('signal', 'N/A')
+            fund = result.get('modules', {}).get('fundamentals', {}).get('signal', 'N/A')
+            news = result.get('modules', {}).get('news', {}).get('signal', 'N/A')
+            
+            signal_class = 'buy' if signal == 'BUY' else ('sell' if signal == 'SELL' else 'hold')
+            
+            html += f"""
+            <tr>
+                <td><strong>{result['ticker']}</strong></td>
+                <td class="{signal_class}">{signal}</td>
+                <td>{score}</td>
+                <td>{confidence}%</td>
+                <td>{tech}</td>
+                <td>{fund}</td>
+                <td>{news}</td>
+            </tr>
+"""
+        
+        html += "</table>"
+        
+        # Detailed sections
+        for result in all_results:
+            if 'error' in result:
+                continue
+            
+            ticker = result['ticker']
+            modules = result.get('modules', {})
+            
+            html += f"""
+        <div class="ticker-section">
+            <h2>{ticker} - Detailed Analysis</h2>
+"""
+            
+            # SEC Data
+            sec = modules.get('sec', {})
+            html += f"""
+            <h3>SEC Data</h3>
+            <div class="metric">
+                <span class="metric-label">Revenue:</span>
+                <span class="metric-value">${sec.get('revenue', 'N/A'):,}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">D/E Ratio:</span>
+                <span class="metric-value">{sec.get('debt_to_equity', 'N/A')}</span>
+            </div>
+"""
+            
+            # Technical
+            tech = modules.get('technical', {})
+            html += f"""
+            <h3>Technical Analysis</h3>
+            <div class="metric">
+                <span class="metric-label">Signal:</span>
+                <span class="metric-value">{tech.get('signal', 'N/A')}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">RSI:</span>
+                <span class="metric-value">{tech.get('indicators', {}).get('rsi', 'N/A')}</span>
+            </div>
+"""
+            
+            # Fundamentals
+            fund = modules.get('fundamentals', {})
+            html += f"""
+            <h3>Fundamentals</h3>
+            <div class="metric">
+                <span class="metric-label">Signal:</span>
+                <span class="metric-value">{fund.get('signal', 'N/A')}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Score:</span>
+                <span class="metric-value">{fund.get('fundamental_score', 'N/A')}</span>
+            </div>
+"""
+            
+            # Backtest
+            backtest = modules.get('backtest', {})
+            html += f"""
+            <h3>Backtesting</h3>
+            <div class="metric">
+                <span class="metric-label">Accuracy:</span>
+                <span class="metric-value">{backtest.get('backtest_results', {}).get('accuracy', 'N/A')}%</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Sharpe Ratio:</span>
+                <span class="metric-value">{backtest.get('backtest_results', {}).get('sharpe_ratio', 'N/A')}</span>
+            </div>
+"""
+            
+            html += "</div>"
+        
+        html += """
+    </div>
+</body>
+</html>
+"""
+        
+        return html
+    
+    def generate_summary(self, all_results):
+        """Generate text summary"""
+        summary = "\n" + "=" * 80 + "\n"
+        summary += "TRADING AGENT PRO - ANALYSIS SUMMARY\n"
+        summary += "=" * 80 + "\n\n"
+        
+        for result in all_results:
+            if 'error' in result:
+                summary += f"{result['ticker']}: ERROR - {result['error']}\n"
+                continue
+            
+            ticker = result['ticker']
+            signal_data = result.get('modules', {}).get('signal', {})
+            summary += f"\n{ticker}\n"
+            summary += f"  Signal: {signal_data.get('signal', 'N/A')}\n"
+            summary += f"  Score: {signal_data.get('combined_score', 'N/A')}\n"
+            summary += f"  Confidence: {signal_data.get('confidence', 'N/A')}%\n"
+        
+        summary += "\n" + "=" * 80 + "\n"
+        return summary
+
+
+if __name__ == "__main__":
+    gen = ReportGenerator()
+    print(gen.generate_summary([]))

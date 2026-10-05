@@ -1,0 +1,56 @@
+﻿import json
+import os
+from datetime import datetime
+
+def save_json_report(ticker, results, output_dir='reports'):
+    """Save analysis results as JSON"""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    filename = os.path.join(output_dir, f'{ticker}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
+    with open(filename, 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f"âœ“ JSON saved: {filename}")
+    return filename
+
+def save_html_report(ticker, results, output_dir='reports'):
+    """Save analysis results as HTML"""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{ticker} Analysis Report</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        h1 {{ color: #333; }}
+        .score {{ background: #f0f0f0; padding: 10px; margin: 10px 0; }}
+        .buy {{ color: green; font-weight: bold; }}
+        .sell {{ color: red; font-weight: bold; }}
+        .hold {{ color: orange; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <h1>{ticker} Analysis Report</h1>
+    <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <div class="score">
+        <h2>Scores</h2>
+        <p>Data Reliability: {results.get('score1', 'N/A')}/100</p>
+        <p>Signal Strength: {results.get('score2', 'N/A')}/100</p>
+        <p>Confidence: {results.get('score3', 'N/A')}/100</p>
+    </div>
+    <div class="score">
+        <h2>Recommendation</h2>
+        <p class="{results.get('action', 'hold').lower()}">{results.get('action', 'N/A')}</p>
+    </div>
+</body>
+</html>
+"""
+    
+    filename = os.path.join(output_dir, f'{ticker}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.html')
+    with open(filename, 'w') as f:
+        f.write(html_content)
+    print(f"âœ“ HTML saved: {filename}")
+    return filename

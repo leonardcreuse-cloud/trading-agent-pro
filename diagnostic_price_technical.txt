@@ -1,0 +1,150 @@
+﻿#!/usr/bin/env python3
+"""
+Price Technical - Real RSI, MACD, ATR calculations from yfinance
+"""
+
+import yfinance as yf
+from datetime import datetime
+import numpy as np
+import pandas as pd
+
+
+class PriceTechnical:
+    """Calculate real technical indicators"""
+    
+    def __init__(self):
+        pass
+    
+    def fetch_data(self, ticker, period='2y'):
+        """Fetch historical data from yfinance"""
+        try:
+            data = yf.download(ticker, period=period, progress=False)
+            if data.empty:
+                return None
+            return data
+        except Exception as e:
+            print(f"  ❌ Error fetching {ticker}: {str(e)}")
+            return None
+    
+    def calculate_rsi(self, data, period=14):
+        """Calculate Relative Strength Index (RSI)"""
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def calculate_macd(self, data, fast=12, slow=26, signal=9):
+        """Calculate MACD (Moving Average Convergence Divergence)"""
+        ema_fast = data['Close'].ewm(span=fast).mean()
+        ema_slow = data['Close'].ewm(span=slow).mean()
+        
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal).mean()
+        histogram = macd_line - signal_line
+        
+        return macd_line, signal_line, histogram
+    
+    def calculate_atr(self, data, period=14):
+        """Calculate Average True Range (ATR)"""
+        high_low = data['High'] - data['Low']
+        high_close = abs(data['High'] - data['Close'].shift())
+        low_close = abs(data['Low'] - data['Close'].shift())
+        
+        tr = np.maximum(high_low, np.maximum(high_close, low_close))
+        atr = tr.rolling(window=period).mean()
+        return atr
+    
+    def generate_signal(self, rsi, macd_line, signal_line, atr_pct):
+        """Generate BUY/SELL/HOLD signal from indicators"""
+        signal = 'HOLD'
+        score = 50
+        
+        # RSI signals (oversold < 30 = BUY, overbought > 70 = SELL)
+        if rsi < 30:
+            signal = 'BUY'
+            score += 20
+        elif rsi > 70:
+            signal = 'SELL'
+            score -= 20
+        
+        # MACD signals (macd > signal = bullish)
+        if macd_line > signal_line:
+            score += 15
+        else:
+            score -= 15
+        
+        # Volatility check (low ATR = low risk)
+        if atr_pct < 2:
+            score += 10
+        elif atr_pct > 4:
+            score -= 10
+        
+        # Clamp score
+        score = max(0, min(100, score))
+        
+        if score >= 65:
+            signal = 'BUY'
+        elif score <= 35:
+            signal = 'SELL'
+        
+        return signal, score
+    
+    def safe_float(self, val, default=50):
+        """Safely convert to float, handle NaN"""
+        try:
+            f = float(val)
+            if pd.isna(f):
+                return default
+            return f
+        except:
+            return default
+    
+    def analyze(self, ticker):
+        """Complete technical analysis for one ticker"""
+        print(f"  [TECHNICAL] {ticker}...")
+        
+        data = self.fetch_data(ticker)
+        if data is None:
+            return {'ticker': ticker, 'error': 'No data'}
+        
+        # Calculate indicators
+        rsi = self.calculate_rsi(data)
+        macd_line, signal_line, histogram = self.calculate_macd(data)
+        atr = self.calculate_atr(data)
+        
+        # Get latest values safely
+        latest_rsi = self.safe_float(rsi.iloc[-1], 50)
+        latest_macd = self.safe_float(macd_line.iloc[-1], 0)
+        latest_signal = self.safe_float(signal_line.iloc[-1], 0)
+        latest_atr = self.safe_float(atr.iloc[-1], 0)
+        latest_close = self.safe_float(data['Close'].iloc[-1], 100)
+        
+        # ATR as % of price
+        atr_pct = (latest_atr / latest_close) * 100 if latest_close > 0 else 0
+        
+        # Generate signal
+        signal, score = self.generate_signal(latest_rsi, latest_macd, latest_signal, atr_pct)
+        
+        return {
+            'ticker': ticker,
+            'signal': signal,
+            'technical_score': score,
+            'indicators': {
+                'rsi': round(latest_rsi, 2),
+                'macd': round(latest_macd, 4),
+                'macd_signal': round(latest_signal, 4),
+                'atr_pct': round(atr_pct, 2)
+            },
+            'timestamp': datetime.now().isoformat(),
+            'source': 'yfinance Real Data'
+        }
+
+
+if __name__ == "__main__":
+    tech = PriceTechnical()
+    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+        result = tech.analyze(ticker)
+        print(f"    ✓ {ticker}: Signal={result['signal']}, Score={result.get('technical_score', 'N/A')}")

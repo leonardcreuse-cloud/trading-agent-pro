@@ -1,0 +1,86 @@
+﻿import sqlite3
+import os
+from datetime import datetime
+
+class Database:
+    def __init__(self, db_path="../data/trading_pro.db"):
+        self.db_path = db_path
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.create_tables()
+    
+    def get_connection(self):
+        return sqlite3.connect(self.db_path)
+    
+    def create_tables(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS fundamentals (
+                id INTEGER PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                period TEXT NOT NULL,
+                revenue REAL,
+                operating_income REAL,
+                net_income REAL,
+                free_cash_flow REAL,
+                total_debt REAL,
+                cash_and_equivalents REAL,
+                source TEXT NOT NULL,
+                retrieved_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                data_confidence INTEGER DEFAULT 95,
+                UNIQUE(ticker, period)
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS insider_transactions (
+                id INTEGER PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                insider_name TEXT,
+                transaction_type TEXT,
+                transaction_date DATE,
+                shares_count REAL,
+                price_per_share REAL,
+                transaction_value REAL,
+                source TEXT DEFAULT 'SEC Form 4',
+                retrieved_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS prices (
+                id INTEGER PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                date DATE NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                adjusted_close REAL,
+                volume INTEGER,
+                source TEXT DEFAULT 'yfinance',
+                retrieved_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ticker, date)
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS calendar_events (
+                id INTEGER PRIMARY KEY,
+                ticker TEXT,
+                event_type TEXT NOT NULL,
+                event_date DATE NOT NULL,
+                description TEXT,
+                source TEXT
+            )
+        """)
+        
+        conn.commit()
+        conn.close()
+        print(f"Database: {self.db_path}")
+
+if __name__ == "__main__":
+    db = Database()
+    print("Database created")
+

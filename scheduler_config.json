@@ -1,0 +1,7 @@
+{
+  "schedule_time": "08:00",
+  "timezone": "Europe/Paris",
+  "command": "python main.py analyze",
+  "stocks": ["CRWD", "NET", "RKLB", "MP"],
+  "enabled": true
+}

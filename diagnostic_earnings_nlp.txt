@@ -1,0 +1,413 @@
+﻿import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+import re
+
+class EarningsNLP:
+    """
+    Earnings Call Transcript NLP Analysis
+    - Fetches earnings transcripts from Seeking Alpha
+    - Analyzes sentiment, key topics, guidance changes
+    - Source: Seeking Alpha (Tier 2)
+    """
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-pro'
+        })
+    
+    def get_earnings_transcript(self, ticker: str, fiscal_quarter: str = None) -> Dict:
+        """
+        Fetch latest earnings transcript
+        - Source: Seeking Alpha (Tier 2)
+        - Returns: {ticker, transcript_url, date, quarter, source, source_tier}
+        """
+        
+        try:
+            url = f"https://seekingalpha.com/symbol/{ticker}/earnings"
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                return {
+                    'ticker': ticker,
+                    'transcript_url': f'https://seekingalpha.com/symbol/{ticker}/earnings',
+                    'status': 'REQUIRES_PARSING',
+                    'source': 'Seeking Alpha',
+                    'source_tier': 2,
+                    'confidence': 0.85
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'error': 'Failed to fetch transcript',
+                    'source': 'Seeking Alpha'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Seeking Alpha'
+            }
+    
+    def analyze_earnings_sentiment(self, transcript_text: str) -> Dict:
+        """
+        Analyze sentiment of earnings call transcript
+        
+        Looks for:
+        - Positive keywords (growth, beat, strength, momentum, guidance up)
+        - Negative keywords (miss, decline, challenge, headwind, guidance down)
+        
+        Returns: {sentiment_score, positive_count, negative_count, signal}
+        """
+        
+        positive_keywords = [
+            'beat', 'exceed', 'growth', 'strength', 'momentum',
+            'guidance up', 'raised', 'outperform', 'strong', 'robust',
+            'accelerated', 'record', 'expansion', 'profitable'
+        ]
+        
+        negative_keywords = [
+            'miss', 'decline', 'challenge', 'headwind', 'guidance down',
+            'lowered', 'underperform', 'weakness', 'pressure', 'contraction',
+            'concern', 'risk', 'difficult', 'loss'
+        ]
+        
+        transcript_lower = transcript_text.lower()
+        
+        positive_count = sum(transcript_lower.count(kw) for kw in positive_keywords)
+        negative_count = sum(transcript_lower.count(kw) for kw in negative_keywords)
+        
+        total = positive_count + negative_count
+        
+        if total == 0:
+            sentiment_score = 0
+            signal = 'NEUTRAL'
+        else:
+            sentiment_score = ((positive_count - negative_count) / total) * 100
+            
+            if sentiment_score > 30:
+                signal = 'VERY_POSITIVE'
+            elif sentiment_score > 10:
+                signal = 'POSITIVE'
+            elif sentiment_score < -30:
+                signal = 'VERY_NEGATIVE'
+            elif sentiment_score < -10:
+                signal = 'NEGATIVE'
+            else:
+                signal = 'NEUTRAL'
+        
+        return {
+            'sentiment_score': round(sentiment_score, 2),
+            'positive_count': positive_count,
+
+@'
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+import re
+
+class EarningsNLP:
+    """
+    Earnings Call Transcript NLP Analysis
+    - Fetches earnings transcripts from Seeking Alpha
+    - Analyzes sentiment, key topics, guidance changes
+    - Source: Seeking Alpha (Tier 2)
+    """
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-pro'
+        })
+    
+    def get_earnings_transcript(self, ticker: str, fiscal_quarter: str = None) -> Dict:
+        """
+        Fetch latest earnings transcript
+        - Source: Seeking Alpha (Tier 2)
+        - Returns: {ticker, transcript_url, date, quarter, source, source_tier}
+        """
+        
+        try:
+            url = f"https://seekingalpha.com/symbol/{ticker}/earnings"
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                return {
+                    'ticker': ticker,
+                    'transcript_url': f'https://seekingalpha.com/symbol/{ticker}/earnings',
+                    'status': 'REQUIRES_PARSING',
+                    'source': 'Seeking Alpha',
+                    'source_tier': 2,
+                    'confidence': 0.85
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'error': 'Failed to fetch transcript',
+                    'source': 'Seeking Alpha'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Seeking Alpha'
+            }
+    
+    def analyze_earnings_sentiment(self, transcript_text: str) -> Dict:
+        """
+        Analyze sentiment of earnings call transcript
+        
+        Looks for:
+        - Positive keywords (growth, beat, strength, momentum, guidance up)
+        - Negative keywords (miss, decline, challenge, headwind, guidance down)
+        
+        Returns: {sentiment_score, positive_count, negative_count, signal}
+        """
+        
+        positive_keywords = [
+            'beat', 'exceed', 'growth', 'strength', 'momentum',
+            'guidance up', 'raised', 'outperform', 'strong', 'robust',
+            'accelerated', 'record', 'expansion', 'profitable'
+        ]
+        
+        negative_keywords = [
+            'miss', 'decline', 'challenge', 'headwind', 'guidance down',
+            'lowered', 'underperform', 'weakness', 'pressure', 'contraction',
+            'concern', 'risk', 'difficult', 'loss'
+        ]
+        
+        transcript_lower = transcript_text.lower()
+        
+        positive_count = sum(transcript_lower.count(kw) for kw in positive_keywords)
+        negative_count = sum(transcript_lower.count(kw) for kw in negative_keywords)
+        
+        total = positive_count + negative_count
+        
+        if total == 0:
+            sentiment_score = 0
+            signal = 'NEUTRAL'
+        else:
+            sentiment_score = ((positive_count - negative_count) / total) * 100
+            
+            if sentiment_score > 30:
+                signal = 'VERY_POSITIVE'
+            elif sentiment_score > 10:
+                signal = 'POSITIVE'
+            elif sentiment_score < -30:
+                signal = 'VERY_NEGATIVE'
+            elif sentiment_score < -10:
+                signal = 'NEGATIVE'
+            else:
+                signal = 'NEUTRAL'
+        
+        return {
+            'sentiment_score': round(sentiment_score, 2),
+            'positive_count': positive_count,
+@'
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+import re
+
+class EarningsNLP:
+    """
+    Earnings Call Transcript NLP Analysis
+    - Fetches earnings transcripts from Seeking Alpha
+    - Analyzes sentiment, key topics, guidance changes
+    - Source: Seeking Alpha (Tier 2)
+    """
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-pro'
+        })
+    
+    def get_earnings_transcript(self, ticker: str, fiscal_quarter: str = None) -> Dict:
+        """
+        Fetch latest earnings transcript
+        - Source: Seeking Alpha (Tier 2)
+        - Returns: {ticker, transcript_url, date, quarter, source, source_tier}
+        """
+        
+        try:
+            url = f"https://seekingalpha.com/symbol/{ticker}/earnings"
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                return {
+                    'ticker': ticker,
+                    'transcript_url': f'https://seekingalpha.com/symbol/{ticker}/earnings',
+                    'status': 'REQUIRES_PARSING',
+                    'source': 'Seeking Alpha',
+                    'source_tier': 2,
+                    'confidence': 0.85
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'error': 'Failed to fetch transcript',
+                    'source': 'Seeking Alpha'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'Seeking Alpha'
+            }
+    
+    def analyze_earnings_sentiment(self, transcript_text: str) -> Dict:
+        """
+        Analyze sentiment of earnings call transcript
+        
+        Looks for:
+        - Positive keywords (growth, beat, strength, momentum, guidance up)
+        - Negative keywords (miss, decline, challenge, headwind, guidance down)
+        
+        Returns: {sentiment_score, positive_count, negative_count, signal}
+        """
+        
+        positive_keywords = [
+            'beat', 'exceed', 'growth', 'strength', 'momentum',
+            'guidance up', 'raised', 'outperform', 'strong', 'robust',
+            'accelerated', 'record', 'expansion', 'profitable'
+        ]
+        
+        negative_keywords = [
+            'miss', 'decline', 'challenge', 'headwind', 'guidance down',
+            'lowered', 'underperform', 'weakness', 'pressure', 'contraction',
+            'concern', 'risk', 'difficult', 'loss'
+        ]
+        
+        transcript_lower = transcript_text.lower()
+        
+        positive_count = sum(transcript_lower.count(kw) for kw in positive_keywords)
+        negative_count = sum(transcript_lower.count(kw) for kw in negative_keywords)
+        
+        total = positive_count + negative_count
+        
+        if total == 0:
+            sentiment_score = 0
+            signal = 'NEUTRAL'
+        else:
+            sentiment_score = ((positive_count - negative_count) / total) * 100
+            
+            if sentiment_score > 30:
+                signal = 'VERY_POSITIVE'
+            elif sentiment_score > 10:
+                signal = 'POSITIVE'
+            elif sentiment_score < -30:
+                signal = 'VERY_NEGATIVE'
+            elif sentiment_score < -10:
+                signal = 'NEGATIVE'
+            else:
+                signal = 'NEUTRAL'
+        
+        return {
+            'sentiment_score': round(sentiment_score, 2),
+            'positive_count': positive_count,
+            'negative_count': negative_count,
+            'signal': signal,
+            'confidence': 0.75,
+            'source': 'earnings_nlp.py'
+        }
+    
+    def extract_guidance_change(self, transcript_text: str) -> Dict:
+        """
+        Extract guidance raise/lower/maintained information
+        
+        Returns: {guidance_action, revenue_change, eps_change, outlook}
+        """
+        
+        transcript_lower = transcript_text.lower()
+        
+        if 'guidance' in transcript_lower or 'outlook' in transcript_lower:
+            if any(x in transcript_lower for x in ['raise', 'increased', 'up', 'higher']):
+                guidance_action = 'RAISED'
+            elif any(x in transcript_lower for x in ['lower', 'decreased', 'down']):
+                guidance_action = 'LOWERED'
+            else:
+                guidance_action = 'MAINTAINED'
+        else:
+            guidance_action = 'NOT_PROVIDED'
+        
+        return {
+            'guidance_action': guidance_action,
+            'revenue_change': 'REQUIRES_PARSING',
+            'eps_change': 'REQUIRES_PARSING',
+            'outlook': 'REQUIRES_PARSING',
+            'source': 'earnings_nlp.py'
+        }
+    
+    def extract_key_topics(self, transcript_text: str) -> Dict:
+        """
+        Extract key discussion topics from earnings call
+        
+        Returns: {main_topics, competitive_mentions, macro_comments, risks_mentioned}
+        """
+        
+        topics = {
+            'competition': ['competitor', 'competitive', 'rivalry', 'differentiation'],
+            'macro': ['economy', 'gdp', 'inflation', 'rates', 'macro', 'market'],
+            'product': ['product', 'feature', 'launch', 'innovation', 'roadmap'],
+            'customer': ['customer', 'churn', 'retention', 'acquisition', 'nps'],
+            'margin': ['margin', 'gross margin', 'operating margin', 'profitability']
+        }
+        
+        transcript_lower = transcript_text.lower()
+        found_topics = {}
+        
+        for topic, keywords in topics.items():
+            count = sum(transcript_lower.count(kw) for kw in keywords)
+            if count > 0:
+                found_topics[topic] = count
+        
+        return {
+            'main_topics': found_topics,
+            'risks_mentioned': 'REQUIRES_PARSING',
+            'source': 'earnings_nlp.py'
+        }
+    
+    def get_earnings_date_next(self, ticker: str) -> Dict:
+        """
+        Get next earnings date
+        Returns: {ticker, next_earnings_date, days_until, quarter}
+        """
+        
+        return {
+            'ticker': ticker,
+            'next_earnings_date': 'REQUIRES_SCRAPING',
+            'days_until': None,
+            'quarter': 'PENDING',
+            'source': 'earnings_nlp.py'
+        }
+
+if __name__ == "__main__":
+    earnings = EarningsNLP()
+    
+    test_transcript = """
+    We beat expectations and raised guidance. 
+    Strong growth momentum in our core products.
+    Customers are very satisfied with our innovation roadmap.
+    We see macro headwinds but expect acceleration next quarter.
+    """
+    
+    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+        print(f"\n{ticker} - Earnings Analysis:")
+        
+        sentiment = earnings.analyze_earnings_sentiment(test_transcript)
+        print(f"  Sentiment: {sentiment['signal']} ({sentiment['sentiment_score']})")
+        
+        guidance = earnings.extract_guidance_change(test_transcript)
+        print(f"  Guidance: {guidance['guidance_action']}")
+

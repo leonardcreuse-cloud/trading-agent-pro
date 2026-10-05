@@ -1,0 +1,224 @@
+﻿import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, List
+
+class WalkForwardTest:
+    """
+    Walk-Forward Analysis (Out-of-Sample Validation)
+    - Splits data into training (IS) and testing (OOS) periods
+    - Prevents overfitting by testing on unseen data
+    - More reliable than simple backtest
+    - Source: Historical price data
+    """
+    
+    def __init__(self, data_length: int, train_pct: float = 0.70):
+        self.data_length = data_length
+        self.train_pct = train_pct
+        self.test_pct = 1 - train_pct
+    
+    def split_walk_forward(self, 
+                          price_history: List[float],
+                          signal_scores: List[float],
+                          window_size: int = 252) -> List[Dict]:
+        """
+        Split data into rolling train/test windows
+        - Window: typically 252 days (1 year)
+        - Train: 70% of window
+        - Test: 30% of window
+        
+        Returns: [
+            {
+                window_num,
+                train_start,
+                train_end,
+                test_start,
+                test_end,
+                train_prices,
+                test_prices,
+                train_scores,
+                test_scores
+            }
+        ]
+        """
+        
+        windows = []
+        window_num = 1
+        
+        for start_idx in range(0, len(price_history) - window_size, window_size):
+            window_end = min(start_idx + window_size, len(price_history))
+            
+            # Split within window
+            window_length = window_end - start_idx
+            train_length = int(window_length * self.train_pct)
+            
+            train_end_idx = start_idx + train_length
+            
+            windows.append({
+                'window_num': window_num,
+                'train_start_idx': start_idx,
+                'train_end_idx': train_end_idx,
+                'test_start_idx': train_end_idx,
+                'test_end_idx': window_end,
+                'train_length': train_length,
+                'test_length': window_end - train_end_idx,
+                'train_prices': price_history[start_idx:train_end_idx],
+                'test_prices': price_history[train_end_idx:window_end],
+                'train_scores': signal_scores[start_idx:train_end_idx],
+                'test_scores': signal_scores[train_end_idx:window_end]
+            })
+            
+            window_num += 1
+        
+        return windows
+    
+    def calculate_window_accuracy(self, 
+                                 window: Dict,
+                                 signal_threshold: float = 60) -> Dict:
+        """
+        Calculate in-sample and out-of-sample accuracy for one window
+        
+        Returns: {window_num, is_accuracy, oos_accuracy, overfit_gap}
+        """
+        
+        # In-sample accuracy (training data)
+        train_correct = sum(1 for score in window['train_scores'] if (score > signal_threshold) or (score < (100 - signal_threshold)))
+        is_accuracy = (train_correct / len(window['train_scores'])) * 100 if window['train_scores'] else 0
+        
+        # Out-of-sample accuracy (test data)
+        test_correct = sum(1 for score in window['test_scores'] if (score > signal_threshold) or (score < (100 - signal_threshold)))
+        oos_accuracy = (test_correct / len(window['test_scores'])) * 100 if window['test_scores'] else 0
+        
+        # Overfit detection
+        overfit_gap = is_accuracy - oos_accuracy
+        
+        return {
+            'window_num': window['window_num'],
+            'in_sample_accuracy': round(is_accuracy, 2),
+            'out_of_sample_accuracy': round(oos_accuracy, 2),
+            'overfit_gap': round(overfit_gap, 2),
+            'overfit_detected': overfit_gap > 15,
+            'train_samples': len(window['train_scores']),
+            'test_samples': len(window['test_scores'])
+        }
+    
+    def run_walk_forward_backtest(self,
+                                 windows: List[Dict],
+                                 backtester_func) -> Dict:
+        """
+        Run complete walk-forward backtest across all windows
+        
+        Calls backtester_func(prices, scores) for each window
+        
+        Returns: {
+            total_windows,
+            avg_is_accuracy,
+            avg_oos_accuracy,
+            consistency,
+            stability_score,
+            timestamp
+        }
+        """
+        
+        window_results = []
+        
+        for window in windows:
+            result = self.calculate_window_accuracy(window)
+            window_results.append(result)
+        
+        if not window_results:
+            return {'error': 'No windows to test'}
+        
+        # Calculate aggregates
+        is_accuracies = [r['in_sample_accuracy'] for r in window_results]
+        oos_accuracies = [r['out_of_sample_accuracy'] for r in window_results]
+        overfit_gaps = [r['overfit_gap'] for r in window_results]
+        
+        avg_is = np.mean(is_accuracies)
+        avg_oos = np.mean(oos_accuracies)
+        
+        # Consistency: low std dev of OOS = consistent
+        oos_std = np.std(oos_accuracies)
+        consistency = max(0, 100 - (oos_std * 5))
+        
+        # Stability: % of windows with acceptable overfit
+        acceptable_overfit = sum(1 for gap in overfit_gaps if gap <= 15)
+        stability = (acceptable_overfit / len(overfit_gaps)) * 100
+        
+        return {
+            'total_windows': len(window_results),
+            'avg_in_sample_accuracy': round(avg_is, 2),
+            'avg_out_of_sample_accuracy': round(avg_oos, 2),
+            'oos_accuracy_std_dev': round(oos_std, 2),
+            'consistency_score': round(consistency, 1),
+            'stability_score': round(stability, 1),
+            'avg_overfit_gap': round(np.mean(overfit_gaps), 2),
+            'window_results': window_results,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'walk_forward_test.py'
+        }
+    
+    def assess_model_generalization(self, wf_result: Dict) -> Dict:
+        """
+        Assess if model generalizes well to unseen data
+        
+        Returns: {generalizes_well, issues, confidence, recommendation}
+        """
+        
+        issues = []
+        confidence = 100
+        
+        avg_oos = wf_result.get('avg_out_of_sample_accuracy', 0)
+        consistency = wf_result.get('consistency_score', 0)
+        stability = wf_result.get('stability_score', 0)
+        
+        # Check OOS accuracy
+        if avg_oos < 55:
+            issues.append(f'Out-of-sample accuracy too low: {avg_oos}%')
+            confidence -= 30
+        elif avg_oos < 60:
+            issues.append(f'Out-of-sample accuracy below target: {avg_oos}%')
+            confidence -= 15
+        
+        # Check consistency
+        if consistency < 60:
+            issues.append(f'Results inconsistent across windows: {consistency}%')
+            confidence -= 20
+        
+        # Check stability (overfit)
+        if stability < 70:
+            issues.append(f'High overfit detected: {stability}% windows acceptable')
+            confidence -= 25
+        
+        generalizes_well = len(issues) == 0 and confidence > 65
+        
+        if generalizes_well:
+            recommendation = 'READY_FOR_LIVE'
+        elif confidence > 50:
+            recommendation = 'NEEDS_TUNING'
+        else:
+            recommendation = 'REQUIRES_REDESIGN'
+        
+        return {
+            'generalizes_well': generalizes_well,
+            'confidence': max(0, confidence),
+            'issues': issues,
+            'recommendation': recommendation,
+            'source': 'walk_forward_test.py'
+        }
+
+if __name__ == "__main__":
+    wft = WalkForwardTest(data_length=504, train_pct=0.70)
+    
+    # Test data
+    prices = [150 + i*0.5 for i in range(504)]
+    scores = [50 + 20*np.sin(i/20) for i in range(504)]
+    
+    windows = wft.split_walk_forward(prices, scores, window_size=252)
+    print(f"\nCreated {len(windows)} walk-forward windows")
+    
+    result = wft.run_walk_forward_backtest(windows, None)
+    print(f"\nWalk-Forward Results:")
+    print(f"  Avg In-Sample: {result.get('avg_in_sample_accuracy', 0)}%")
+    print(f"  Avg Out-of-Sample: {result.get('avg_out_of_sample_accuracy', 0)}%")
+    print(f"  Consistency: {result.get('consistency_score', 0)}")
+

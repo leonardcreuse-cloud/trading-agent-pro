@@ -1,0 +1,184 @@
+﻿import requests
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+
+class ShortInterest:
+    """
+    Short Interest Analysis
+    - Tracks short volume, short interest %, days to cover
+    - Source: FinViz (Tier 2), SEC Short Exempt Data
+    """
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-pro'
+        })
+    
+    def get_short_interest(self, ticker):
+        """
+        Get short interest data from FinViz
+        Returns: {ticker, short_pct, shares_shorted, float_pct, source, source_tier}
+        """
+        
+        try:
+            url = f"https://finviz.com/quote.ashx?t={ticker}"
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                return {
+                    'ticker': ticker,
+                    'short_interest': 'REQUIRES_PARSING',
+                    'source': 'FinViz',
+                    'source_tier': 2,
+                    'confidence': 0.80,
+                    'status': 'REQUIRES_HTML_PARSING'
+                }
+            else:
+                return {
+                    'ticker': ticker,
+                    'error': 'Failed to fetch FinViz',
+                    'source': 'FinViz'
+                }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'FinViz'
+            }
+    
+    def get_short_exempt_data(self, ticker):
+        """
+        Get SEC Short Exempt volume
+        - Source: SEC (Tier 1)
+        - Data updated daily
+        """
+        
+        try:
+            url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={ticker}&type=&dateb=&owner=exclude&count=100&search_text="
+            
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            return {
+                'ticker': ticker,
+                'short_exempt_volume': 'REQUIRES_PARSING',
+                'source': 'SEC',
+                'source_tier': 1,
+                'confidence': 0.95,
+                'status': 'REQUIRES_DATA_EXTRACTION'
+            }
+        
+        except Exception as e:
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'source': 'SEC'
+            }
+    
+    def calculate_short_squeeze_risk(self, short_interest_pct, days_to_cover, price_momentum):
+        """
+        Calculate squeeze risk score (0-100)
+        - High short interest (>20%) + rising stock = HIGH RISK
+        - Low days to cover (<2) = EASY COVER
+        
+        Returns: {risk_score, signal, factors}
+        """
+        
+        risk_score = 0
+        factors = []
+        
+        # Short interest component (0-40 pts)
+        if short_interest_pct is None or short_interest_pct == 'UNAVAILABLE':
+            risk_score += 0
+        else:
+            if short_interest_pct > 25:
+                risk_score += 40
+                factors.append('VERY_HIGH_SHORT_INTEREST')
+            elif short_interest_pct > 15:
+                risk_score += 30
+                factors.append('HIGH_SHORT_INTEREST')
+            elif short_interest_pct > 10:
+                risk_score += 20
+                factors.append('MODERATE_SHORT_INTEREST')
+            else:
+                risk_score += 10
+                factors.append('LOW_SHORT_INTEREST')
+        
+        # Days to cover component (0-40 pts)
+        if days_to_cover is None:
+            risk_score += 0
+        else:
+            if days_to_cover < 1:
+                risk_score += 10
+                factors.append('VERY_EASY_COVER')
+            elif days_to_cover < 3:
+                risk_score += 20
+                factors.append('EASY_COVER')
+            elif days_to_cover < 7:
+                risk_score += 30
+                factors.append('MODERATE_COVER_TIME')
+            else:
+                risk_score += 40
+                factors.append('DIFFICULT_COVER')
+        
+        # Price momentum component (0-20 pts)
+        if price_momentum is None:
+            risk_score += 0
+        else:
+            if price_momentum > 10:
+                risk_score += 20
+                factors.append('STRONG_UPWARD_MOMENTUM')
+            elif price_momentum > 5:
+                risk_score += 10
+                factors.append('MODERATE_UPWARD_MOMENTUM')
+            else:
+                risk_score += 0
+        
+        # Determine signal
+        if risk_score >= 70:
+            signal = 'HIGH_SQUEEZE_RISK'
+        elif risk_score >= 40:
+            signal = 'MODERATE_SQUEEZE_RISK'
+        else:
+            signal = 'LOW_SQUEEZE_RISK'
+        
+        return {
+            'risk_score': risk_score,
+            'max_score': 100,
+            'signal': signal,
+            'factors': factors,
+            'source': 'short_interest.py'
+        }
+    
+    def get_short_volume_trend(self, ticker, days=30):
+        """
+        Track short volume trend over N days
+        Returns: {ticker, avg_short_volume, trend, source}
+        """
+        
+        return {
+            'ticker': ticker,
+            'avg_short_volume': 'REQUIRES_PARSING',
+            'trend': 'REQUIRES_DATA_AGGREGATION',
+            'period_days': days,
+            'source': 'FinViz / SEC',
+            'source_tier': 2,
+            'status': 'PENDING_DATA_SOURCE'
+        }
+
+if __name__ == "__main__":
+    short = ShortInterest()
+    
+    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
+        print(f"\n{ticker} - Short Interest:")
+        
+        si = short.get_short_interest(ticker)
+        print(f"  Status: {si.get('status', 'CHECKING')}")
+        
+        squeeze = short.calculate_short_squeeze_risk(15, 3, 8)
+        print(f"  Squeeze Risk: {squeeze['risk_score']}/100 ({squeeze['signal']})")
+

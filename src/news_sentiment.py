@@ -1,0 +1,71 @@
+﻿#!/usr/bin/env python3
+"""
+News Sentiment - Analyze sentiment from news articles
+"""
+
+class NewsSentiment:
+    """Simple sentiment analysis for news"""
+
+    @staticmethod
+    def analyze_sentiment(text):
+        """Analyze sentiment from text (0-100)"""
+        if not text:
+            return 50
+
+        text_lower = text.lower()
+
+        positive_words = [
+            'bullish', 'surge', 'rally', 'gain', 'growth', 'beat', 'strong',
+            'upgrade', 'buy', 'outperform', 'jump', 'record', 'soar', 'profit',
+            'earnings', 'revenue', 'success', 'innovation', 'leadership', 'positive',
+            'top', 'leader', 'advance', 'up', 'bull', 'rising', 'momentum', 'confidence',
+            'optimistic', 'bullish', 'exceeded', 'outperform', 'buy', 'achieve', 'break',
+            'high', 'increases', 'improved', 'better', 'boost', 'positive'
+        ]
+
+        negative_words = [
+            'bearish', 'plunge', 'crash', 'fall', 'decline', 'miss', 'weak',
+            'downgrade', 'sell', 'underperform', 'drop', 'loss', 'warning',
+            'scandal', 'lawsuit', 'risk', 'concern', 'failed', 'negative',
+            'down', 'bear', 'falling', 'bearish', 'missed', 'slump', 'tumble',
+            'pessimistic', 'worst', 'worse', 'challenge', 'difficult', 'loss',
+            'losses', 'bad', 'poor', 'struggle', 'cut', 'reduced'
+        ]
+
+        positive_count = sum(1 for word in positive_words if word in text_lower)
+        negative_count = sum(1 for word in negative_words if word in text_lower)
+
+        if positive_count == 0 and negative_count == 0:
+            return 50
+
+        score = 50 + (positive_count - negative_count) * 3
+        return max(0, min(100, score))
+
+    @staticmethod
+    def score_sentiment(sentiment_value):
+        """Convert sentiment to trading signal - LINEAR (not step-wise)"""
+        # FIXED: Use sentiment_value directly instead of ignoring it with HOLD/50
+        # Score ranges: 0-100 maps to 0-100 (not quantized to 25/50/75)
+        
+        if sentiment_value >= 65:
+            signal = 'BUY'
+        elif sentiment_value <= 40:
+            signal = 'SELL'
+        else:
+            signal = 'HOLD'
+        
+        # FIXED: Score reflects actual sentiment, not default 50
+        # Linear mapping: sentiment 0-100 -> score 0-100
+        score = round(sentiment_value, 2)
+        
+        return signal, score
+
+
+if __name__ == "__main__":
+    print("[TEST] NewsSentiment")
+    test_text = "Stock surges on bullish earnings beat and strong growth outlook"
+    sentiment = NewsSentiment.analyze_sentiment(test_text)
+    signal, score = NewsSentiment.score_sentiment(sentiment)
+    print(f"  Text: {test_text}")
+    print(f"  Sentiment: {sentiment:.0f}/100")
+    print(f"  Signal: {signal} (Score: {score})")

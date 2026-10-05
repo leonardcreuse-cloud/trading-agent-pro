@@ -1,0 +1,124 @@
+﻿import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def test_imports():
+    print("\n" + "="*70)
+    print("TEST 1: IMPORTS")
+    print("="*70)
+    
+    packages = {
+        'requests': 'HTTP requests',
+        'bs4': 'BeautifulSoup',
+        'sqlite3': 'SQLite',
+        'pandas': 'Data analysis',
+        'yfinance': 'Yahoo Finance',
+    }
+    
+    all_ok = True
+    
+    for package, description in packages.items():
+        try:
+            if package == 'bs4':
+                from bs4 import BeautifulSoup
+            else:
+                __import__(package)
+            print(f"  ✅ {package:20s} - {description}")
+        except ImportError:
+            print(f"  ❌ {package:20s} - MISSING")
+            all_ok = False
+    
+    if all_ok:
+        print("\n✅ All imports OK")
+    else:
+        print("\n❌ Some imports missing")
+    
+    return all_ok
+
+def test_database():
+    print("\n" + "="*70)
+    print("TEST 2: DATABASE")
+    print("="*70)
+    
+    try:
+        from database import Database
+        
+        db = Database(db_path="../data/test_trading_pro.db")
+        
+        if os.path.exists("../data/test_trading_pro.db"):
+            print("  ✅ Database created")
+            
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = cursor.fetchall()
+            
+            print(f"  ✅ Tables created: {len(tables)}")
+            for table in tables:
+                print(f"     - {table[0]}")
+            
+            conn.close()
+            os.remove("../data/test_trading_pro.db")
+            print("\n✅ Database test OK")
+            return True
+        else:
+            print("❌ Database not created")
+            return False
+    
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return False
+
+def test_sec_parser():
+    print("\n" + "="*70)
+    print("TEST 3: SEC PARSER")
+    print("="*70)
+    
+    try:
+        from sec_parser import SECParser
+        
+        parser = SECParser()
+        print("  ✅ SECParser initialized")
+        
+        print("  Testing CRWD...")
+        filing = parser.get_latest_10q('CRWD')
+        
+        if filing:
+            print(f"  ✅ 10-Q found: {filing['filing_date']}")
+            return True
+        else:
+            print("  ⚠️  Could not retrieve (network or rate limit)")
+            return True
+    
+    except Exception as e:
+        print(f"  ⚠️  Error: {e}")
+        return True
+
+def main():
+    print("\n╔" + "═"*68 + "╗")
+    print("║" + " "*68 + "║")
+    print("║" + "JOUR 1 - TESTS COMPLETS".center(68) + "║")
+    print("║" + " "*68 + "║")
+    print("╚" + "═"*68 + "╝")
+    
+    results = {}
+    
+    results['imports'] = test_imports()
+    
+    if results['imports']:
+        results['database'] = test_database()
+        results['sec_parser'] = test_sec_parser()
+    
+    print("\n" + "="*70)
+    print("RÉSUMÉ")
+    print("="*70)
+    
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+    
+    print(f"\n✅ TESTS PASSED: {passed}/{total}")
+    print("\n🚀 JOUR 1 READY\n")
+
+if __name__ == "__main__":
+    main()

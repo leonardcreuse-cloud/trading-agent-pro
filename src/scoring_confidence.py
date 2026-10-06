@@ -6,12 +6,14 @@ Scoring Confidence - Based on real backtest accuracy
 import sqlite3
 from datetime import datetime
 
+from .common import db_path
+
 
 class ScoringConfidence:
     """Score confidence based on backtester accuracy"""
     
     def __init__(self):
-        self.db_path = 'data/trading_pro.db'
+        self.db_path = db_path()
     
     def get_backtest_accuracy(self, ticker):
         """Fetch real backtest accuracy from database"""

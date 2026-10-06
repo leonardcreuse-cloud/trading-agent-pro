@@ -1,8 +1,14 @@
-﻿---
+---
 name: phase3-complete
 description: Phase 3 COMPLETE - Scoring Signal Fixed avec News Engine + Signal Agreement metric
 date: 2026-10-04
 ---
+
+> **CORRECTION (audit, phase P0.1)** — Les affirmations de ce document ne sont pas valides :
+> les fondamentaux étaient codés en dur, le walk-forward ne comparait jamais les signaux aux
+> rendements réels (« READY_FOR_LIVE » sans fondement), et les « P(up) » étaient des fréquences
+> historiques non conditionnelles, mesurées sur la fenêtre même où elles étaient « validées ».
+> Voir docs/CHANGELOG.md et docs/DATA_POLICY.md. Document conservé pour l'historique.
 
 PHASE 3 - RÉSUMÉ FINAL
 

@@ -6,3 +6,6 @@ __pycache__/
 data/*.db
 reports/*.html
 reports/*.json
+.pytest_cache/
+data/
+

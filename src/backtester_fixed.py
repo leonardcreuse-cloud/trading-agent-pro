@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Backtester Fixed - Correct 2-year validation WITHOUT look-ahead bias
 """
@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 
+from .common import db_path
+
 
 class BacktesterFixed:
     """Backtest CORRECTLY - no look-ahead bias, proper train/test split"""
@@ -18,7 +20,7 @@ class BacktesterFixed:
     
     def init_db(self):
         """Initialize backtest results table"""
-        conn = sqlite3.connect('data/trading_pro.db')
+        conn = sqlite3.connect(db_path())
         c = conn.cursor()
         
         c.execute('''CREATE TABLE IF NOT EXISTS backtest_fixed (

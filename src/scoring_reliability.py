@@ -6,12 +6,14 @@ Scoring Reliability - Measure data freshness and conflicts
 import sqlite3
 from datetime import datetime, timedelta
 
+from .common import db_path
+
 
 class ScoringReliability:
     """Score based on data freshness and source agreement"""
     
     def __init__(self):
-        self.db_path = 'data/trading_pro.db'
+        self.db_path = db_path()
     
     def get_data_freshness(self, ticker, module):
         """Check how fresh the data is (0-100 score)"""

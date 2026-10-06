@@ -1,33 +1,53 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-FRED Parser - PRODUCTION VERSION using pandas-datareader
-Direct official data from Federal Reserve Economic Data
+Macro FRED - official Federal Reserve Economic Data via the FRED API
+
+P0.1 changes:
+- pandas_datareader removed (unmaintained, imports distutils which no longer exists
+  in Python 3.12+, so it failed silently). Uses the official FRED REST API directly;
+  requires FRED_API_KEY (free) in .env. Without it, macro data is DATA UNAVAILABLE.
+- CPI is reported as year-over-year inflation computed from the index. The previous
+  version displayed the raw index level (~310) as "CPI Inflation: 310%".
+- Each indicator carries its observation date, unit, series id and retrieval time.
+- Vintages / publication dates (ALFRED) come in phase P0.4.
 """
 
-import pandas as pd
-from datetime import datetime, timedelta
+import os
 import sqlite3
-import sys
+from datetime import date, datetime, timedelta
+
+import requests
+from dotenv import load_dotenv
+
+from .common import db_path, unavailable, utc_now_iso, DATA_UNAVAILABLE
+
+load_dotenv()
+
+FRED_SOURCE = 'FRED (Federal Reserve Bank of St. Louis)'
+
 
 class MacroFRED:
-    """Production FRED parser using pandas-datareader"""
-    
+    """FRED indicators with explicit provenance."""
+
+    API_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+    # name: (series_id, transform, unit)
     INDICATORS = {
-        'CPI': 'CPIAUCSL',              # Consumer Price Index
-        'UNEMPLOYMENT': 'UNRATE',        # Unemployment Rate
-        'FED_RATE': 'FEDFUNDS',         # Federal Funds Rate
-        'T10Y2Y': 'T10Y2Y',             # 10Y-2Y Yield Curve
-        'VIX': 'VIXCLS'                 # VIX Volatility
+        'CPI_YOY': ('CPIAUCSL', 'yoy', '% YoY'),
+        'CORE_CPI_YOY': ('CPILFESL', 'yoy', '% YoY'),
+        'UNEMPLOYMENT': ('UNRATE', 'level', '%'),
+        'FED_FUNDS': ('FEDFUNDS', 'level', '%'),
+        'T10Y2Y': ('T10Y2Y', 'level', 'percentage points'),
+        'VIX': ('VIXCLS', 'level', 'index'),
     }
-    
+
     def __init__(self):
+        self.api_key = os.getenv('FRED_API_KEY', '').strip()
         self.init_db()
-    
+
     def init_db(self):
-        """Initialize SQLite"""
-        conn = sqlite3.connect('data/trading_pro.db')
+        conn = sqlite3.connect(db_path())
         c = conn.cursor()
-        
         c.execute('''CREATE TABLE IF NOT EXISTS macro_data (
             indicator TEXT,
             value REAL,
@@ -37,126 +57,116 @@ class MacroFRED:
             timestamp TEXT,
             PRIMARY KEY (indicator, date)
         )''')
-        
         conn.commit()
         conn.close()
-    
-    def fetch_fred_indicator(self, indicator_name, series_id):
-        """Fetch indicator from FRED"""
+
+    def fetch_observations(self, series_id, years=3):
+        """Return [(date, float)] sorted by date; raises on HTTP/parsing errors."""
+        start = (datetime.now() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
+        response = requests.get(self.API_URL, params={
+            'series_id': series_id, 'api_key': self.api_key, 'file_type': 'json',
+            'observation_start': start}, timeout=15)
+        response.raise_for_status()
+        observations = []
+        for obs in response.json().get('observations', []):
+            if obs.get('value') in (None, '.', ''):
+                continue  # FRED marks missing observations with '.'
+            observations.append((date.fromisoformat(obs['date']), float(obs['value'])))
+        observations.sort()
+        return observations
+
+    @staticmethod
+    def year_over_year(observations):
+        """YoY % change of the latest observation vs the same month one year earlier."""
+        if not observations:
+            return None, None
+        latest_date, latest_value = observations[-1]
+        target = latest_date.replace(year=latest_date.year - 1)
+        previous = dict(observations).get(target)
+        if previous is None or previous == 0:
+            return None, latest_date
+        return round((latest_value / previous - 1) * 100, 2), latest_date
+
+    def fetch_indicator(self, name):
+        series_id, transform, unit = self.INDICATORS[name]
+        url = f"https://fred.stlouisfed.org/series/{series_id}"
+        if not self.api_key:
+            return unavailable(FRED_SOURCE, 'FRED_API_KEY not set', series_id=series_id, url=url)
         try:
-            print(f"  [FRED] Fetching {indicator_name} ({series_id})...")
-            
-            from pandas_datareader import data as web
-            
-            # Fetch last 5 years
-            start = datetime.now() - timedelta(days=365*5)
-            data = web.DataReader(series_id, 'fred', start=start)
-            
-            if data.empty:
-                print(f"  ❌ {indicator_name}: No data")
-                return None
-            
-            # Get latest value
-            latest = data.iloc[-1]
-            latest_date = data.index[-1].strftime('%Y-%m-%d')
-            latest_value = float(latest[series_id])
-            
-            return {
-                'value': latest_value,
-                'date': latest_date,
-                'name': indicator_name
-            }
-        
+            observations = self.fetch_observations(series_id)
         except Exception as e:
-            print(f"  ❌ {indicator_name}: {str(e)}")
-            return None
-    
-    def save_to_db(self, indicator, value, date):
-        """Save to SQLite"""
+            return unavailable(FRED_SOURCE, f"{type(e).__name__}: {e}", series_id=series_id, url=url)
+
+        if transform == 'yoy':
+            value, obs_date = self.year_over_year(observations)
+        elif observations:
+            obs_date, value = observations[-1]
+        else:
+            value, obs_date = None, None
+
+        if value is None:
+            return unavailable(FRED_SOURCE, 'insufficient observations', series_id=series_id, url=url)
+
+        return {
+            'status': 'OK',
+            'value': value,
+            'unit': unit,
+            'observation_date': obs_date.isoformat(),
+            'series_id': series_id,
+            'transform': transform,
+            'source': FRED_SOURCE,
+            'url': url,
+            'retrieved_at': utc_now_iso(),
+        }
+
+    def save_to_db(self, indicator, value, obs_date):
         try:
-            conn = sqlite3.connect('data/trading_pro.db')
+            conn = sqlite3.connect(db_path())
             c = conn.cursor()
-            
-            c.execute('''INSERT OR REPLACE INTO macro_data 
+            c.execute('''INSERT OR REPLACE INTO macro_data
                 (indicator, value, date, source, confidence, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?)''',
-                (indicator, value, date, 'FRED', 99, datetime.now().isoformat()))
-            
+                      (indicator, value, obs_date, FRED_SOURCE, None, utc_now_iso()))
             conn.commit()
             conn.close()
-            return True
-        except Exception as e:
-            print(f"  [DB Error] {str(e)}")
-            return False
-    
-    def interpret_data(self, indicator, value):
-        """Interpret macro indicators"""
-        interpretations = {
-            'CPI': lambda v: "✓ Normal" if 2 < v < 4 else ("⚠️ High inflation" if v >= 4 else "✓ Low"),
-            'UNEMPLOYMENT': lambda v: "✓ Good" if v < 4.5 else ("⚠️ Rising" if v > 5.5 else "⚠️ Moderate"),
-            'FED_RATE': lambda v: f"Current rate: {v:.2f}%",
-            'T10Y2Y': lambda v: "⚠️ INVERTED" if v < 0 else ("⚠️ FLAT" if v < 0.5 else "✓ NORMAL"),
-            'VIX': lambda v: "✓ Low volatility" if v < 15 else ("⚠️ Moderate" if v < 25 else "🔴 High fear")
+        except sqlite3.Error as e:
+            print(f"  [DB Error] {e}")
+
+    @staticmethod
+    def interpret_data(indicator, value):
+        """Descriptive labels only (no trading signal)."""
+        rules = {
+            'CPI_YOY': lambda v: "above 2% target" if v > 2.5 else "near/below 2% target",
+            'CORE_CPI_YOY': lambda v: "above 2% target" if v > 2.5 else "near/below 2% target",
+            'T10Y2Y': lambda v: "inverted" if v < 0 else ("flat" if v < 0.5 else "positive slope"),
+            'VIX': lambda v: "low" if v < 15 else ("moderate" if v < 25 else "high"),
         }
-        
-        if indicator in interpretations:
-            return interpretations[indicator](value)
-        return ""
-    
+        return rules[indicator](value) if indicator in rules else ""
+
     def run(self):
-        """Full macro analysis from Federal Reserve"""
-        print("\n[MACRO ANALYSIS - FEDERAL RESERVE OFFICIAL DATA]")
+        print("\n[MACRO - FRED]")
         print("=" * 75)
-        
-        results = {}
-        
-        for indicator_name, series_id in self.INDICATORS.items():
-            data = self.fetch_fred_indicator(indicator_name, series_id)
-            
-            if data:
-                value = data['value']
-                date = data['date']
-                
-                # Save to DB
-                self.save_to_db(indicator_name, value, date)
-                
-                # Interpret
-                interpretation = self.interpret_data(indicator_name, value)
-                
-                # Display
-                print(f"  ✓ {indicator_name:20} {value:8.2f} ({date}) {interpretation}")
-                results[indicator_name] = value
+        indicators = {}
+        for name in self.INDICATORS:
+            data = self.fetch_indicator(name)
+            indicators[name] = data
+            if data['status'] == 'OK':
+                self.save_to_db(name, data['value'], data['observation_date'])
+                print(f"  {name:14} {data['value']:8.2f} {data['unit']:18} "
+                      f"(obs {data['observation_date']}) {self.interpret_data(name, data['value'])}")
             else:
-                results[indicator_name] = None
-        
-        print("\n" + "=" * 75)
-        print("✅ MACRO DATA SUMMARY (OFFICIAL FEDERAL RESERVE):")
-        
-        if results['CPI']:
-            print(f"   CPI Inflation:          {results['CPI']:.2f}%")
-        if results['UNEMPLOYMENT']:
-            print(f"   Unemployment Rate:      {results['UNEMPLOYMENT']:.2f}%")
-        if results['FED_RATE']:
-            print(f"   Federal Funds Rate:     {results['FED_RATE']:.2f}%")
-        if results['T10Y2Y']:
-            print(f"   Yield Curve (10Y-2Y):   {results['T10Y2Y']:.2f}%")
-        if results['VIX']:
-            print(f"   VIX Volatility Index:   {results['VIX']:.2f}")
-        
+                print(f"  {name:14} {DATA_UNAVAILABLE} ({data['reason']})")
         print("=" * 75)
-        
+
+        n_ok = sum(1 for d in indicators.values() if d['status'] == 'OK')
         return {
-            'cpi_inflation': results['CPI'],
-            'unemployment_rate': results['UNEMPLOYMENT'],
-            'federal_funds_rate': results['FED_RATE'],
-            'yield_curve_10y2y': results['T10Y2Y'],
-            'vix_volatility': results['VIX'],
-            'source': 'FRED (Federal Reserve)',
-            'confidence': 99,
-            'timestamp': datetime.now().isoformat()
+            'indicators': indicators,
+            'coverage': f"{n_ok}/{len(indicators)}",
+            'status': 'OK' if n_ok else DATA_UNAVAILABLE,
+            'source': FRED_SOURCE,
+            'retrieved_at': utc_now_iso(),
         }
 
 
 if __name__ == "__main__":
-    macro = MacroFRED()
-    macro.run()
+    MacroFRED().run()

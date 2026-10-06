@@ -1,11 +1,17 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Price Technical - Real technical analysis with RSI, MACD, Bollinger Bands
+Price Technical - Technical analysis with RSI, MACD, Bollinger Bands
+
+P0.1: when prices cannot be obtained or indicators are NaN, the module returns
+technical_score=None / signal=None with status DATA UNAVAILABLE instead of a
+fabricated neutral score (50 / HOLD). Hardcoded 'confidence' constants removed.
+Scores are heuristic (not calibrated); continuous features come in phase P1.3.
 """
 
 import yfinance as yf
 from datetime import datetime, timedelta
 from .indicators import Indicators
+from .common import close_series, unavailable, utc_now_iso
 import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
@@ -16,19 +22,33 @@ class PriceTechnical:
 
     def __init__(self):
         self.indicators = Indicators()
+        self.last_error = None
+        self.last_price_date = None
+
+    def _unavailable(self, ticker, reason):
+        result = unavailable('yfinance', reason)
+        result.update({'ticker': ticker, 'signal': None, 'technical_score': None,
+                       'components': {}})
+        return result
 
     def fetch_price_data(self, ticker):
         """Fetch 6 months price data"""
         try:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=180)
-            data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-
-            if data.empty or len(data) < 70:
+            data = yf.download(ticker, start=start_date, end=end_date, progress=False,
+                               auto_adjust=True)
+            if data is None or data.empty:
+                self.last_error = 'yfinance returned no data'
                 return None
-
-            return data['Close'].values
-        except:
+            close = close_series(data)
+            if len(close) < 70:
+                self.last_error = f'only {len(close)} price observations (70 required)'
+                return None
+            self.last_price_date = str(close.index[-1].date())
+            return close.values
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
             return None
 
     def score_rsi(self, rsi_value):
@@ -73,17 +93,12 @@ class PriceTechnical:
         """Complete technical analysis"""
         print(f"  [TECHNICAL] {ticker}...")
 
+        self.last_error = None
+        self.last_price_date = None
         prices = self.fetch_price_data(ticker)
 
         if prices is None or len(prices) < 70:
-            return {
-                'ticker': ticker,
-                'signal': 'HOLD',
-                'technical_score': 50,
-                'components': {},
-                'timestamp': datetime.now().isoformat(),
-                'confidence': 40
-            }
+            return self._unavailable(ticker, self.last_error or 'insufficient price data')
 
         try:
             # Use 150 days (enough for Bollinger Bands + MACD + RSI)
@@ -105,14 +120,7 @@ class PriceTechnical:
 
             # Check NaN
             if np.isnan(rsi_val) or np.isnan(macd_hist) or np.isnan(bb_upper):
-                return {
-                    'ticker': ticker,
-                    'signal': 'HOLD',
-                    'technical_score': 50,
-                    'components': {},
-                    'timestamp': datetime.now().isoformat(),
-                    'confidence': 40
-                }
+                return self._unavailable(ticker, 'indicator computation returned NaN')
 
             # Score each indicator
             rsi_score, rsi_signal = self.score_rsi(rsi_val)
@@ -139,19 +147,14 @@ class PriceTechnical:
                     'macd': {'histogram': round(macd_hist, 4), 'signal': macd_signal, 'score': macd_score},
                     'bollinger': {'price': round(price_last, 2), 'signal': bb_signal, 'score': bb_score}
                 },
-                'timestamp': datetime.now().isoformat(),
-                'source': 'Real Technical Indicators (RSI, MACD, BB)',
-                'confidence': 85
+                'status': 'OK',
+                'last_price_date': self.last_price_date,
+                'score_type': 'heuristic 0-100 score, not a probability',
+                'timestamp': utc_now_iso(),
+                'source': 'yfinance prices; RSI/MACD/Bollinger computed locally'
             }
-        except Exception as e:
-            return {
-                'ticker': ticker,
-                'signal': 'HOLD',
-                'technical_score': 50,
-                'components': {},
-                'timestamp': datetime.now().isoformat(),
-                'confidence': 40
-            }
+        except Exception as e:  # noqa: BLE001 - reported, not hidden
+            return self._unavailable(ticker, f'indicator computation failed: {type(e).__name__}: {e}')
 
 
 if __name__ == "__main__":

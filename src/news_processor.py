@@ -1,108 +1,115 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-News Processor - Fetch and analyze news sentiment
+News Processor - Fetch and analyze news sentiment (NewsAPI aggregator)
+
+P0.1 changes:
+- No key / API error / zero articles -> news_score=None with status DATA UNAVAILABLE
+  (previously a neutral 50 / HOLD was produced from no data at all).
+- Query uses the company name from config (e.g. "Cloudflare") instead of ambiguous
+  tickers such as "NET" or "MP".
+- publishedAt range of the analysed articles is reported for traceability.
+- NewsAPI is an aggregator: it is never sufficient proof of an event on its own.
+  Deduplication, source validation and event classification come in phase P2.2.
 """
 
 import os
+
 import requests
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
+from .common import company_name, unavailable, utc_now_iso
 from .news_sentiment import NewsSentiment
 
 load_dotenv()
+
+NEWS_SOURCE = 'NewsAPI (aggregator)'
 
 
 class NewsProcessor:
     """Analyze news sentiment for stocks"""
 
+    URL = "https://newsapi.org/v2/everything"
+
     def __init__(self):
         self.sentiment = NewsSentiment()
-        self.newsapi_key = os.getenv('NEWSAPI_KEY', 'demo')
+        self.newsapi_key = os.getenv('NEWSAPI_KEY', '').strip()
 
     def fetch_news(self, ticker):
-        """Fetch recent news from NewsAPI"""
-        if self.newsapi_key == 'demo':
-            return {
-                'articles': [],
-                'totalResults': 0
-            }
+        """
+        Fetch recent articles. Returns {'articles': [...], 'error': str|None, 'query': str}.
+        """
+        query = f'"{company_name(ticker)}"'
+        if not self.newsapi_key or self.newsapi_key == 'demo':
+            return {'articles': [], 'error': 'NEWSAPI_KEY not set', 'query': query}
 
         try:
-            url = f"https://newsapi.org/v2/everything?q={ticker}&sortBy=publishedAt&language=en&apiKey={self.newsapi_key}"
-            response = requests.get(url, timeout=10)
-
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'articles': data.get('articles', []),
-                    'totalResults': data.get('totalResults', 0)
-                }
-            else:
-                print(f"  Warning NewsAPI error {response.status_code}")
-                return {
-                    'articles': [],
-                    'totalResults': 0
-                }
+            response = requests.get(
+                self.URL,
+                params={'q': query, 'sortBy': 'publishedAt', 'language': 'en',
+                        'pageSize': 100, 'apiKey': self.newsapi_key},
+                timeout=10)
+            if response.status_code != 200:
+                return {'articles': [], 'error': f'NewsAPI HTTP {response.status_code}',
+                        'query': query}
+            data = response.json()
+            return {'articles': data.get('articles', []), 'error': None, 'query': query}
         except Exception as e:
-            print(f"  Warning NewsAPI fetch failed: {e}")
-            return {
-                'articles': [],
-                'totalResults': 0
-            }
+            return {'articles': [], 'error': f"{type(e).__name__}: {e}", 'query': query}
 
     def analyze_articles(self, articles):
-        """Analyze sentiment from articles"""
+        """Average lexicon sentiment over articles (None if no articles)."""
         if not articles:
-            return {
-                'avg_sentiment': 50,
-                'article_count': 0,
-                'sentiments': []
-            }
+            return {'avg_sentiment': None, 'article_count': 0, 'sentiments': []}
 
         sentiments = []
         for article in articles:
-            title = article.get('title', '')
-            description = article.get('description', '')
-            text = f"{title} {description}"
-
-            sentiment = self.sentiment.analyze_sentiment(text)
-            sentiments.append(sentiment)
-
-        avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 50
+            text = f"{article.get('title') or ''} {article.get('description') or ''}"
+            sentiments.append(self.sentiment.analyze_sentiment(text))
 
         return {
-            'avg_sentiment': round(avg_sentiment, 2),
+            'avg_sentiment': round(sum(sentiments) / len(sentiments), 2),
             'article_count': len(articles),
-            'sentiments': sentiments
+            'sentiments': sentiments,
         }
 
     def analyze(self, ticker):
-        """Complete news analysis"""
         print(f"  [NEWS] {ticker}...")
 
         news_data = self.fetch_news(ticker)
-        articles = news_data.get('articles', [])
+        articles = news_data['articles']
+
+        if not articles:
+            reason = news_data['error'] or 'no articles returned'
+            result = unavailable(NEWS_SOURCE, reason)
+            result.update({'ticker': ticker, 'signal': None, 'news_score': None,
+                           'avg_sentiment': None, 'articles_count': 0,
+                           'query': news_data['query']})
+            return result
 
         analysis = self.analyze_articles(articles)
-        avg_sentiment = analysis['avg_sentiment']
-
-        signal, score = self.sentiment.score_sentiment(avg_sentiment)
+        signal, score = self.sentiment.score_sentiment(analysis['avg_sentiment'])
+        published = sorted(a['publishedAt'] for a in articles if a.get('publishedAt'))
 
         return {
             'ticker': ticker,
+            'status': 'OK',
             'signal': signal,
             'news_score': score,
-            'avg_sentiment': avg_sentiment,
+            'avg_sentiment': analysis['avg_sentiment'],
             'articles_count': analysis['article_count'],
-            'timestamp': datetime.now().isoformat(),
-            'source': 'NewsAPI (Sentiment Analysis)',
-            'confidence': 70 if articles else 40
+            'query': news_data['query'],
+            'oldest_article_published_at': published[0] if published else None,
+            'newest_article_published_at': published[-1] if published else None,
+            'method': 'word-level lexicon count (naive, not deduplicated); replaced in P2.2',
+            'score_type': 'heuristic 0-100 score, not a probability',
+            'timestamp': utc_now_iso(),
+            'source': NEWS_SOURCE,
         }
 
 
 if __name__ == "__main__":
-    print("[TEST] NewsProcessor")
-    np = NewsProcessor()
-    for ticker in ['CRWD', 'NET']:
-        result = np.analyze(ticker)
-        print(f"  OK {ticker}: {result['signal']}")
+    from .common import tickers
+    processor = NewsProcessor()
+    for t in tickers():
+        r = processor.analyze(t)
+        print(f"  {t}: {r.get('status')} {r.get('signal')} ({r.get('articles_count')} articles)")

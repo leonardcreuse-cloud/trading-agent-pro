@@ -1,30 +1,27 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Insider Tracker - SEC Form 4 Downloader
-Official insider transactions for bullish/bearish signals
+Insider Tracker - SEC Form 4
+
+P0.1: the previous version always returned a NEUTRAL signal with zero buys/sells
+without reading any filing. Form 4 transactions are not parsed yet, so the module
+now reports DATA UNAVAILABLE. Real parsing (transaction codes P/S/M/A) is phase P0.3.
 """
 
 import sqlite3
 
+from .common import db_path, unavailable
+
 
 class InsiderTracker:
     """Track insider transactions from SEC Form 4"""
-    
-    CIKS = {
-        'CRWD': '1844815',
-        'NET': '1477085',
-        'RKLB': '1784267',
-        'MP': '1674999'
-    }
-    
+
     def __init__(self):
         self.init_db()
-    
+
     def init_db(self):
         """Initialize SQLite for insider data"""
-        conn = sqlite3.connect('data/trading_pro.db')
+        conn = sqlite3.connect(db_path())
         c = conn.cursor()
-        
         c.execute('''CREATE TABLE IF NOT EXISTS insider_transactions (
             ticker TEXT,
             insider_name TEXT,
@@ -39,32 +36,28 @@ class InsiderTracker:
             confidence INTEGER,
             PRIMARY KEY (ticker, insider_name, date, transaction_type)
         )''')
-        
         conn.commit()
         conn.close()
-    
+
     def run(self, ticker):
-        """Complete insider analysis for ticker"""
+        """Insider analysis for ticker: not implemented, reported as unavailable."""
         print(f"\n[INSIDER TRACKER] {ticker}")
         print("=" * 60)
-        
-        # Placeholder - Form 4 parsing coming in Jour 3
-        print(f"  [SEC] Form 4 analysis (0 filings in 90d)")
-        print(f"  ✓ Insider signal: NEUTRAL (no filings)")
+        print("  Form 4 transaction parsing not implemented yet -> DATA UNAVAILABLE")
         print("=" * 60)
-        
-        return {
+
+        result = unavailable('SEC Form 4', 'Form 4 transaction parsing not implemented yet (phase P0.3)')
+        result.update({
             'ticker': ticker,
-            'form4_90d': 0,
-            'insider_buys': 0,
-            'insider_sells': 0,
-            'signal': 'NEUTRAL',
-            'source': 'SEC Form 4',
-            'confidence': 85
-        }
+            'insider_buys': None,
+            'insider_sells': None,
+            'signal': None,
+        })
+        return result
 
 
 if __name__ == "__main__":
+    from .common import tickers
     tracker = InsiderTracker()
-    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
-        tracker.run(ticker)
+    for t in tickers():
+        tracker.run(t)

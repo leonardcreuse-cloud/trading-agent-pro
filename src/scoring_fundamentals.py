@@ -1,153 +1,111 @@
 #!/usr/bin/env python3
 """
-Scoring Fundamentals - Real calculations from SEC data
+Scoring Fundamentals
+
+P0.1 changes:
+- Missing inputs produce None, never a neutral 50.
+- Revenue and debt-to-equity are DATA UNAVAILABLE until XBRL ingestion (phase P0.3),
+  so the fundamental score is currently unavailable.
+- The Form 4 "insider score" was removed: it treated MORE Form 4 filings as bullish,
+  but for these companies Form 4s are mostly sales and RSU vesting. Insider activity
+  will come back once transactions are parsed (buy vs sell).
+- Thresholds remain heuristic (not calibrated) and will be replaced in phase P1.
 """
 
+
+from .common import DATA_UNAVAILABLE, is_missing, utc_now_iso
 from .sec_parser import SECParser
-from datetime import datetime
 
 
 class ScoringFundamentals:
-    """Score ticker based on real SEC financial fundamentals"""
-    
-    def __init__(self):
-        self.sec_parser = SECParser()
-    
+    """Heuristic fundamental score from SEC data (None when inputs are missing)."""
+
+    WEIGHTS = {'revenue_scale': 0.55, 'leverage': 0.45}
+
+    def __init__(self, sec_parser=None):
+        self.sec_parser = sec_parser or SECParser()
+
     def get_sec_data(self, ticker):
-        """Fetch SEC data directly from SEC EDGAR API"""
-        try:
-            revenue = self.sec_parser.fetch_revenue(ticker)
-            de_ratio = self.sec_parser.fetch_debt_equity(ticker)
-            form4s = self.sec_parser.fetch_form4_count(ticker)
-            
-            return {
-                'revenue': revenue,
-                'debt_to_equity': de_ratio,
-                'form4_count': form4s
-            }
-        except Exception as e:
-            print(f"  ⚠️  Error fetching SEC data: {str(e)}")
+        return {
+            'revenue': self.sec_parser.fetch_revenue(ticker),
+            'debt_to_equity': self.sec_parser.fetch_debt_equity(ticker),
+        }
+
+    @staticmethod
+    def calculate_revenue_scale_score(revenue):
+        """Heuristic score on revenue size (not profitability). None if missing."""
+        if is_missing(revenue):
             return None
-    
-    def calculate_profitability_score(self, revenue):
-        """Score based on revenue size"""
-        if not revenue:
-            return 50
-        
-        # Larger revenue = stronger financials
-        if revenue > 1000000000:  # > $1B
+        if revenue > 1_000_000_000:
             return 80
-        elif revenue > 500000000:  # > $500M
+        if revenue > 500_000_000:
             return 70
-        elif revenue > 200000000:  # > $200M
+        if revenue > 200_000_000:
             return 60
-        else:
-            return 45
-    
-    def calculate_leverage_score(self, de_ratio):
-        """Score based on debt-to-equity ratio"""
-        if de_ratio is None:
-            return 50
-        
-        # Lower D/E = lower risk = higher score
+        return 45
+
+    @staticmethod
+    def calculate_leverage_score(de_ratio):
+        """Heuristic score on debt-to-equity. None if missing."""
+        if is_missing(de_ratio):
+            return None
         if de_ratio < 0.5:
             return 90
-        elif de_ratio < 1.0:
+        if de_ratio < 1.0:
             return 75
-        elif de_ratio < 1.5:
+        if de_ratio < 1.5:
             return 60
-        elif de_ratio < 2.0:
+        if de_ratio < 2.0:
             return 45
-        else:
-            return 30
-    
-    def calculate_insider_score(self, form4_count):
-        """Score based on insider activity"""
-        if form4_count is None:
-            return 50
-        
-        # Healthy insider activity = confidence
-        if form4_count > 10:
-            return 75
-        elif form4_count > 5:
-            return 65
-        elif form4_count > 2:
-            return 55
-        else:
-            return 40
-    
-    def calculate_composite_score(self, profitability, leverage, insider):
-        """Weighted composite score"""
-        weights = {
-            'profitability': 0.40,
-            'leverage': 0.35,
-            'insider': 0.25
-        }
-        
-        score = (profitability * weights['profitability'] +
-                leverage * weights['leverage'] +
-                insider * weights['insider'])
-        
-        return round(score, 2)
-    
+        return 30
+
+    def calculate_composite_score(self, components):
+        """Weighted average over AVAILABLE components only; None if all missing."""
+        available = {k: v for k, v in components.items() if v is not None}
+        if not available:
+            return None
+        total_weight = sum(self.WEIGHTS[k] for k in available)
+        return round(sum(v * self.WEIGHTS[k] for k, v in available.items()) / total_weight, 2)
+
     def analyze(self, ticker):
-        """Complete fundamental analysis"""
         print(f"  [FUNDAMENTALS] {ticker}...")
-        
         sec_data = self.get_sec_data(ticker)
-        
-        if not sec_data:
-            return {
-                'ticker': ticker,
-                'fundamental_score': 50,
-                'signal': 'HOLD',
-                'error': 'No SEC data available',
-                'confidence': 20
-            }
-        
-        # Extract financial metrics
-        revenue = sec_data.get('revenue', 0)
-        de_ratio = sec_data.get('debt_to_equity', 0)
-        form4_count = sec_data.get('form4_count', 0)
-        
-        # Calculate component scores
-        prof_score = self.calculate_profitability_score(revenue)
-        lev_score = self.calculate_leverage_score(de_ratio)
-        insider_score = self.calculate_insider_score(form4_count)
-        
-        # Composite score
-        composite = self.calculate_composite_score(prof_score, lev_score, insider_score)
-        
-        # Signal
-        if composite >= 70:
+
+        components = {
+            'revenue_scale': self.calculate_revenue_scale_score(sec_data['revenue']),
+            'leverage': self.calculate_leverage_score(sec_data['debt_to_equity']),
+        }
+        composite = self.calculate_composite_score(components)
+        available = [k for k, v in components.items() if v is not None]
+
+        if composite is None:
+            signal = None
+        elif composite >= 70:
             signal = 'BUY'
         elif composite <= 40:
             signal = 'SELL'
         else:
             signal = 'HOLD'
-        
+
         return {
             'ticker': ticker,
             'fundamental_score': composite,
             'signal': signal,
-            'metrics': {
-                'profitability_score': prof_score,
-                'leverage_score': lev_score,
-                'insider_score': insider_score
-            },
-            'financials': {
-                'revenue_usd': revenue,
-                'debt_to_equity': round(de_ratio, 2) if de_ratio else 0,
-                'form4_90d': form4_count
-            },
-            'timestamp': datetime.now().isoformat(),
-            'source': 'SEC EDGAR Real Data',
-            'confidence': 85
+            'status': 'OK' if composite is not None else DATA_UNAVAILABLE,
+            'coverage': f"{len(available)}/{len(components)}",
+            'components': components,
+            'inputs': sec_data,
+            'score_type': 'heuristic 0-100 score, not a probability',
+            'reason': None if composite is not None else
+                      'Revenue and debt-to-equity not available (SEC XBRL ingestion planned P0.3)',
+            'timestamp': utc_now_iso(),
+            'source': 'SEC EDGAR',
         }
 
 
 if __name__ == "__main__":
+    from .common import tickers
     fund = ScoringFundamentals()
-    for ticker in ['CRWD', 'NET', 'RKLB', 'MP']:
-        result = fund.analyze(ticker)
-        print(f"    ✓ {ticker}: Score={result['fundamental_score']}, Signal={result['signal']}")
+    for t in tickers():
+        r = fund.analyze(t)
+        print(f"    {t}: score={r['fundamental_score']}, status={r['status']}")

@@ -1,7 +1,16 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 News Sentiment - Analyze sentiment from news articles
+
+P0.1: words are matched as whole tokens. Substring matching made 'up' match
+'update'/'supply'/'group' and 'cut' match 'executive', biasing the score.
+'earnings' and 'revenue' were removed from the positive list (neutral topic words),
+and 'risk' from the negative list (boilerplate). Still a naive lexicon (phase P2.2).
 """
+
+import re
+
+TOKEN_RE = re.compile(r"[a-z]+")
 
 class NewsSentiment:
     """Simple sentiment analysis for news"""
@@ -12,12 +21,12 @@ class NewsSentiment:
         if not text:
             return 50
 
-        text_lower = text.lower()
+        tokens = set(TOKEN_RE.findall(text.lower()))
 
         positive_words = [
             'bullish', 'surge', 'rally', 'gain', 'growth', 'beat', 'strong',
             'upgrade', 'buy', 'outperform', 'jump', 'record', 'soar', 'profit',
-            'earnings', 'revenue', 'success', 'innovation', 'leadership', 'positive',
+            'success', 'innovation', 'leadership', 'positive',
             'top', 'leader', 'advance', 'up', 'bull', 'rising', 'momentum', 'confidence',
             'optimistic', 'bullish', 'exceeded', 'outperform', 'buy', 'achieve', 'break',
             'high', 'increases', 'improved', 'better', 'boost', 'positive'
@@ -26,14 +35,14 @@ class NewsSentiment:
         negative_words = [
             'bearish', 'plunge', 'crash', 'fall', 'decline', 'miss', 'weak',
             'downgrade', 'sell', 'underperform', 'drop', 'loss', 'warning',
-            'scandal', 'lawsuit', 'risk', 'concern', 'failed', 'negative',
+            'scandal', 'lawsuit', 'concern', 'failed', 'negative',
             'down', 'bear', 'falling', 'bearish', 'missed', 'slump', 'tumble',
             'pessimistic', 'worst', 'worse', 'challenge', 'difficult', 'loss',
             'losses', 'bad', 'poor', 'struggle', 'cut', 'reduced'
         ]
 
-        positive_count = sum(1 for word in positive_words if word in text_lower)
-        negative_count = sum(1 for word in negative_words if word in text_lower)
+        positive_count = len(tokens & set(positive_words))
+        negative_count = len(tokens & set(negative_words))
 
         if positive_count == 0 and negative_count == 0:
             return 50

@@ -1,193 +1,221 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Report Generator - Create HTML and JSON reports
+Report Generator - HTML and text reports
+
+P0.1 changes:
+- Missing values are rendered as "N/A — source unavailable", never as a number;
+  the report no longer crashes on None (previous `${revenue:,}` formatting).
+- Data availability table per ticker and source.
+- Historical base rates are labelled as such (not predictions); the provisional
+  backtest is shown with its majority-class baseline and warning.
+- Values are HTML-escaped; emoji mojibake removed.
 """
 
-from datetime import datetime
+from html import escape
+
+from .common import DATA_UNAVAILABLE, NA_DISPLAY, display, utc_now_iso
+
+STYLE = """
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; color: #222; }
+.container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; }
+h1 { border-bottom: 3px solid #0066cc; padding-bottom: 10px; }
+h2 { color: #0066cc; margin-top: 30px; }
+.ticker-section { margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #0066cc; }
+.warning { background: #fff4e5; border-left: 4px solid #e69500; padding: 10px; margin: 10px 0; }
+.na { color: #999; font-style: italic; }
+.ok { color: #1a7f37; } .bad { color: #b42318; } .prov { color: #b26b00; }
+table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #ddd; vertical-align: top; }
+th { background: #0066cc; color: #fff; }
+.small { color: #666; font-size: 0.9em; }
+"""
+
+
+def cell(value, fmt=None, suffix=''):
+    """HTML cell content; missing values get the N/A marker."""
+    text = display(value, fmt, suffix)
+    if text == NA_DISPLAY:
+        return f'<span class="na">{escape(NA_DISPLAY)}</span>'
+    return escape(text)
+
+
+def status_cell(status):
+    css = {'OK': 'ok', 'PROVISIONAL': 'prov'}.get(status, 'bad')
+    return f'<span class="{css}">{escape(str(status))}</span>'
 
 
 class ReportGenerator:
-    """Generate analysis reports in HTML and JSON"""
-    
-    def generate_html(self, all_results):
-        """Generate comprehensive HTML report"""
-        html = """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading Agent Pro - Daily Analysis</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
-        h1 { color: #333; border-bottom: 3px solid #0066cc; padding-bottom: 10px; }
-        h2 { color: #0066cc; margin-top: 30px; }
-        .ticker-section { margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #0066cc; }
-        .metric { margin: 10px 0; padding: 10px; background: white; border-radius: 4px; }
-        .metric-label { font-weight: bold; color: #333; }
-        .metric-value { color: #0066cc; font-size: 1.1em; }
-        .buy { color: green; font-weight: bold; }
-        .sell { color: red; font-weight: bold; }
-        .hold { color: orange; font-weight: bold; }
-        .timestamp { color: #666; font-size: 0.9em; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #0066cc; color: white; }
-        tr:hover { background: #f5f5f5; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>ðŸš€ Trading Agent Pro - Daily Analysis Report</h1>
-        <p class="timestamp">Generated: """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
-"""
-        
-        # Summary table
-        html += """
-        <h2>Summary</h2>
-        <table>
-            <tr>
-                <th>Ticker</th>
-                <th>Signal</th>
-                <th>Combined Score</th>
-                <th>Signal Agreement</th>
-                <th>Technical</th>
-                <th>Fundamentals</th>
-                <th>News</th>
-            </tr>
-"""
-        
+    """Generate analysis reports in HTML and text"""
+
+    def generate_html(self, all_results, run_started=None):
+        parts = [
+            '<!DOCTYPE html><html><head><meta charset="UTF-8">',
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+            f'<title>Trading Agent Pro - Analysis</title><style>{STYLE}</style></head><body>',
+            '<div class="container"><h1>Trading Agent Pro - Analysis Report</h1>',
+            f'<p class="small">Run started: {escape(run_started or "")} | '
+            f'Generated: {escape(utc_now_iso())} (UTC)</p>',
+            '<div class="warning">Scores are heuristic (0-100) and not probabilities. '
+            'No calibrated prediction model exists yet (phase P1). Values marked '
+            f'"{escape(NA_DISPLAY)}" could not be obtained and were not replaced.</div>',
+            self._summary_table(all_results),
+            self._availability_table(all_results),
+        ]
         for result in all_results:
-            if 'error' in result:
-                html += f"<tr><td>{result['ticker']}</td><td colspan='6'>ERROR: {result['error']}</td></tr>"
-                continue
-            
-            signal_data = result.get('modules', {}).get('signal', {})
-            signal = signal_data.get('signal', 'N/A')
-            score = signal_data.get('combined_score', 'N/A')
-            signal_agreement = signal_data.get('signal_agreement', 'N/A')
-            
-            tech = result.get('modules', {}).get('technical', {}).get('signal', 'N/A')
-            fund = result.get('modules', {}).get('fundamentals', {}).get('signal', 'N/A')
-            news = result.get('modules', {}).get('news', {}).get('signal', 'N/A')
-            
-            signal_class = 'buy' if signal == 'BUY' else ('sell' if signal == 'SELL' else 'hold')
-            
-            html += f"""
-            <tr>
-                <td><strong>{result['ticker']}</strong></td>
-                <td class="{signal_class}">{signal}</td>
-                <td>{score}</td>
-                <td>{signal_agreement}%</td>
-                <td>{tech}</td>
-                <td>{fund}</td>
-                <td>{news}</td>
-            </tr>
-"""
-        
-        html += "</table>"
-        
-        # Detailed sections
-        for result in all_results:
-            if 'error' in result:
-                continue
-            
-            ticker = result['ticker']
-            modules = result.get('modules', {})
-            
-            html += f"""
-        <div class="ticker-section">
-            <h2>{ticker} - Detailed Analysis</h2>
-"""
-            
-            # SEC Data
-            sec = modules.get('sec', {})
-            html += f"""
-            <h3>SEC Data</h3>
-            <div class="metric">
-                <span class="metric-label">Revenue:</span>
-                <span class="metric-value">${sec.get('revenue', 'N/A'):,}</span>
-            </div>
-            <div class="metric">
-                <span class="metric-label">D/E Ratio:</span>
-                <span class="metric-value">{sec.get('debt_to_equity', 'N/A')}</span>
-            </div>
-"""
-            
-            # Technical
-            tech = modules.get('technical', {})
-            html += f"""
-            <h3>Technical Analysis</h3>
-            <div class="metric">
-                <span class="metric-label">Signal:</span>
-                <span class="metric-value">{tech.get('signal', 'N/A')}</span>
-            </div>
-            <div class="metric">
-                <span class="metric-label">RSI:</span>
-                <span class="metric-value">{tech.get('indicators', {}).get('rsi', 'N/A')}</span>
-            </div>
-"""
-            
-            # Fundamentals
-            fund = modules.get('fundamentals', {})
-            html += f"""
-            <h3>Fundamentals</h3>
-            <div class="metric">
-                <span class="metric-label">Signal:</span>
-                <span class="metric-value">{fund.get('signal', 'N/A')}</span>
-            </div>
-            <div class="metric">
-                <span class="metric-label">Score:</span>
-                <span class="metric-value">{fund.get('fundamental_score', 'N/A')}</span>
-            </div>
-"""
-            
-            # Backtest
-            backtest = modules.get('backtest', {})
-            html += f"""
-            <h3>Backtesting</h3>
-            <div class="metric">
-                <span class="metric-label">Accuracy:</span>
-                <span class="metric-value">{backtest.get('backtest_results', {}).get('accuracy', 'N/A')}%</span>
-            </div>
-            <div class="metric">
-                <span class="metric-label">Sharpe Ratio:</span>
-                <span class="metric-value">{backtest.get('backtest_results', {}).get('sharpe_ratio', 'N/A')}</span>
-            </div>
-"""
-            
-            html += "</div>"
-        
-        html += """
-    </div>
-</body>
-</html>
-"""
-        
-        return html
-    
-    def generate_summary(self, all_results):
-        """Generate text summary"""
-        summary = "\n" + "=" * 80 + "\n"
-        summary += "TRADING AGENT PRO - ANALYSIS SUMMARY\n"
-        summary += "=" * 80 + "\n\n"
-        
-        for result in all_results:
-            if 'error' in result:
-                summary += f"{result['ticker']}: ERROR - {result['error']}\n"
-                continue
-            
-            ticker = result['ticker']
-            signal_data = result.get('modules', {}).get('signal', {})
-            summary += f"\n{ticker}\n"
-            summary += f"  Signal: {signal_data.get('signal', 'N/A')}\n"
-            summary += f"  Score: {signal_data.get('combined_score', 'N/A')}\n"
-            summary += f"  Signal Agreement: {signal_data.get('signal_agreement', 'N/A')}%\n"
-        
-        summary += "\n" + "=" * 80 + "\n"
-        return summary
+            parts.append(self._ticker_section(result))
+        macro = next((r['modules'].get('macro') for r in all_results
+                      if r.get('modules', {}).get('macro')), None)
+        parts.append(self._macro_section(macro))
+        parts.append('</div></body></html>')
+        return '\n'.join(parts)
+
+    @staticmethod
+    def _summary_table(all_results):
+        rows = ['<h2>Summary</h2><table><tr><th>Ticker</th><th>Signal</th><th>Heuristic score</th>'
+                '<th>Coverage</th><th>Agreement</th><th>Technical</th><th>Fundamentals</th>'
+                '<th>News</th></tr>']
+        for r in all_results:
+            sig = r.get('modules', {}).get('signal', {})
+            comp = sig.get('component_scores', {})
+            rows.append(
+                f"<tr><td><strong>{escape(r['ticker'])}</strong></td>"
+                f"<td>{cell(sig.get('signal'))}</td><td>{cell(sig.get('combined_score'))}</td>"
+                f"<td>{cell(sig.get('coverage'))}</td><td>{cell(sig.get('signal_agreement'), suffix='%')}</td>"
+                f"<td>{cell(comp.get('technical'))}</td><td>{cell(comp.get('fundamentals'))}</td>"
+                f"<td>{cell(comp.get('news'))}</td></tr>")
+        rows.append('</table>')
+        return ''.join(rows)
+
+    @staticmethod
+    def _availability_table(all_results):
+        names = []
+        for r in all_results:
+            for name in r.get('data_availability', {}):
+                if name not in names:
+                    names.append(name)
+        rows = ['<h2>Data availability</h2><table><tr><th>Ticker</th>'
+                + ''.join(f'<th>{escape(n)}</th>' for n in names) + '</tr>']
+        for r in all_results:
+            avail = r.get('data_availability', {})
+            rows.append(f"<tr><td>{escape(r['ticker'])}</td>"
+                        + ''.join(f"<td>{status_cell(avail.get(n, DATA_UNAVAILABLE))}</td>" for n in names)
+                        + '</tr>')
+        rows.append('</table>')
+        return ''.join(rows)
+
+    @staticmethod
+    def _reason(module):
+        if module.get('reason'):
+            return f'<p class="small">Reason: {escape(str(module["reason"]))}</p>'
+        return ''
+
+    def _ticker_section(self, result):
+        m = result.get('modules', {})
+        ticker = escape(result['ticker'])
+        out = [f'<div class="ticker-section"><h2>{ticker}</h2>']
+
+        sec = m.get('sec', {})
+        latest = sec.get('latest_periodic_filing') or {}
+        out.append('<h3>SEC EDGAR</h3><table>'
+                   f"<tr><td>CIK</td><td>{cell(sec.get('cik'))}</td></tr>"
+                   f"<tr><td>Latest 10-K/10-Q</td><td>{cell(latest.get('form'))} "
+                   f"filed {cell(latest.get('filing_date'))}</td></tr>"
+                   f"<tr><td>Form 4 filings (90d)</td><td>{cell(sec.get('form4_filings_90d'))}</td></tr>"
+                   f"<tr><td>Revenue</td><td>{cell(sec.get('revenue'), ',.0f')}</td></tr>"
+                   f"<tr><td>Debt / equity</td><td>{cell(sec.get('debt_to_equity'))}</td></tr>"
+                   '</table>')
+        if sec.get('error'):
+            out.append(f'<p class="small">SEC error: {escape(str(sec["error"]))}</p>')
+
+        tech = m.get('technical', {})
+        comps = tech.get('components', {})
+        out.append('<h3>Technical</h3><table>'
+                   f"<tr><td>Signal / score</td><td>{cell(tech.get('signal'))} / {cell(tech.get('technical_score'))}</td></tr>"
+                   f"<tr><td>RSI(14)</td><td>{cell(comps.get('rsi', {}).get('value'))}</td></tr>"
+                   f"<tr><td>MACD histogram</td><td>{cell(comps.get('macd', {}).get('histogram'))}</td></tr>"
+                   f"<tr><td>Last close</td><td>{cell(comps.get('bollinger', {}).get('price'))}"
+                   f" ({cell(tech.get('last_price_date'))})</td></tr></table>")
+        out.append(self._reason(tech))
+
+        fund = m.get('fundamentals', {})
+        out.append(f"<h3>Fundamentals</h3><p>Score: {cell(fund.get('fundamental_score'))} "
+                   f"(coverage {cell(fund.get('coverage'))})</p>")
+        out.append(self._reason(fund))
+
+        news = m.get('news', {})
+        out.append('<h3>News (NewsAPI aggregator)</h3><table>'
+                   f"<tr><td>Query</td><td>{cell(news.get('query'))}</td></tr>"
+                   f"<tr><td>Articles</td><td>{cell(news.get('articles_count'))}</td></tr>"
+                   f"<tr><td>Published range</td><td>{cell(news.get('oldest_article_published_at'))} → "
+                   f"{cell(news.get('newest_article_published_at'))}</td></tr>"
+                   f"<tr><td>Score</td><td>{cell(news.get('news_score'))}</td></tr></table>")
+        out.append(self._reason(news))
+
+        pred = m.get('prediction', {})
+        out.append('<h3>Historical base rates (not a prediction)</h3>')
+        if pred.get('status') == 'OK':
+            out.append(f'<div class="warning">{escape(pred.get("method", ""))} Window: '
+                       f'{escape(str(pred.get("window_start")))} to {escape(str(pred.get("window_end")))}.</div>')
+            out.append('<table><tr><th>Horizon</th><th>Up-frequency</th><th>Mean return</th>'
+                       '<th>Independent windows</th></tr>')
+            for horizon, h in pred.get('horizons', {}).items():
+                flag = ' (insufficient)' if h.get('insufficient_sample') else ''
+                out.append(f"<tr><td>{escape(horizon)}</td><td>{cell(h.get('historical_up_frequency_pct'), suffix='%')}</td>"
+                           f"<td>{cell(h.get('mean_return_pct'), suffix='%')}</td>"
+                           f"<td>{cell(h.get('n_independent'))}{escape(flag)}</td></tr>")
+            out.append('</table>')
+        else:
+            out.append(f'<p>{cell(None)}</p>' + self._reason(pred))
+
+        bt = m.get('backtest', {})
+        metrics = bt.get('backtest_results', {})
+        out.append('<h3>Momentum signal check (provisional)</h3>')
+        if metrics:
+            out.append(f'<div class="warning">{escape(bt.get("warning", ""))}</div><table>'
+                       f"<tr><td>3-class accuracy</td><td>{cell(metrics.get('accuracy_3class_pct'), suffix='%')}</td></tr>"
+                       f"<tr><td>Majority-class baseline</td><td>{cell(metrics.get('baseline_accuracy_pct'), suffix='%')}</td></tr>"
+                       f"<tr><td>Independent 5d periods</td><td>{cell(metrics.get('independent_5d_periods'))}</td></tr>"
+                       '</table>')
+        else:
+            out.append(f'<p>{cell(None)}</p>' + self._reason(bt))
+
+        wf = m.get('walk_forward', {})
+        out.append(f"<h3>Walk-forward validation</h3><p>{status_cell(wf.get('status', DATA_UNAVAILABLE))}</p>")
+        out.append(self._reason(wf))
+        out.append('</div>')
+        return '\n'.join(out)
+
+    @staticmethod
+    def _macro_section(macro):
+        out = ['<h2>Macro (FRED)</h2>']
+        if not macro or not macro.get('indicators'):
+            out.append(f'<p>{cell(None)}</p>')
+            return '\n'.join(out)
+        out.append('<table><tr><th>Indicator</th><th>Value</th><th>Observation date</th><th>Source</th></tr>')
+        for name, d in macro['indicators'].items():
+            if d.get('status') == 'OK':
+                out.append(f"<tr><td>{escape(name)}</td><td>{cell(d['value'])} {escape(d['unit'])}</td>"
+                           f"<td>{cell(d['observation_date'])}</td><td>{escape(d['series_id'])}</td></tr>")
+            else:
+                out.append(f"<tr><td>{escape(name)}</td><td>{cell(None)}</td><td></td>"
+                           f"<td class='small'>{escape(str(d.get('reason', '')))}</td></tr>")
+        out.append('</table>')
+        return '\n'.join(out)
+
+    @staticmethod
+    def generate_summary(all_results):
+        lines = ['', '=' * 80, 'TRADING AGENT PRO - ANALYSIS SUMMARY', '=' * 80]
+        for r in all_results:
+            sig = r.get('modules', {}).get('signal', {})
+            lines.append(f"\n{r['ticker']}")
+            lines.append(f"  Signal:   {display(sig.get('signal'))}")
+            lines.append(f"  Score:    {display(sig.get('combined_score'))} (heuristic, coverage {display(sig.get('coverage'))})")
+            unavailable_sources = [n for n, s in r.get('data_availability', {}).items() if s not in ('OK', 'PROVISIONAL')]
+            if unavailable_sources:
+                lines.append(f"  Unavailable / not implemented: {', '.join(unavailable_sources)}")
+        lines.append('=' * 80)
+        return '\n'.join(lines)
 
 
 if __name__ == "__main__":
-    gen = ReportGenerator()
-    print(gen.generate_summary([]))
+    print(ReportGenerator().generate_summary([]))

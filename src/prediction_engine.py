@@ -1,82 +1,102 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Phase 4 - Prediction Engine
-Objective: P(up) 1D/5D/20D/60D + Expected Return
-Source: REAL data from backtester_no_bias.py only
+Historical base rates (formerly presented as "Prediction Engine")
+
+P0.1 changes - honest labelling of what is computed:
+- These numbers are UNCONDITIONAL historical frequencies over a recent window.
+  They do not depend on any signal or feature, are not a model, and are not
+  calibrated. They must not be read as P(up) predictions.
+- mean_return_pct is the mean of ALL forward returns. The previous
+  "expected_return" averaged only the positive returns, so it was always positive.
+- Sample sizes are reported: n_overlapping windows and n_independent (n // horizon).
+  Fewer than MIN_INDEPENDENT independent windows -> flagged as insufficient.
+- A real conditional, calibrated, walk-forward-validated model replaces this in P1.6.
 """
 
+import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-import numpy as np
-import pandas as pd
+
+from .common import close_series, unavailable, utc_now_iso
+
+METHOD = ('Unconditional historical frequency of positive forward returns over the '
+          'window; not a model prediction, not conditional on any signal, not calibrated.')
 
 
 class PredictionEngine:
-    """Calculate P(up) and Expected Return for multiple horizons"""
+    """Historical base rates per horizon (kept under this name for compatibility)."""
 
-    def __init__(self):
-        self.horizons = [1, 5, 20, 60]
+    MIN_INDEPENDENT = 10
 
-    def calculate_returns(self, prices):
-        """Calculate forward returns for each horizon - FIXED scalars"""
+    def __init__(self, horizons=(1, 5, 20, 60), lookback_days=730, window_fraction=0.2):
+        self.horizons = list(horizons)
+        self.lookback_days = lookback_days
+        self.window_fraction = window_fraction
+
+    def calculate_base_rates(self, close):
+        """close: 1-D pandas Series of prices (oldest first)."""
         results = {}
-        
         for horizon in self.horizons:
-            forward_prices = prices.shift(-horizon)
-            returns = ((forward_prices - prices) / prices) * 100
-            returns_clean = returns.dropna().values
-            
-            if len(returns_clean) == 0:
+            forward = (close.shift(-horizon) / close - 1) * 100
+            returns = forward.dropna().to_numpy(dtype=float)
+            if len(returns) == 0:
+                results[f'{horizon}D'] = unavailable('yfinance', 'window shorter than horizon')
                 continue
-            
-            # P(up) as scalar
-            p_up = float(np.sum(returns_clean > 0) / len(returns_clean) * 100)
-            
-            # Expected return (mean of positive returns only)
-            positive_returns = returns_clean[returns_clean > 0]
-            expected_return = float(np.mean(positive_returns)) if len(positive_returns) > 0 else 0.0
-            
+            n_independent = len(returns) // horizon
             results[f'{horizon}D'] = {
-                'p_up': round(p_up, 2),
-                'expected_return': round(expected_return, 2),
-                'sample_size': len(returns_clean)
+                'status': 'OK',
+                'historical_up_frequency_pct': round(float(np.mean(returns > 0) * 100), 2),
+                'mean_return_pct': round(float(np.mean(returns)), 2),
+                'median_return_pct': round(float(np.median(returns)), 2),
+                'n_overlapping': int(len(returns)),
+                'n_independent': int(n_independent),
+                'insufficient_sample': n_independent < self.MIN_INDEPENDENT,
             }
-        
         return results
 
     def analyze(self, ticker):
-        """Complete multi-horizon analysis"""
-        print(f"\n[PREDICTION ENGINE] {ticker}")
+        print(f"\n[HISTORICAL BASE RATES] {ticker}")
         print("=" * 60)
-        
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=730)
-        
-        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        
-        if data.empty or len(data) < 100:
-            print(f"  WARNING: Insufficient data ({len(data)} days)")
-            return None
-        
-        split_idx = int(len(data) * 0.8)
-        test_data = data.iloc[split_idx:].copy()
-        
-        close_prices = test_data['Close']
-        results = self.calculate_returns(close_prices)
-        
-        print(f"  Data: {len(data)} days total, {len(test_data)} days test")
-        print(f"\n  Multi-Horizon Predictions (from REAL data):")
-        for horizon, metrics in results.items():
-            print(f"    {horizon}: P(up)={metrics['p_up']}%, E[return]={metrics['expected_return']}%")
-        
+        start_date = end_date - timedelta(days=self.lookback_days)
+        try:
+            data = yf.download(ticker, start=start_date, end=end_date, progress=False,
+                               auto_adjust=True)
+        except Exception as e:
+            return unavailable('yfinance', f"{type(e).__name__}: {e}", ticker=ticker)
+        if data is None or data.empty:
+            return unavailable('yfinance', 'no price data', ticker=ticker)
+
+        close = close_series(data)
+        if len(close) < 100:
+            return unavailable('yfinance', f'only {len(close)} observations', ticker=ticker)
+
+        window = close.iloc[int(len(close) * (1 - self.window_fraction)):]
+        results = self.calculate_base_rates(window)
+
+        for horizon, m in results.items():
+            if m.get('status') == 'OK':
+                flag = ' (INSUFFICIENT SAMPLE)' if m['insufficient_sample'] else ''
+                print(f"  {horizon}: up-frequency={m['historical_up_frequency_pct']}%, "
+                      f"mean={m['mean_return_pct']}%, n_indep={m['n_independent']}{flag}")
+
         return {
             'ticker': ticker,
-            'data_points': len(test_data),
-            'horizons': results
+            'status': 'OK',
+            'kind': 'historical_base_rate',
+            'method': METHOD,
+            'is_model_prediction': False,
+            'window_start': str(window.index[0].date()),
+            'window_end': str(window.index[-1].date()),
+            'data_points': int(len(window)),
+            'horizons': results,
+            'source': 'yfinance (adjusted close)',
+            'computed_at': utc_now_iso(),
         }
 
 
 if __name__ == "__main__":
-    pe = PredictionEngine()
-    for ticker in ["CRWD", "NET", "RKLB", "MP"]:
-        pe.analyze(ticker)
+    from .common import tickers
+    engine = PredictionEngine()
+    for t in tickers():
+        engine.analyze(t)

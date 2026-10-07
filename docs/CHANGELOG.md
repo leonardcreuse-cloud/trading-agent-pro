@@ -27,6 +27,18 @@ standard revenue facts, no annual value).
 
 **Tests**: `tests/test_p15_debt_mapping.py` (8). Total 177.
 
+**Pipeline audit** (`python main.py audit`, `src/pipeline_audit.py`, `reports/pipeline_audit.json`):
+PASS / WARN / FAIL checks on storage (publication after retrieval, raw SHA-256 sample, secrets),
+prices (non-positive, gaps, |move| > 40 %, staleness), SEC (no look-ahead around the latest
+10-K/10-Q acceptance, TTM vs 4 reported quarters, D/E reasons), Form 4 (unparsed documents,
+P/S without price) and walk-forward timing. Exit code 1 on any FAIL.
+Run on the 40 tickers: **0 FAIL**, 396 PASS, 8 WARN, all explained — MP +50.6 % on
+2025-07-10 is a real move; 29 of 3,601 stored P/S transactions have their price only in a
+footnote (value left unknown, so USD totals of LMT / CAT are understated); DE / ISRG D/E and XOM
+revenue are the genuine gaps above. Limitation: the TTM cross-check against four 3-month facts
+was possible for 1 ticker only (Q4 is usually reported only within the annual figure).
+Tests: `tests/test_p15_pipeline_audit.py` (4). Total 183.
+
 ## P1.4 — Signals relabelled: quantitative signals, not trade recommendations
 
 - Labels BUY / HOLD / SELL → POSITIVE / NEUTRAL / NEGATIVE (direction of a heuristic score)

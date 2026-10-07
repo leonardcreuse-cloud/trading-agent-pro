@@ -45,6 +45,10 @@ def main():
     elif command == 'walkforward':
         from src.walk_forward import WalkForward
         WalkForward().run([t.upper() for t in sys.argv[2:]] or None)
+    elif command == 'audit':
+        from src.pipeline_audit import PipelineAudit
+        report = PipelineAudit().run([t.upper() for t in sys.argv[2:]] or None)
+        sys.exit(1 if report['status'] == 'FAIL' else 0)
     elif command == 'status':
         print_status()
     else:
@@ -56,6 +60,7 @@ def print_menu():
     print("  python main.py analyze   - Run batch analysis")
     print("  python main.py walkforward [TICKER ...] - Walk-forward validation on the")
     print("                              validation universe (slow first run)")
+    print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
     print("  python main.py status    - Show configuration status")
 
 

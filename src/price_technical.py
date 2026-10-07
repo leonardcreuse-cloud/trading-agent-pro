@@ -6,12 +6,16 @@ P0.1: when prices cannot be obtained or indicators are NaN, the module returns
 technical_score=None / signal=None with status DATA UNAVAILABLE instead of a
 fabricated neutral score (50 / HOLD). Hardcoded 'confidence' constants removed.
 Scores are heuristic (not calibrated); continuous features come in phase P1.3.
+
+P0.2: prices come from the shared provenance-aware PriceFeed (one download per run,
+logged and stored); the output carries a `provenance` block (fetch id, retrieval time,
+last session, freshness).
 """
 
-import yfinance as yf
 from datetime import datetime, timedelta
 from .indicators import Indicators
-from .common import close_series, unavailable, utc_now_iso
+from .common import unavailable, utc_now_iso
+from .market_data import PriceFeed
 import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
@@ -20,28 +24,33 @@ warnings.filterwarnings('ignore')
 class PriceTechnical:
     """Real technical analysis using professional indicators"""
 
-    def __init__(self):
+    LOOKBACK_DAYS = 180
+
+    def __init__(self, price_feed=None):
         self.indicators = Indicators()
+        self.price_feed = price_feed
         self.last_error = None
         self.last_price_date = None
+        self.last_provenance = None
 
     def _unavailable(self, ticker, reason):
         result = unavailable('yfinance', reason)
         result.update({'ticker': ticker, 'signal': None, 'technical_score': None,
-                       'components': {}})
+                       'components': {}, 'provenance': self.last_provenance})
         return result
 
     def fetch_price_data(self, ticker):
-        """Fetch 6 months price data"""
+        """Last 6 months of completed daily closes from the shared price feed."""
         try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=180)
-            data = yf.download(ticker, start=start_date, end=end_date, progress=False,
-                               auto_adjust=True)
-            if data is None or data.empty:
-                self.last_error = 'yfinance returned no data'
+            if self.price_feed is None:
+                self.price_feed = PriceFeed()
+            prices = self.price_feed.get(ticker)
+            self.last_provenance = prices['provenance']
+            if prices['status'] != 'OK':
+                self.last_error = prices['reason'] or 'yfinance returned no data'
                 return None
-            close = close_series(data)
+            cutoff = datetime.now() - timedelta(days=self.LOOKBACK_DAYS)
+            close = prices['close'][prices['close'].index >= cutoff]
             if len(close) < 70:
                 self.last_error = f'only {len(close)} price observations (70 required)'
                 return None
@@ -95,6 +104,7 @@ class PriceTechnical:
 
         self.last_error = None
         self.last_price_date = None
+        self.last_provenance = None
         prices = self.fetch_price_data(ticker)
 
         if prices is None or len(prices) < 70:
@@ -150,6 +160,7 @@ class PriceTechnical:
                 'status': 'OK',
                 'last_price_date': self.last_price_date,
                 'score_type': 'heuristic 0-100 score, not a probability',
+                'provenance': self.last_provenance,
                 'timestamp': utc_now_iso(),
                 'source': 'yfinance prices; RSI/MACD/Bollinger computed locally'
             }

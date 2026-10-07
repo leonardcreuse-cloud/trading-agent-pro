@@ -24,7 +24,7 @@ number may be invented, mocked or simulated in an analysis output.
 
 | Concept | Current definition | Status |
 |---|---|---|
-| **Data reliability** | Coverage of sources (`coverage`, `data_availability`), freshness, source rank | Coverage implemented (P0.1); freshness / source rank in P0.2 |
+| **Data reliability** | Coverage of sources (`coverage`, `data_availability`), freshness, source rank | Coverage (P0.1); freshness and source rank (P0.2) |
 | **Signal strength** | Heuristic 0-100 score (`combined_score`) and `signal_agreement` (dispersion of sources) | Heuristic, weights not validated |
 | **Prediction probability** | P(up) from a model trained and calibrated out-of-sample | Not available until P1.6 |
 | **Prediction confidence** | Calibration quality and effective sample size of the model | Not available until P1.5 |
@@ -33,6 +33,36 @@ number may be invented, mocked or simulated in an analysis output.
 `historical_up_frequency_pct` (module `prediction_engine`) is an unconditional historical
 base rate. It is **not** a P(up) prediction.
 
+## Provenance and time (P0.2)
+
+Every stored value has a source, a fetch (`source_fetches`), a raw payload (`data/raw/`) and three times:
+
+| Field | Meaning |
+|---|---|
+| `as_of_date` | Date / period the value refers to |
+| `published_at` | When the value became public at the source; `NULL` if unknown |
+| `retrieved_at` | When this version was obtained |
+
+**No look-ahead**: a value may be used at instant T only if `COALESCE(published_at, retrieved_at) <= T`.
+When in doubt, the later plausible time is used:
+
+| Source | `published_at` |
+|---|---|
+| SEC EDGAR | `acceptanceDateTime` read as New York time (>= the feed's UTC label); else end of filing date |
+| FRED | Vintage date (`realtime_start`), end of day New York |
+| yfinance | Session date 21:00 UTC; adjusted prices are `value_revisable` (use `strict_vintage`) |
+| NewsAPI | Article `publishedAt` |
+
+A publication time later than retrieval is clamped to retrieval. Revised values are stored as new
+versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
+(`data/backups/`) and refilled from the sources.
+
+**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, yfinance 2, NewsAPI 3.
+**Freshness**: `FRESH` if the age of `as_of_date` (publication date for filings) is within the cadence
+limit: market sessions 5 days, daily series 7, monthly series 80, 10-K/10-Q 120, news 7.
+
 ## Configuration
 
 Secrets go in `.env` (see `.env.example`): `SEC_USER_AGENT`, `FRED_API_KEY`, `NEWSAPI_KEY`.
+Paste raw values only: a placeholder-shaped value such as `<abc123>` is rejected as `DATA UNAVAILABLE`.
+API keys are never written to logs, the database, raw payloads or reports (`common.redact`).

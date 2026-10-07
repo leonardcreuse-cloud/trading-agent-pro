@@ -10,16 +10,25 @@ P0.1 changes:
 - The "prediction" module is reported as historical base rates (not a model).
 - Each run records a UTC timestamp and a data-availability summary per source.
 - data/ and reports/ directories are created automatically.
+
+P0.2 changes:
+- One Database (schema v2, migrated on start with a backup) and one PriceFeed are
+  shared by all modules: prices are downloaded once per ticker and run.
+- Each result carries a `provenance` summary per module (source, rank, fetch id,
+  retrieval / publication time, freshness).
+- Reports are passed through redact() before being written (no API key on disk).
 """
 
 import json
 
 from .backtester import Backtester
-from .common import (DATA_UNAVAILABLE, NOT_IMPLEMENTED, reports_dir, tickers,
+from .common import (DATA_UNAVAILABLE, NOT_IMPLEMENTED, redact, reports_dir, tickers,
                      unavailable, utc_now_iso)
 from .dashboard import Dashboard
+from .database import Database
 from .insider_tracker import InsiderTracker
 from .macro_fred import MacroFRED
+from .market_data import PriceFeed
 from .news_processor import NewsProcessor
 from .prediction_engine import PredictionEngine
 from .price_technical import PriceTechnical
@@ -44,15 +53,17 @@ class Integration:
     """Orchestrate all analysis modules"""
 
     def __init__(self):
-        self.sec = SECParser()
+        self.db = Database()
+        self.prices = PriceFeed(db=self.db)
+        self.sec = SECParser(db=self.db)
         self.insider = InsiderTracker()
-        self.backtester = Backtester()
-        self.technical = PriceTechnical()
-        self.news = NewsProcessor()
-        self.macro = MacroFRED()
+        self.backtester = Backtester(price_feed=self.prices)
+        self.technical = PriceTechnical(price_feed=self.prices)
+        self.news = NewsProcessor(db=self.db)
+        self.macro = MacroFRED(db=self.db)
         self.fundamentals = ScoringFundamentals(sec_parser=self.sec)
         self.signal = ScoringSignalFixed()
-        self.prediction = PredictionEngine()
+        self.prediction = PredictionEngine(price_feed=self.prices)
         self.report = ReportGenerator()
         self.dashboard = Dashboard()
 
@@ -62,7 +73,7 @@ class Integration:
         try:
             return func(*args)
         except Exception as e:  # noqa: BLE001 - logged and surfaced in the report
-            print(f"  [ERROR] {name}: {type(e).__name__}: {e}")
+            print(redact(f"  [ERROR] {name}: {type(e).__name__}: {e}"))
             return unavailable(name, f"{type(e).__name__}: {e}")
 
     def run_full_analysis(self, ticker):
@@ -92,6 +103,8 @@ class Integration:
             'timestamp': utc_now_iso(),
             'modules': modules,
             'data_availability': {name: module_status(m) for name, m in modules.items()},
+            'provenance': {name: m.get('provenance') for name, m in modules.items()
+                           if isinstance(m, dict) and m.get('provenance')},
         }
 
     def run_daily_batch(self):
@@ -107,18 +120,23 @@ class Integration:
         for result in all_results:
             result['modules']['macro'] = macro_data
             result['data_availability']['macro'] = module_status(macro_data)
+        macro_provenance = {name: ind.get('provenance')
+                            for name, ind in (macro_data.get('indicators') or {}).items()
+                            if ind.get('provenance')}
 
         print("\n[REPORT GENERATION]")
         out_dir = reports_dir()
         html_path = out_dir / 'analysis.html'
         json_path = out_dir / 'analysis.json'
-        html_path.write_text(self.report.generate_html(all_results, run_started), encoding='utf-8')
-        json_path.write_text(json.dumps(all_results, indent=2, ensure_ascii=False, default=str),
+        html_path.write_text(redact(self.report.generate_html(all_results, run_started,
+                                                              macro_provenance)),
                              encoding='utf-8')
+        json_path.write_text(redact(json.dumps(all_results, indent=2, ensure_ascii=False,
+                                               default=str)), encoding='utf-8')
         print(f"  HTML report: {html_path}")
         print(f"  JSON report: {json_path}")
         dashboard_path = self.dashboard.save_dashboard_html(
-            self.dashboard.create_live_dashboard_html(all_results))
+            redact(self.dashboard.create_live_dashboard_html(all_results)))
         print(f"  Dashboard:   {dashboard_path}")
 
         print(self.report.generate_summary(all_results))

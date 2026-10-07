@@ -47,7 +47,7 @@ def status_cell(status):
 class ReportGenerator:
     """Generate analysis reports in HTML and text"""
 
-    def generate_html(self, all_results, run_started=None):
+    def generate_html(self, all_results, run_started=None, macro_provenance=None):
         parts = [
             '<!DOCTYPE html><html><head><meta charset="UTF-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
@@ -60,6 +60,7 @@ class ReportGenerator:
             f'"{escape(NA_DISPLAY)}" could not be obtained and were not replaced.</div>',
             self._summary_table(all_results),
             self._availability_table(all_results),
+            self._provenance_table(all_results, macro_provenance),
         ]
         for result in all_results:
             parts.append(self._ticker_section(result))
@@ -100,6 +101,40 @@ class ReportGenerator:
             rows.append(f"<tr><td>{escape(r['ticker'])}</td>"
                         + ''.join(f"<td>{status_cell(avail.get(n, DATA_UNAVAILABLE))}</td>" for n in names)
                         + '</tr>')
+        rows.append('</table>')
+        return ''.join(rows)
+
+    @staticmethod
+    def _provenance_table(all_results, macro_provenance=None):
+        """Source, rank, fetch, retrieval / publication time and freshness of each input."""
+        entries = []
+        for r in all_results:
+            for name, prov in (r.get('provenance') or {}).items():
+                entries.append((r['ticker'], name, prov))
+        for name, prov in (macro_provenance or {}).items():
+            entries.append(('macro', name, prov))
+        rows = ['<h2>Data provenance</h2><p class="small">Rank 1 = official source. '
+                'Published = when the value became public at the source (estimate when noted); '
+                'values are only used once published and retrieved. Raw payloads: data/raw/ '
+                '(SHA-256 prefix shown).</p><table><tr><th>Scope</th><th>Input</th><th>Source</th>'
+                '<th>Rank</th><th>Fetch</th><th>Retrieved</th><th>As of</th><th>Published</th>'
+                '<th>Freshness</th><th>Raw</th></tr>']
+        for scope, name, p in entries:
+            fresh = p.get('freshness') or {}
+            age = fresh.get('age_days')
+            fresh_text = fresh.get('status', 'UNKNOWN') + (f' ({age} d)' if age is not None else '')
+            css = {'FRESH': 'ok', 'STALE': 'bad'}.get(fresh.get('status'), 'prov')
+            sha = p.get('raw_sha256')
+            rows.append(
+                f"<tr><td>{escape(str(scope))}</td><td>{escape(str(name))}</td>"
+                f"<td>{cell(p.get('source'))}</td><td>{cell(p.get('source_rank'))}</td>"
+                f"<td>{cell(p.get('fetch_id'))}</td><td>{cell(p.get('retrieved_at'))}</td>"
+                f"<td>{cell(p.get('as_of_date'))}</td>"
+                f"<td title=\"{escape(str(p.get('published_at_basis') or ''))}\">{cell(p.get('published_at'))}</td>"
+                f"<td><span class=\"{css}\">{escape(fresh_text)}</span></td>"
+                f"<td>{cell(sha[:12] if sha else None)}</td></tr>")
+        if not entries:
+            rows.append(f'<tr><td colspan="10">{cell(None)}</td></tr>')
         rows.append('</table>')
         return ''.join(rows)
 

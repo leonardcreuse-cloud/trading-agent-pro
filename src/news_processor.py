@@ -10,19 +10,26 @@ P0.1 changes:
 - publishedAt range of the analysed articles is reported for traceability.
 - NewsAPI is an aggregator: it is never sufficient proof of an event on its own.
   Deduplication, source validation and event classification come in phase P2.2.
-"""
 
-import os
+P0.2 changes (provenance):
+- Every NewsAPI call is logged in source_fetches with its raw JSON in data/raw/
+  (the API key is a request parameter and is never stored).
+- Each article is stored as an observation (metric 'news_article', value_text = URL)
+  with published_at = the article's publishedAt.
+- A placeholder key such as "<key>" is rejected before any call.
+"""
 
 import requests
 from dotenv import load_dotenv
 
-from .common import company_name, unavailable, utc_now_iso
+from .common import company_name, redact, secret_env, unavailable, utc_now_iso, DATA_UNAVAILABLE
+from .database import Database
 from .news_sentiment import NewsSentiment
 
 load_dotenv()
 
 NEWS_SOURCE = 'NewsAPI (aggregator)'
+DB_SOURCE = 'NewsAPI'
 
 
 class NewsProcessor:
@@ -30,31 +37,58 @@ class NewsProcessor:
 
     URL = "https://newsapi.org/v2/everything"
 
-    def __init__(self):
+    def __init__(self, db=None):
+        self.db = db or Database()
         self.sentiment = NewsSentiment()
-        self.newsapi_key = os.getenv('NEWSAPI_KEY', '').strip()
+        self.newsapi_key, self.key_problem = secret_env('NEWSAPI_KEY')
 
     def fetch_news(self, ticker):
         """
-        Fetch recent articles. Returns {'articles': [...], 'error': str|None, 'query': str}.
+        Fetch recent articles.
+        Returns {'articles': [...], 'error': str|None, 'query': str, 'fetch': dict|None}.
         """
         query = f'"{company_name(ticker)}"'
-        if not self.newsapi_key or self.newsapi_key == 'demo':
-            return {'articles': [], 'error': 'NEWSAPI_KEY not set', 'query': query}
+        if self.key_problem:
+            return {'articles': [], 'error': self.key_problem, 'query': query, 'fetch': None}
 
+        params = {'q': query, 'sortBy': 'publishedAt', 'language': 'en', 'pageSize': 100,
+                  'apiKey': self.newsapi_key}
+        requested_at = utc_now_iso()
+        response = None
         try:
-            response = requests.get(
-                self.URL,
-                params={'q': query, 'sortBy': 'publishedAt', 'language': 'en',
-                        'pageSize': 100, 'apiKey': self.newsapi_key},
-                timeout=10)
+            response = requests.get(self.URL, params=params, timeout=10)
             if response.status_code != 200:
-                return {'articles': [], 'error': f'NewsAPI HTTP {response.status_code}',
-                        'query': query}
-            data = response.json()
-            return {'articles': data.get('articles', []), 'error': None, 'query': query}
-        except Exception as e:
-            return {'articles': [], 'error': f"{type(e).__name__}: {e}", 'query': query}
+                error = f'NewsAPI HTTP {response.status_code}'
+                try:
+                    detail = response.json().get('code')
+                    error += f' ({detail})' if detail else ''
+                except (ValueError, AttributeError):
+                    pass
+            else:
+                data = response.json()
+                error = None
+        except Exception as e:  # noqa: BLE001 - recorded and surfaced
+            error = redact(f"{type(e).__name__}: {e}")
+
+        if error:
+            fetch = self.db.record_fetch(DB_SOURCE, self.URL, params=params,
+                                         requested_at=requested_at, status=DATA_UNAVAILABLE,
+                                         error=error,
+                                         http_status=getattr(response, 'status_code', None))
+            return {'articles': [], 'error': error, 'query': query, 'fetch': fetch}
+
+        articles = data.get('articles', [])
+        raw = getattr(response, 'content', None)
+        fetch = self.db.record_fetch(DB_SOURCE, self.URL, params=params,
+                                     requested_at=requested_at, status='OK',
+                                     http_status=response.status_code, n_records=len(articles),
+                                     raw=raw if isinstance(raw, (bytes, str)) else data)
+        self.db.upsert_observations(fetch, [{
+            'entity': ticker, 'metric': 'news_article', 'as_of_date': a['publishedAt'][:10],
+            'value_text': a.get('url') or a.get('title') or '(untitled)',
+            'published_at': a['publishedAt'], 'published_at_basis': 'NewsAPI publishedAt'}
+            for a in articles if a.get('publishedAt')])
+        return {'articles': articles, 'error': None, 'query': query, 'fetch': fetch}
 
     def analyze_articles(self, articles):
         """Average lexicon sentiment over articles (None if no articles)."""
@@ -83,7 +117,9 @@ class NewsProcessor:
             result = unavailable(NEWS_SOURCE, reason)
             result.update({'ticker': ticker, 'signal': None, 'news_score': None,
                            'avg_sentiment': None, 'articles_count': 0,
-                           'query': news_data['query']})
+                           'query': news_data['query'],
+                           'provenance': self.db.provenance(news_data['fetch'], cadence='news')
+                           if news_data['fetch'] else None})
             return result
 
         analysis = self.analyze_articles(articles)
@@ -102,6 +138,11 @@ class NewsProcessor:
             'newest_article_published_at': published[-1] if published else None,
             'method': 'word-level lexicon count (naive, not deduplicated); replaced in P2.2',
             'score_type': 'heuristic 0-100 score, not a probability',
+            'provenance': self.db.provenance(
+                news_data['fetch'], cadence='news',
+                as_of_date=published[-1][:10] if published else None,
+                published_at=published[-1] if published else None,
+                published_at_basis='NewsAPI publishedAt of the newest article'),
             'timestamp': utc_now_iso(),
             'source': NEWS_SOURCE,
         }

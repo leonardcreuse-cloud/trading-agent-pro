@@ -11,13 +11,14 @@ P0.1 changes - honest labelling of what is computed:
 - Sample sizes are reported: n_overlapping windows and n_independent (n // horizon).
   Fewer than MIN_INDEPENDENT independent windows -> flagged as insufficient.
 - A real conditional, calibrated, walk-forward-validated model replaces this in P1.6.
+
+P0.2: prices come from the shared provenance-aware PriceFeed; output carries `provenance`.
 """
 
 import numpy as np
-import yfinance as yf
-from datetime import datetime, timedelta
 
-from .common import close_series, unavailable, utc_now_iso
+from .common import unavailable, utc_now_iso
+from .market_data import PriceFeed
 
 METHOD = ('Unconditional historical frequency of positive forward returns over the '
           'window; not a model prediction, not conditional on any signal, not calibrated.')
@@ -28,7 +29,9 @@ class PredictionEngine:
 
     MIN_INDEPENDENT = 10
 
-    def __init__(self, horizons=(1, 5, 20, 60), lookback_days=730, window_fraction=0.2):
+    def __init__(self, horizons=(1, 5, 20, 60), lookback_days=730, window_fraction=0.2,
+                 price_feed=None):
+        self.price_feed = price_feed
         self.horizons = list(horizons)
         self.lookback_days = lookback_days
         self.window_fraction = window_fraction
@@ -57,19 +60,17 @@ class PredictionEngine:
     def analyze(self, ticker):
         print(f"\n[HISTORICAL BASE RATES] {ticker}")
         print("=" * 60)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=self.lookback_days)
-        try:
-            data = yf.download(ticker, start=start_date, end=end_date, progress=False,
-                               auto_adjust=True)
-        except Exception as e:
-            return unavailable('yfinance', f"{type(e).__name__}: {e}", ticker=ticker)
-        if data is None or data.empty:
-            return unavailable('yfinance', 'no price data', ticker=ticker)
+        if self.price_feed is None:
+            self.price_feed = PriceFeed(lookback_days=self.lookback_days)
+        prices = self.price_feed.get(ticker)
+        if prices['status'] != 'OK':
+            return unavailable('yfinance', prices['reason'] or 'no price data', ticker=ticker,
+                               provenance=prices['provenance'])
 
-        close = close_series(data)
+        close = prices['close']
         if len(close) < 100:
-            return unavailable('yfinance', f'only {len(close)} observations', ticker=ticker)
+            return unavailable('yfinance', f'only {len(close)} observations', ticker=ticker,
+                               provenance=prices['provenance'])
 
         window = close.iloc[int(len(close) * (1 - self.window_fraction)):]
         results = self.calculate_base_rates(window)
@@ -91,6 +92,7 @@ class PredictionEngine:
             'data_points': int(len(window)),
             'horizons': results,
             'source': 'yfinance (adjusted close)',
+            'provenance': prices['provenance'],
             'computed_at': utc_now_iso(),
         }
 

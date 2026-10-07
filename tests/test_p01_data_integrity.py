@@ -43,21 +43,25 @@ def test_sec_without_user_agent_is_unavailable_not_invented():
     assert 'SEC_USER_AGENT' in result['error']
 
 
-def test_sec_purges_previously_cached_invented_values(tmp_path):
+def test_sec_legacy_cache_with_invented_values_is_not_used(tmp_path):
+    # P0.2: the legacy sec_data cache (invented revenue, no publication time) is backed up
+    # and dropped by the schema v2 migration instead of being purged row by row.
     import sqlite3
     from src.common import db_path
     from src.sec_parser import SECParser
-    SECParser()  # creates table
     conn = sqlite3.connect(db_path())
-    conn.execute("INSERT OR REPLACE INTO sec_data VALUES ('CRWD','revenue','1050000000','SEC EDGAR',95,?)",
+    conn.execute('CREATE TABLE sec_data (ticker TEXT, metric TEXT, value TEXT, source TEXT, '
+                 'confidence INTEGER, timestamp TEXT, PRIMARY KEY (ticker, metric))')
+    conn.execute("INSERT INTO sec_data VALUES ('CRWD','revenue','1050000000','SEC EDGAR',95,?)",
                  (datetime.now().isoformat(),))
     conn.commit()
     conn.close()
-    SECParser()
+    result = SECParser().run('CRWD')
+    assert result['revenue'] is None
     conn = sqlite3.connect(db_path())
-    rows = conn.execute("SELECT * FROM sec_data WHERE metric='revenue'").fetchall()
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    assert rows == []
+    assert 'sec_data' not in tables
 
 
 def test_sec_resolves_cik_and_counts_form4_from_api(monkeypatch):
@@ -87,19 +91,6 @@ def test_sec_resolves_cik_and_counts_form4_from_api(monkeypatch):
     assert result['form4_filings_90d'] == 2
     assert result['latest_periodic_filing']['form'] == '10-Q'
     assert result['revenue'] is None   # still unavailable until XBRL (P0.3)
-
-
-def test_sec_cache_expires():
-    import sqlite3
-    from src.common import db_path
-    from src.sec_parser import SECParser
-    parser = SECParser()
-    old = (datetime.now() - timedelta(days=3)).isoformat()
-    conn = sqlite3.connect(db_path())
-    conn.execute("INSERT OR REPLACE INTO sec_data VALUES ('CRWD','form4_count','7','SEC EDGAR',NULL,?)", (old,))
-    conn.commit()
-    conn.close()
-    assert parser.get_cached('CRWD', 'form4_count') is None
 
 
 # ---------------------------------------------------------------- insider / fundamentals

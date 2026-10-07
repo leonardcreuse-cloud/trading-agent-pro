@@ -13,68 +13,49 @@ P0.1 changes - only metrics that are actually valid are reported:
   former "split before computing momentum" did not fix any leakage. The train set
   is not used to fit anything.
 - A full strategy backtest (positions, costs, benchmark, drawdown) is phase P1.1.
+
+P0.2: prices from the shared PriceFeed; per-day results are stored in the provenance-aware
+backtest_results table (schema owned by database.py) with the session that resolves the
+outcome (outcome_date) and the price fetch they were computed from. The legacy table
+(no provenance, ambiguous timestamps) is backed up and dropped by the v2 migration.
 """
 
-import yfinance as yf
-import sqlite3
-from datetime import datetime, timedelta
-import numpy as np
 import pandas as pd
 
-from .common import close_series, db_path, unavailable, utc_now_iso
+from .common import unavailable, utc_now_iso
+from .database import Database
+from .market_data import PriceFeed
+
+METHOD = 'momentum20_threshold2pct_5d_v1'
+HORIZON = 5
 
 
 class Backtester:
     """Backtest predictions vs real historical data"""
 
-    def __init__(self):
-        self.init_db()
-
-    def init_db(self):
-        """Initialize backtest results table"""
-        conn = sqlite3.connect(db_path())
-        c = conn.cursor()
-
-        c.execute('''CREATE TABLE IF NOT EXISTS backtest_results (
-            ticker TEXT,
-            date TEXT,
-            predicted_signal TEXT,
-            actual_direction TEXT,
-            accuracy_5d INTEGER,
-            profit_loss REAL,
-            timestamp TEXT,
-            PRIMARY KEY (ticker, date)
-        )''')
-
-        conn.commit()
-        conn.close()
+    def __init__(self, price_feed=None, db=None):
+        self.db = db or (price_feed.db if price_feed else Database())
+        self.price_feed = price_feed
+        self.last_prices = None
 
     def fetch_historical_data(self, ticker):
-        """Fetch real 2-year historical price data from yfinance"""
-        print(f"  [YFINANCE] Fetching 2-year data for {ticker}...")
-
-        try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=730)
-
-            data = yf.download(ticker, start=start_date, end=end_date, progress=False,
-                               auto_adjust=True)
-
-            if data is None or data.empty:
-                print(f"  No data found for {ticker}")
-                return None
-
-            frame = pd.DataFrame({'Close': close_series(data)})
-            print(f"  Downloaded {len(frame)} days")
-            return frame
-
-        except Exception as e:
-            print(f"  Error: {str(e)}")
+        """2 years of completed daily adjusted closes from the shared price feed."""
+        print(f"  [YFINANCE] 2-year prices for {ticker}...")
+        if self.price_feed is None:
+            self.price_feed = PriceFeed(db=self.db)
+        prices = self.price_feed.get(ticker)
+        self.last_prices = prices
+        if prices['status'] != 'OK':
+            print(f"  No data: {prices['reason']}")
             return None
+        frame = pd.DataFrame({'Close': prices['close']})
+        print(f"  {len(frame)} sessions (fetch #{prices['fetch']['fetch_id']})")
+        return frame
 
     def calculate_returns(self, data):
         """Calculate 5-day forward returns"""
-        data['return_5d'] = data['Close'].shift(-5) / data['Close'] - 1
+        data['return_5d'] = data['Close'].shift(-HORIZON) / data['Close'] - 1
+        data['outcome_date'] = pd.Series(data.index, index=data.index).shift(-HORIZON)
         return data
 
     def generate_predictions(self, data):
@@ -97,6 +78,7 @@ class Backtester:
             return_val = float(data['return_5d'].values[idx])
             signal = str(data['signal'].values[idx])
             date_val = data.index[idx].strftime('%Y-%m-%d')
+            outcome_date = pd.Timestamp(data['outcome_date'].values[idx]).strftime('%Y-%m-%d')
 
             if return_val > 0.02:
                 actual = 'UP'
@@ -111,6 +93,7 @@ class Backtester:
 
             results.append({
                 'date': date_val,
+                'outcome_date': outcome_date,
                 'signal': signal,
                 'actual': actual,
                 'correct': correct,
@@ -119,19 +102,16 @@ class Backtester:
 
         return results
 
-    def save_results(self, ticker, results):
-        """Save backtest results to DB"""
-        conn = sqlite3.connect(db_path())
-        c = conn.cursor()
-
-        for result in results:
-            c.execute('''INSERT OR IGNORE INTO backtest_results
-                (ticker, date, predicted_signal, actual_direction, accuracy_5d, profit_loss, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (ticker, result['date'], result['signal'], result['actual'], result['correct'], result['return'], datetime.now().isoformat()))
-
-        conn.commit()
-        conn.close()
+    def save_results(self, ticker, results, fetch):
+        """Store per-day results with the price fetch they come from."""
+        computed_at = utc_now_iso()
+        return self.db.save_backtest_results([{
+            'ticker': ticker, 'signal_date': r['date'], 'horizon_days': HORIZON,
+            'predicted_signal': r['signal'], 'actual_direction': r['actual'],
+            'correct': r['correct'], 'forward_return_pct': r['return'],
+            'outcome_date': r['outcome_date'], 'method': METHOD,
+            'price_fetch_id': fetch['fetch_id'], 'computed_at': computed_at,
+        } for r in results])
 
     def calculate_metrics(self, results):
         """Valid descriptive metrics only (see module docstring)."""
@@ -163,7 +143,8 @@ class Backtester:
 
         data = self.fetch_historical_data(ticker)
         if data is None:
-            return unavailable('yfinance', 'no price data', ticker=ticker)
+            return unavailable('yfinance', (self.last_prices or {}).get('reason') or 'no price data',
+                               ticker=ticker, provenance=(self.last_prices or {}).get('provenance'))
 
         test_start = int(len(data) * 0.80)
         # Momentum is causal, so it can be computed on the full series; only the
@@ -173,7 +154,7 @@ class Backtester:
         data_test = data.iloc[test_start:]
 
         results = self.evaluate_predictions(data_test)
-        self.save_results(ticker, results)
+        self.save_results(ticker, results, self.last_prices['fetch'])
         metrics = self.calculate_metrics(results)
 
         print(f"  Evaluation days:       {metrics.get('periods_tested', 0)} "
@@ -192,7 +173,9 @@ class Backtester:
             'evaluation_end': str(data_test.index[-1].date()) if len(data_test) else None,
             'warning': ('Signal accuracy check only: no positions, costs, benchmark or '
                         'drawdown. Small, overlapping sample. Full backtest in phase P1.1.'),
+            'method': METHOD,
             'source': 'yfinance 2Y adjusted close',
+            'provenance': self.last_prices['provenance'],
             'computed_at': utc_now_iso(),
         }
 

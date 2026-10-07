@@ -5,39 +5,17 @@ Insider Tracker - SEC Form 4
 P0.1: the previous version always returned a NEUTRAL signal with zero buys/sells
 without reading any filing. Form 4 transactions are not parsed yet, so the module
 now reports DATA UNAVAILABLE. Real parsing (transaction codes P/S/M/A) is phase P0.3.
+
+P0.2: the legacy insider_transactions table (never filled, with an invented "confidence"
+column) is no longer created; it is backed up and dropped by the v2 migration. The
+provenance-aware Form 4 schema is defined with the parser in phase P0.3.
 """
 
-import sqlite3
-
-from .common import db_path, unavailable
+from .common import unavailable
 
 
 class InsiderTracker:
     """Track insider transactions from SEC Form 4"""
-
-    def __init__(self):
-        self.init_db()
-
-    def init_db(self):
-        """Initialize SQLite for insider data"""
-        conn = sqlite3.connect(db_path())
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS insider_transactions (
-            ticker TEXT,
-            insider_name TEXT,
-            insider_role TEXT,
-            transaction_type TEXT,
-            shares INTEGER,
-            price REAL,
-            amount REAL,
-            date TEXT,
-            filing_date TEXT,
-            source TEXT,
-            confidence INTEGER,
-            PRIMARY KEY (ticker, insider_name, date, transaction_type)
-        )''')
-        conn.commit()
-        conn.close()
 
     def run(self, ticker):
         """Insider analysis for ticker: not implemented, reported as unavailable."""

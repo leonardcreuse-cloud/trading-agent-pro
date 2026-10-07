@@ -90,6 +90,10 @@ def _fresh_text(flag):
     return 'FRESH' if flag is True else 'STALE' if flag is False else 'UNKNOWN'
 
 
+def _tp_note(ctx, at):
+    return '' if at == ctx.tm.cutoff else '; freshness evaluated at T_p (input of the previous cutoff)'
+
+
 def _comp(name, score=None, reason=None, as_of=None, item=None, detail=None, fresh=None):
     source, rank = RANKS[name]
     return {'name': name, 'score': score, 'reason': reason, 'as_of': as_of, 'evidence': item,
@@ -120,7 +124,8 @@ def technical(ctx, t, session, at):
     item = evidence(ctx.tm, YF_SOURCE, 2, f'{t}: adjusted closes up to {last} -> technical score '
                                           f"{scored['technical_score']} ({detail})",
                     as_of=last, published_at=session_close_utc(last), retrieved_at=fetch.get('retrieved_at'),
-                    fetch_id=fetch.get('fetch_id'), fresh=fresh, basis='session close 21:00 UTC (estimate)')
+                    fetch_id=fetch.get('fetch_id'), fresh=fresh,
+                    basis='session close 21:00 UTC (estimate)' + _tp_note(ctx, at))
     return _comp('technical', score=_num(scored['technical_score']), as_of=last, item=item, detail=detail,
                  fresh=fresh)
 
@@ -166,7 +171,7 @@ def fundamentals(ctx, t, at):
         item = evidence(ctx.tm, SEC_SOURCE, 1, f'{t}: XBRL facts known at {at} -> fundamentals score {composite} '
                                                f'({detail})',
                         as_of=str(pub)[:10], published_at=pub, retrieved_at=fetch.get('retrieved_at'),
-                        fetch_id=fetch.get('fetch_id'), fresh=fresh, basis=basis)
+                        fetch_id=fetch.get('fetch_id'), fresh=fresh, basis=basis + _tp_note(ctx, at))
     return _comp('fundamentals', score=_num(composite), as_of=str(pub)[:10] if pub else None, item=item,
                  detail=detail + ('' if pub else '; publication instant of the inputs not established'),
                  fresh=fresh)
@@ -233,7 +238,7 @@ def insider(ctx, t, at):
                     as_of=as_of, published_at=at, retrieved_at=fetch.get('retrieved_at'),
                     fetch_id=fetch.get('fetch_id'), fresh=fresh,
                     basis=f'window summary of Form 4 transactions ({FORM4_METRIC}) filed by that instant; feed '
-                          'retrieved after it')
+                          'retrieved after it' + _tp_note(ctx, at))
     return _comp('insider', score=_num(score), as_of=as_of, item=item, detail=detail, fresh=fresh)
 
 
@@ -376,7 +381,8 @@ def _validation(ctx, res, wf_path, research_paths):
         extra.append('Stage 2 holdout results: DATA UNAVAILABLE (no results file).')
     elif any(r['stage'] == 2 for r in late):
         extra.append('Stage 2 holdout results: DATA UNAVAILABLE at this cutoff (computed after it).')
-    statement = ' '.join([v['statement'].strip()] + extra)
+    head = v['statement'].strip()
+    statement = ' '.join([head if head.endswith('.') else head + '.'] + extra)
     record = conclude('overall', 11, statement, items, 'system_output')
     record['banner'] = True
     res.add(record)
@@ -442,10 +448,13 @@ def _validation(ctx, res, wf_path, research_paths):
             if ic is None or not t_stat:
                 continue
             se = abs(ic / t_stat)
-            res.add(conclude('overall', 11, f'"Not significant" is not "no effect": at {h} the approximate 95% '
-                                            f'interval of the ex-news cross-sectional IC is [{ic - CI_Z * se:+.4f}, '
-                                            f'{ic + CI_Z * se:+.4f}], which includes small positive and negative '
-                                            'values; the test has limited power.', items[:1], 'interpretation'))
+            lo, hi = ic - CI_Z * se, ic + CI_Z * se
+            reading = ('which includes zero as well as small positive and negative values: "not significant" is '
+                       'not "no effect", and the test has limited power' if lo <= 0 <= hi
+                       else 'which excludes zero (approximation; the pre-declared criterion is the corrected p-value)')
+            res.add(conclude('overall', 11, f'At {h} the approximate 95% interval of the ex-news cross-sectional IC '
+                                            f'(IC +/- 1.96 IC/t) is [{lo:+.4f}, {hi:+.4f}], {reading}.', items[:1],
+                             'interpretation'))
     res.add(unavailable('overall', 11, 'per-company signal reliability',
                         'the walk-forward validation is cross-sectional over the validation universe (ranking tickers '
                         'against each other); no per-company validation exists'))
@@ -642,8 +651,10 @@ def build(ctx, analysis_path=None, walk_forward_path=None, research_paths=None, 
               note=(f'Thresholds {version}; borderline band '
                     + (f'+/- {band} points' if band is not None else 'not pre-declared (config weekly.thresholds has no '
                                                                       'signal_borderline_points): not assessed')
-                    + '. Ranks describe the heuristic only; the walk-forward cross-sectional IC of this ranking was not '
-                      'significant (see Q11).'))
+                    + '. Ranks describe the heuristic only: '
+                    + ('the walk-forward run admissible at the cutoff found no significant cross-sectional IC for this '
+                       'ranking (see Q11).' if wf_c.get('status') == 'OK' and validation['status'] != 'DEMONSTRATED'
+                       else 'see Q11 for the validation status at the cutoff.')))
     labels = {}
     for i in infos:
         labels[i['ex_c']['label']] = labels.get(i['ex_c']['label'], 0) + 1

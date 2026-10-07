@@ -322,6 +322,7 @@ def _macro(ctx, res, http_get):
         prev = stored_calendar(ctx, rid, tm.previous_cutoff, cover_from)
         pit_any, prev_any = pit_any or pit is not None, prev_any or prev is not None
         cur_in = [d for d in (current['dates'] or []) if in_horizon(tm, d)] if current['status'] == 'OK' else None
+        cur_next = next((d for d in (current['dates'] or []) if _d(d) > hi), None)
         pit_in = [d for d in pit['dates'] if in_horizon(tm, d)] if pit else None
         pit_next = next((d for d in pit['dates'] if _d(d) > hi), None) if pit else None
         prev_in = [d for d in prev['dates'] if in_horizon(tm, d)] if prev else None
@@ -346,7 +347,8 @@ def _macro(ctx, res, http_get):
             pit_next if pit else None,
             (f"fetch {pit['fetch']['fetch_id']} retrieved {pit['fetch']['retrieved_at']}" if pit
              else 'not established: no calendar stored at or before the cutoff'),
-            None if cur_in is None else (', '.join(f'{d} ({_weekday(d)})' for d in cur_in) or 'none'),
+            None if cur_in is None else ((', '.join(f'{d} ({_weekday(d)})' for d in cur_in) or 'none')
+                                         + (f'; next after the horizon {cur_next}' if cur_next else '')),
             (f"fetch {cur_fetch.get('fetch_id')} retrieved {cur_fetch.get('retrieved_at')}"
              + (' (reused)' if current['reused'] else '') if current['status'] == 'OK'
              else f"unavailable: {current['reason']}"),

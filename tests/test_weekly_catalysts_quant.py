@@ -280,6 +280,11 @@ def test_quant_levels_and_kinds(tmp_path):
     # evidence: technical from yfinance (rank 2), fundamentals / insider SEC (rank 1); nothing after T_c
     assert {e['source'] for e in ex['evidence']} == {'yfinance', 'SEC EDGAR'}
     assert all(e['published_at'] <= T_C for c in out['conclusions'] for e in c['evidence'])
+    # T_p inputs are judged fresh at T_p (a s_-5 close is 8 days old at T_c: stale there, fresh at T_p)
+    tp_tech = next(e for e in ex['evidence'] if e['source'] == 'yfinance' and e['as_of'] == '2026-09-29')
+    assert tp_tech['fresh_at_cutoff'] is True and 'freshness evaluated at T_p' in tp_tech['published_at_basis']
+    tc_tech = next(e for e in ex['evidence'] if e['source'] == 'yfinance' and e['as_of'] == '2026-10-06')
+    assert tc_tech['fresh_at_cutoff'] is True and 'T_p' not in tc_tech['published_at_basis']
 
 
 def test_quant_news_only_from_daily_run_at_or_before_cutoff(tmp_path):
@@ -346,6 +351,7 @@ def test_validation_banner_strong_when_admissible_and_not_demonstrated(tmp_path)
     b = banner[0]
     assert b['question'] == 11 and b['kind'] == 'system_output' and b['level'] == STRONG
     assert 'NOT demonstrated statistically significant predictive power' in b['statement']
+    assert '. Stage 2 holdout results' in b['statement'] or 'Bonferroni. Stage 2' in b['statement']
     assert 'WITHOUT news' in b['statement'] and 'news component (weight 0.20)' in b['statement']
     assert 'research stage 1 (148 stocks' in b['statement'] and 'Stage 2 holdout results: DATA UNAVAILABLE' in b['statement']
     t = table(out, 'Walk-forward validation of the ex-news combined score (cross-sectional IC)')
@@ -453,9 +459,10 @@ def test_catalysts_calendar_retrieved_after_cutoff_is_logged_but_not_admissible(
     assert all('testkey-abcdef123' not in json.dumps(r) for r in rows)        # key never stored
     assert 'testkey-abcdef123' not in json.dumps(out)
     m = macro_rows(out)
-    assert m[10]['dates in horizon as retrieved at G (after the cutoff, information only)'] == '2026-10-14 (Wed)'
-    assert m[180]['dates in horizon as retrieved at G (after the cutoff, information only)'] == \
-        '2026-10-08 (Thu), 2026-10-15 (Thu)'                                  # 10-22 is after s_0 + 15 days
+    g = 'dates in horizon as retrieved at G (after the cutoff, information only)'
+    assert m[10][g] == '2026-10-14 (Wed); next after the horizon 2026-11-10'
+    assert m[180][g] == '2026-10-08 (Thu), 2026-10-15 (Thu); next after the horizon 2026-10-22'  # 10-22 > s_0 + 15 d
+    assert m[326][g] == 'none; next after the horizon 2026-12-09'
     assert m[10]['dates in horizon (as known at T_c)'] is None and m[10]['status at T_c'] == UNAVAILABLE
     assert not [c for c in out['conclusions'] if c['question'] == 9 and c['kind'] == 'official_fact']
     reasons = {u['item']: u['reason'] for u in out['unavailable']}

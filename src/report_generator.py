@@ -235,7 +235,22 @@ class ReportGenerator:
             out.append(f'<p>{cell(None)}</p>' + self._reason(bt))
 
         wf = m.get('walk_forward', {})
-        out.append(f"<h3>Walk-forward validation</h3><p>{status_cell(wf.get('status', DATA_UNAVAILABLE))}</p>")
+        out.append(f"<h3>Walk-forward validation (all tickers pooled)</h3><p>{status_cell(wf.get('status', DATA_UNAVAILABLE))}"
+                   + (f" — computed {escape(str(wf.get('computed_at')))}" if wf.get('computed_at') else '') + '</p>')
+        if wf.get('horizons'):
+            out.append('<table><tr><th>Horizon</th><th>IC technical</th><th>IC fundamentals</th>'
+                       '<th>IC insider</th><th>IC combined</th><th>BUY excess vs always long</th>'
+                       '<th>Folds IC &gt; 0</th></tr>')
+            for h, d in wf['horizons'].items():
+                ic = d.get('ic_pooled', {})
+                sig = d.get('significant', [])
+                out.append(f"<tr><td>{escape(h)}</td>" + ''.join(
+                    f"<td>{cell(ic.get(c))}{' *' if c in sig else ''}</td>"
+                    for c in ('technical', 'fundamentals', 'insider', 'combined'))
+                    + f"<td>{cell(d.get('buy_excess_vs_baseline_pct'), suffix='%')}</td>"
+                    f"<td>{cell(d.get('folds_with_positive_ic'))}</td></tr>")
+            out.append('</table><p class="small">IC = rank correlation between score and forward '
+                       'return; * = |t| &ge; 2. News excluded (no history). See reports/walk_forward.json.</p>')
         out.append(self._reason(wf))
         out.append('</div>')
         return '\n'.join(out)

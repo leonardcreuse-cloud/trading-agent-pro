@@ -186,7 +186,13 @@ class SECParser:
                 'value_text': f['accession_number'], 'published_at': f['published_at'],
                 'published_at_basis': f['published_at_basis']}
                 for f in filings if f['accession_number'] and (f['report_date'] or f['filing_date'])])
-            self._filings_cache[ticker] = {'raw': data, 'filings': filings, 'fetch': fetch}
+            # The 'recent' block holds the last ~1000 filings; older ones are in extra files
+            # (not downloaded). History before the oldest listed filing is then unknown.
+            truncated = bool((data.get('filings') or {}).get('files'))
+            dates = [f['filing_date'] for f in filings if f['filing_date']]
+            self._filings_cache[ticker] = {
+                'raw': data, 'filings': filings, 'fetch': fetch,
+                'coverage_start': min(dates) if truncated and dates else None}
         return self._filings_cache.get(ticker)
 
     def fetch_latest_periodic_filing(self, ticker, known_at=None):

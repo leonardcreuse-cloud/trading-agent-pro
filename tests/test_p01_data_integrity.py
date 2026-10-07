@@ -293,7 +293,8 @@ def test_full_pipeline_runs_offline_and_reports_unavailability(tmp_path):
         m = r['modules']
         assert m['signal']['combined_score'] is None
         assert m['signal']['signal'] == 'INSUFFICIENT DATA'
-        assert m['walk_forward']['status'] == 'NOT IMPLEMENTED'
+        assert m['walk_forward']['status'] == 'DATA UNAVAILABLE'      # P1.2: not run yet
+        assert 'main.py walkforward' in m['walk_forward']['reason']
         assert r['data_availability']['technical'] == 'DATA UNAVAILABLE'
         assert r['data_availability']['macro'] == 'DATA UNAVAILABLE'
 

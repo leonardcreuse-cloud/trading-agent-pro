@@ -74,6 +74,18 @@ limit: market sessions 5 days, daily series 7, monthly series 80, 10-K/10-Q 120,
 An insider score of 50 is computed ("no informative transaction observed"); it is not a default:
 when SEC or the Form 4 documents cannot be read, the score is `None`.
 
+## Walk-forward validation (P1.2)
+
+| Metric | Definition |
+|---|---|
+| Rank IC | Spearman correlation between a score at T and the return close T+1 → close T+1+H |
+| n_effective | n × min(1, step / H): overlapping windows are not independent |
+| t statistic | IC × √((n_eff − 2) / (1 − IC²)); `significant` when \|t\| ≥ 2 |
+| Always long | Mean return and up-rate over all evaluation dates (baseline) |
+
+Walk-forward results describe past ranking skill of the fixed heuristics on 4 tickers; they are
+not a probability and do not include costs (full backtest: P1.1).
+
 ## Configuration
 
 Secrets go in `.env` (see `.env.example`): `SEC_USER_AGENT`, `FRED_API_KEY`, `NEWSAPI_KEY`.

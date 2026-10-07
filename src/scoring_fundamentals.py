@@ -92,16 +92,19 @@ class ScoringFundamentals:
         total_weight = sum(self.WEIGHTS[k] for k in available)
         return round(sum(v * self.WEIGHTS[k] for k, v in available.items()) / total_weight, 2)
 
-    def analyze(self, ticker, known_at=None):
-        print(f"  [FUNDAMENTALS] {ticker}...")
-        sec_data = self.get_sec_data(ticker, known_at)
-
+    def score_inputs(self, sec_data):
+        """(composite score or None, component scores) from SEC inputs."""
         components = {
             'revenue_scale': self.calculate_revenue_scale_score(sec_data['revenue']),
             'revenue_growth': self.calculate_revenue_growth_score(sec_data['revenue_growth_pct']),
             'leverage': self.calculate_leverage_score(sec_data['debt_to_equity']),
         }
-        composite = self.calculate_composite_score(components)
+        return self.calculate_composite_score(components), components
+
+    def analyze(self, ticker, known_at=None):
+        print(f"  [FUNDAMENTALS] {ticker}...")
+        sec_data = self.get_sec_data(ticker, known_at)
+        composite, components = self.score_inputs(sec_data)
         available = [k for k, v in components.items() if v is not None]
 
         if composite is None:

@@ -10,6 +10,9 @@ Scores are heuristic (not calibrated); continuous features come in phase P1.3.
 P0.2: prices come from the shared provenance-aware PriceFeed (one download per run,
 logged and stored); the output carries a `provenance` block (fetch id, retrieval time,
 last session, freshness).
+
+P1.2: the scoring is in score_closes(), usable on any price history slice (walk-forward
+evaluation recomputes the score at past dates from prices available then).
 """
 
 from datetime import datetime, timedelta
@@ -111,61 +114,64 @@ class PriceTechnical:
             return self._unavailable(ticker, self.last_error or 'insufficient price data')
 
         try:
-            # Use 150 days (enough for Bollinger Bands + MACD + RSI)
-            prices_valid = prices[-150:] if len(prices) >= 150 else prices
-            prices_valid = np.array(prices_valid, dtype=float).flatten()
-
-            # Calculate indicators
-            rsi = self.indicators.calculate_rsi(prices_valid)
-            macd = self.indicators.calculate_macd(prices_valid)
-            bb = self.indicators.calculate_bollinger_bands(prices_valid)
-
-            # Get latest values
-            rsi_val = float(rsi[-1])
-            macd_hist = float(macd['histogram'][-1])
-            price_last = float(prices_valid[-1])
-            bb_upper = float(bb['upper'][-1])
-            bb_middle = float(bb['middle'][-1])
-            bb_lower = float(bb['lower'][-1])
-
-            # Check NaN
-            if np.isnan(rsi_val) or np.isnan(macd_hist) or np.isnan(bb_upper):
-                return self._unavailable(ticker, 'indicator computation returned NaN')
-
-            # Score each indicator
-            rsi_score, rsi_signal = self.score_rsi(rsi_val)
-            macd_score, macd_signal = self.score_macd(macd_hist)
-            bb_score, bb_signal = self.score_bollinger_bands(price_last, bb_upper, bb_middle, bb_lower)
-
-            # Combined technical score (weighted average)
-            technical_score = round((rsi_score * 0.4 + macd_score * 0.35 + bb_score * 0.25), 2)
-
-            # Final signal
-            if technical_score >= 65:
-                final_signal = 'BUY'
-            elif technical_score <= 35:
-                final_signal = 'SELL'
-            else:
-                final_signal = 'HOLD'
-
-            return {
-                'ticker': ticker,
-                'signal': final_signal,
-                'technical_score': technical_score,
-                'components': {
-                    'rsi': {'value': round(rsi_val, 2), 'signal': rsi_signal, 'score': rsi_score},
-                    'macd': {'histogram': round(macd_hist, 4), 'signal': macd_signal, 'score': macd_score},
-                    'bollinger': {'price': round(price_last, 2), 'signal': bb_signal, 'score': bb_score}
-                },
-                'status': 'OK',
-                'last_price_date': self.last_price_date,
-                'score_type': 'heuristic 0-100 score, not a probability',
-                'provenance': self.last_provenance,
-                'timestamp': utc_now_iso(),
-                'source': 'yfinance prices; RSI/MACD/Bollinger computed locally'
-            }
+            scored = self.score_closes(prices)
         except Exception as e:  # noqa: BLE001 - reported, not hidden
             return self._unavailable(ticker, f'indicator computation failed: {type(e).__name__}: {e}')
+        if scored is None:
+            return self._unavailable(ticker, 'indicator computation returned NaN')
+        return {
+            'ticker': ticker,
+            **scored,
+            'status': 'OK',
+            'last_price_date': self.last_price_date,
+            'score_type': 'heuristic 0-100 score, not a probability',
+            'provenance': self.last_provenance,
+            'timestamp': utc_now_iso(),
+            'source': 'yfinance prices; RSI/MACD/Bollinger computed locally'
+        }
+
+    def score_closes(self, prices):
+        """
+        Technical score from daily closes (oldest first, last = evaluation session).
+        Uses the last 150 closes; returns None when an indicator is NaN.
+        """
+        prices_valid = prices[-150:] if len(prices) >= 150 else prices
+        prices_valid = np.array(prices_valid, dtype=float).flatten()
+
+        rsi = self.indicators.calculate_rsi(prices_valid)
+        macd = self.indicators.calculate_macd(prices_valid)
+        bb = self.indicators.calculate_bollinger_bands(prices_valid)
+
+        rsi_val = float(rsi[-1])
+        macd_hist = float(macd['histogram'][-1])
+        price_last = float(prices_valid[-1])
+        bb_upper = float(bb['upper'][-1])
+        bb_middle = float(bb['middle'][-1])
+        bb_lower = float(bb['lower'][-1])
+
+        if np.isnan(rsi_val) or np.isnan(macd_hist) or np.isnan(bb_upper):
+            return None
+
+        rsi_score, rsi_signal = self.score_rsi(rsi_val)
+        macd_score, macd_signal = self.score_macd(macd_hist)
+        bb_score, bb_signal = self.score_bollinger_bands(price_last, bb_upper, bb_middle, bb_lower)
+
+        technical_score = round((rsi_score * 0.4 + macd_score * 0.35 + bb_score * 0.25), 2)
+        if technical_score >= 65:
+            final_signal = 'BUY'
+        elif technical_score <= 35:
+            final_signal = 'SELL'
+        else:
+            final_signal = 'HOLD'
+        return {
+            'signal': final_signal,
+            'technical_score': technical_score,
+            'components': {
+                'rsi': {'value': round(rsi_val, 2), 'signal': rsi_signal, 'score': rsi_score},
+                'macd': {'histogram': round(macd_hist, 4), 'signal': macd_signal, 'score': macd_score},
+                'bollinger': {'price': round(price_last, 2), 'signal': bb_signal, 'score': bb_score}
+            },
+        }
 
 
 if __name__ == "__main__":

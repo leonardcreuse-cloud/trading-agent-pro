@@ -42,6 +42,9 @@ def main():
         print("=" * 80)
         print(f"[{utc_now_iso()}] Starting batch analysis...")
         Integration().run_daily_batch()
+    elif command == 'walkforward':
+        from src.walk_forward import WalkForward
+        WalkForward().run()
     elif command == 'status':
         print_status()
     else:
@@ -51,6 +54,7 @@ def main():
 def print_menu():
     print("\nUsage:")
     print("  python main.py analyze   - Run batch analysis")
+    print("  python main.py walkforward - Point-in-time walk-forward validation (slow first run)")
     print("  python main.py status    - Show configuration status")
 
 

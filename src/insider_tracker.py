@@ -118,7 +118,7 @@ class InsiderTracker:
         self.sec = sec_parser or SECParser()
         self.db = self.sec.db
 
-    def ingest(self, ticker, known_at=None, days=LOOKBACK_DAYS):
+    def ingest(self, ticker, known_at=None, days=LOOKBACK_DAYS, progress=False):
         """
         Download / reuse the Form 4 XML documents filed in the window and store their
         transactions. Returns (n_filings, n_parsed, failures) or None if SEC is unreachable.
@@ -132,21 +132,26 @@ class InsiderTracker:
         window = [f for f in filings['filings'] if f['form'] == '4' and f['published_at']
                   and start < f['published_at'] <= end]
         parsed, failures = 0, []
-        for filing in window:
+        for n, filing in enumerate(window, 1):
+            if progress and n % 100 == 0:
+                print(f"    Form 4 documents: {n}/{len(window)}")
             if not filing.get('primary_document') or not filing['accession_number']:
                 failures.append({'accession': filing['accession_number'],
+                                 'published_at': filing['published_at'],
                                  'reason': 'primary document not listed in submissions feed'})
                 continue
             url = form4_xml_url(cik, filing['accession_number'], filing['primary_document'])
             xml_text = self.sec._get(url, as_json=False, max_age=IMMUTABLE)
             if xml_text is None:
                 failures.append({'accession': filing['accession_number'],
+                                 'published_at': filing['published_at'],
                                  'reason': self.sec.last_error})
                 continue
             try:
                 doc = parse_form4(xml_text)
             except ET.ParseError as e:
                 failures.append({'accession': filing['accession_number'],
+                                 'published_at': filing['published_at'],
                                  'reason': f'XML parse error: {e}'})
                 continue
             rows = []

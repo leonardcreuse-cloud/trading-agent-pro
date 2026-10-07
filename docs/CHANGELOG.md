@@ -1,5 +1,30 @@
 # Changelog
 
+## P1.2 — Walk-forward validation (point-in-time, out-of-sample)
+
+**New command** `python main.py walkforward` (`src/walk_forward.py`), results in
+`reports/walk_forward.json`; the daily report shows a summary (stale after 7 days).
+- Every 5 sessions over 5 years of prices (after 150 sessions of history), the signal is
+  rebuilt as it would have been at that session's close: technical from closes up to T,
+  fundamentals from XBRL facts accepted by T, insider from Form 4 filed in (T − 90 d, T].
+  News is excluded (NewsAPI has no history). Insider is `None` (not "no trade") when the
+  window is not covered by the downloaded filing history or contains an unreadable filing.
+- Outcome: close T+1 → close T+1+H (H = 5, 20 sessions): the decision is made after T's close.
+- Metrics: rank IC (Spearman) per component, pooled and per ticker, with an overlap-adjusted
+  t statistic; combined-signal classes vs always-long; IC per calendar half-year fold.
+- Nothing is fitted (fixed heuristics), so every date is out-of-sample.
+- `PriceTechnical.score_closes()` and `ScoringFundamentals.score_inputs()` extracted so the
+  production scoring is reused unchanged; SEC feed truncation (`coverage_start`) recorded.
+
+**First result (2022-05 → 2026-09, 4 tickers, 880 dates)**: no component has a significant IC
+(all |t| < 1): combined 0.004 (5d) / 0.031 (20d), insider slightly negative, combined IC > 0 in
+4–5 of 10 folds. The heuristic signal has no demonstrated ranking skill yet.
+
+**Performance**: first run ≈ 5.5 min (≈1,500 Form 4 documents downloaded once), then ≈ 45 s.
+
+**Tests**: `tests/test_p12_walk_forward.py` (11 tests, offline) including a no-look-ahead test
+(rewriting future prices leaves earlier scores unchanged). Total 144 tests.
+
 ## P0.3 — SEC XBRL fundamentals and Form 4 insider transactions
 
 **Fundamentals (`src/sec_xbrl.py`, `SECParser.fundamentals`)**

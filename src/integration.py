@@ -22,12 +22,15 @@ P0.3 changes:
 - Fundamentals from SEC XBRL company facts; insider activity from parsed Form 4 XML.
   Both share the run's SECParser (one ticker file, one submissions feed per ticker).
 - The insider score is the fourth component of the combined signal.
+
+P1.2: the walk_forward block is the summary of the last 'python main.py walkforward' run
+(reports/walk_forward.json), flagged stale after 7 days; DATA UNAVAILABLE if never run.
 """
 
 import json
 
 from .backtester import Backtester
-from .common import (DATA_UNAVAILABLE, NOT_IMPLEMENTED, redact, reports_dir, tickers,
+from .common import (DATA_UNAVAILABLE, redact, reports_dir, tickers,
                      unavailable, utc_now_iso)
 from .dashboard import Dashboard
 from .database import Database
@@ -41,6 +44,7 @@ from .report_generator import ReportGenerator
 from .scoring_fundamentals import ScoringFundamentals
 from .scoring_signal_fixed import ScoringSignalFixed
 from .sec_parser import SECParser
+from .walk_forward import latest_summary as walk_forward_summary
 
 
 def module_status(payload):
@@ -89,10 +93,7 @@ class Integration:
         modules['sec'] = self._safe('sec', self.sec.run, ticker)
         modules['insider'] = self._safe('insider', self.insider.run, ticker)
         modules['backtest'] = self._safe('backtest', self.backtester.run, ticker)
-        modules['walk_forward'] = {
-            'status': NOT_IMPLEMENTED,
-            'reason': 'Walk-forward validation not implemented yet (phase P1.2)',
-        }
+        modules['walk_forward'] = self._safe('walk_forward', walk_forward_summary)
         modules['technical'] = self._safe('technical', self.technical.analyze, ticker)
         modules['news'] = self._safe('news', self.news.analyze, ticker)
         modules['fundamentals'] = self._safe('fundamentals', self.fundamentals.analyze, ticker)

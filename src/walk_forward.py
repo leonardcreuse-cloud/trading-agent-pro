@@ -50,6 +50,8 @@ import pandas as pd
 from .common import (DATA_UNAVAILABLE, load_config, redact, reports_dir, to_utc_iso,
                      utc_now_iso, validation_universe)
 from .database import Database
+from .features import feature_vector
+from .model import feature_ics, walk_forward_model
 from .insider_tracker import LOOKBACK_DAYS as INSIDER_WINDOW_DAYS, InsiderTracker, insider_score
 from .market_data import PriceFeed, session_close_utc
 from .price_technical import PriceTechnical
@@ -206,13 +208,18 @@ class WalkForward:
                 'failed_at': sorted(f['published_at'] for f in failures if f.get('published_at')),
                 'n_filings': n_filings, 'n_parsed': n_parsed, 'n_failed': len(failures)}
 
-    def _insider_at(self, ticker, coverage, known):
+    def _insider_summary_at(self, ticker, coverage, known):
+        """Form 4 window summary at `known`, or None when the window is not fully covered."""
         if not coverage or known < coverage['first_full_window']:
             return None
         start = to_utc_iso(datetime.fromisoformat(known) - timedelta(days=INSIDER_WINDOW_DAYS))
         if any(start < t <= known for t in coverage['failed_at']):
             return None
-        return insider_score(self.insider.summarize(ticker, known_at=known))
+        return self.insider.summarize(ticker, known_at=known)
+
+    def _insider_at(self, ticker, coverage, known):
+        summary = self._insider_summary_at(ticker, coverage, known)
+        return None if summary is None else insider_score(summary)
 
     def samples(self, ticker):
         """One row per evaluation date: component scores, combined signal, forward returns."""
@@ -232,22 +239,26 @@ class WalkForward:
         for i in range(MIN_HISTORY - 1, len(values) - ENTRY_LAG - min(HORIZONS), STEP):
             known = session_close_utc(dates[i])
             tech = self.technical.score_closes(values[:i + 1])
-            fund = None
+            fund, fin = None, None
             if facts:
-                fund, _ = self.fundamentals.score_inputs(self.sec.fundamentals(ticker, known_at=known))
+                fin = self.sec.fundamentals(ticker, known_at=known)
+                fund, _ = self.fundamentals.score_inputs(fin)
+            insider = self._insider_summary_at(ticker, coverage, known)
             scores = {'technical': tech['technical_score'] if tech else None,
                       'fundamentals': fund,
-                      'insider': self._insider_at(ticker, coverage, known)}
+                      'insider': None if insider is None else insider_score(insider)}
             available = [k for k, v in scores.items() if v is not None]
             combined = self.signal.combine_scores(scores) \
                 if len(available) >= self.signal.MIN_COMPONENTS else None
             entry = i + ENTRY_LAG
             row = {'ticker': ticker, 'date': dates[i], 'known_at': known, **scores,
                    'combined': combined, 'signal': self.signal.generate_final_signal(combined),
-                   'entry_date': dates[entry]}
+                   'entry_date': dates[entry],
+                   'features': feature_vector(values[:i + 1], fin, insider)}
             for h in HORIZONS:
                 exit_ = entry + h
                 row[f'fwd_{h}d'] = values[exit_] / values[entry] - 1 if exit_ < len(values) else None
+                row[f'exit_{h}d'] = dates[exit_] if exit_ < len(values) else None
             rows.append(row)
         return rows, {'reason': None, 'provenance': prices['provenance'],
                       'insider_coverage': coverage, 'company_facts_fetch': facts and facts['fetch_id'],
@@ -296,6 +307,10 @@ class WalkForward:
                 'but they were also never optimised.'],
             'tickers': per_ticker,
             'metrics': evaluate(all_samples) if all_samples else {},
+            'model': {f'{h}d': walk_forward_model(all_samples, h, STEP) for h in HORIZONS}
+            if all_samples else {},
+            'feature_ics': {f'{h}d': feature_ics(all_samples, h, STEP) for h in HORIZONS}
+            if all_samples else {},
             'samples': all_samples,
         }
         self._print(result)
@@ -306,6 +321,23 @@ class WalkForward:
 
     @staticmethod
     def _print(result):
+        for horizon, fics in result.get('feature_ics', {}).items():
+            print(f"\n  Feature cross-sectional IC, {horizon} (descriptive, nothing fitted)")
+            for f, x in fics.items():
+                flag = ' *' if x['significant'] else ''
+                print(f"    {f:22} {str(x['mean']):>9}  t={str(x['t_stat']):>6}{flag}")
+        for horizon, m in result.get('model', {}).items():
+            print(f"\n  Fitted model, {horizon} - walk-forward out-of-sample")
+            if m.get('status') != 'OK':
+                print(f"    {m.get('status')}: {m.get('reason')}")
+                continue
+            for name in ('model_oos', 'heuristic_same_dates', 'technical_same_dates'):
+                ic, sp = m[name]['ic'], m[name]['top_minus_bottom_quintile_pct']
+                flag = ' *' if ic['significant'] else ''
+                print(f"    {name:22} IC {str(ic['mean']):>8} t={str(ic['t_stat']):>6}{flag}   "
+                      f"Q5-Q1 {str(sp['mean']):>7}% t={sp['t_stat']}")
+            print(f"    Test period {m['test_period'][0]} -> {m['test_period'][1]}, "
+                  f"folds with positive IC {m['folds_with_positive_ic']}")
         for horizon, m in result['metrics'].items():
             print(f"\n  Horizon {horizon} (pooled over tickers)")
             for c, s in m['ic_pooled'].items():
@@ -346,6 +378,10 @@ def latest_summary(path=None):
                                                          if s['significant']],
                          'significant': [c for c, s in m['ic_pooled'].items() if s['significant']],
                          'buy_excess_vs_baseline_pct': m['buy_excess_vs_baseline_pct'],
+                         'model_oos_ic': ((data.get('model') or {}).get(h) or {}).get('model_oos', {})
+                         .get('ic', {}).get('mean'),
+                         'model_oos_significant': ((data.get('model') or {}).get(h) or {})
+                         .get('model_oos', {}).get('ic', {}).get('significant', False),
                          'folds_with_positive_ic': m['folds_with_positive_ic']}
                      for h, m in data.get('metrics', {}).items()},
     }

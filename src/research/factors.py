@@ -55,13 +55,38 @@ FEATURES = {
     'mom_6m_vs_sector': ('sector', +1, 'within-industry momentum (Asness, Porter & Stevens 2000)'),
 }
 
+# ---------------------------------------------------------------- stage 2 (pre-registered after
+# stage 1, before any stage 2 data; see docs/research/STAGE2_PREREGISTRATION.md)
+INSIDER_FEATURES = {
+    'insider_buyers_90d': ('insider', +1, 'insider purchases (Lakonishok & Lee 2001)'),
+    'insider_net_buy_to_mcap': ('insider', +1, 'net insider buying (Lakonishok & Lee 2001; '
+                                               'Cohen, Malloy & Pomorski 2012)'),
+    'insider_disc_sellers_90d': ('insider', -1, 'discretionary insider selling (Cohen, Malloy & '
+                                                'Pomorski 2012)'),
+}
+
+# Confirmatory family for stage 2: (id, feature, horizon). Holm-Bonferroni, alpha 0.05.
+CONFIRMATORY = (
+    ('C1', 'accruals', 252),
+    ('C2', 'accruals', 120),
+    ('C3', 'insider_net_buy_to_mcap', 120),
+    ('C4', 'insider_net_buy_to_mcap', 252),
+)
+CONFIRMATORY_ALPHA = 0.05
+
+
+def features_for(stage):
+    """Pre-registered feature set of a stage (stage 1: no insider features)."""
+    return dict(FEATURES, **INSIDER_FEATURES) if stage >= 2 else dict(FEATURES)
+
+
 GROUPS = tuple(dict.fromkeys(g for g, _, _ in FEATURES.values()))
 HORIZONS = (5, 20, 60, 120, 252)
 
 UNAVAILABLE_GROUPS = {
     'analyst_revisions': 'no free point-in-time history of estimates or price targets',
     'guidance_changes': 'no free machine-readable guidance history',
-    'insider': 'deferred to stage 2 (Form 4 history download)',
+    'insider': 'stage 1 only: added in stage 2 (INSIDER_FEATURES)',
     'macro': 'time-series hypothesis: identical for all stocks on a date (separate design)',
     'events': 'deferred (earnings dates / 8-K items)',
 }

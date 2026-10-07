@@ -31,11 +31,17 @@ P0.3 changes (financial statements, efficiency):
 - Documents are reused instead of re-downloaded: the ticker file for 24 h, company facts
   for 12 h, Form 4 XML documents forever (filed documents are immutable). The reused fetch
   keeps its original retrieval time in the provenance.
+
+P1.2b: requests go through one process-wide rate limiter (<= 9 requests/s, under the SEC
+fair-access limit of 10/s). prefetch() downloads many documents with a few threads under
+that limiter; logging, raw storage and parsing stay in the calling thread.
 """
 
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -53,6 +59,19 @@ NEW_YORK = ZoneInfo('America/New_York')
 TICKER_FILE_MAX_AGE = timedelta(hours=24)
 COMPANY_FACTS_MAX_AGE = timedelta(hours=12)
 IMMUTABLE = 'immutable'
+MIN_REQUEST_INTERVAL = 0.11      # seconds between SEC requests, all threads: <= 9 req/s
+PREFETCH_WORKERS = 4
+_RATE_LOCK = threading.Lock()
+_LAST_REQUEST = [0.0]
+
+
+def _throttle():
+    """Block until a request may start without exceeding the SEC rate limit."""
+    with _RATE_LOCK:
+        wait = _LAST_REQUEST[0] + MIN_REQUEST_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQUEST[0] = time.monotonic()
 ACCEPTANCE_BASIS = ('SEC acceptanceDateTime read as New York time '
                     '(conservative: >= the UTC reading of the feed)')
 
@@ -82,36 +101,69 @@ class SECParser:
         self.last_error = None
         self.last_fetch = {}
 
-    def _get(self, url, as_json=True, max_age=None):
+    def _cached(self, url, as_json, max_age):
+        """Reusable stored document for url (see _get), or None."""
+        if max_age is None:
+            return None
+        since = None if max_age == IMMUTABLE else datetime.now(timezone.utc) - max_age
+        cached = self.db.latest_fetch(SEC_SOURCE, url, since=since)
+        if not cached:
+            return None
+        try:
+            text = self.db.read_raw(cached['fetch_id'])
+            data = json.loads(text) if as_json else text
+        except Exception:  # noqa: BLE001 - corrupted cache: download again
+            return None
+        self.last_fetch[url] = cached
+        return data
+
+    def _download(self, url):
+        """(requested_at, response, exception) - thread-safe, rate limited, no DB access."""
+        requested_at = utc_now_iso()
+        response = None
+        try:
+            _throttle()
+            response = self.session.get(url, timeout=20)
+            response.raise_for_status()
+            return requested_at, response, None
+        except Exception as e:  # noqa: BLE001 - recorded by the caller
+            return requested_at, response, e
+
+    def prefetch(self, urls, as_json=True, max_age=None, workers=PREFETCH_WORKERS):
+        """Download the urls not reusable from storage, in parallel; returns {url: download}."""
+        if not self.user_agent:
+            return {}
+        missing = [u for u in dict.fromkeys(urls)
+                   if max_age is None or not self.db.latest_fetch(
+                       SEC_SOURCE, u, since=None if max_age == IMMUTABLE
+                       else datetime.now(timezone.utc) - max_age)]
+        if not missing:
+            return {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return dict(zip(missing, pool.map(self._download, missing)))
+
+    def _get(self, url, as_json=True, max_age=None, prefetched=None):
         """
         GET a document from SEC, logged with its raw payload; None on failure.
         max_age: reuse the last successful fetch of this URL if it is more recent than
         this timedelta, or whatever its age when max_age == IMMUTABLE.
+        prefetched: result of _download() for this url (from prefetch()).
         """
         if not self.user_agent:
             self.last_error = 'SEC_USER_AGENT not set (SEC requires a User-Agent with contact info)'
             return None
-        if max_age is not None:
-            since = None if max_age == IMMUTABLE else datetime.now(timezone.utc) - max_age
-            cached = self.db.latest_fetch(SEC_SOURCE, url, since=since)
-            if cached:
-                try:
-                    text = self.db.read_raw(cached['fetch_id'])
-                    data = json.loads(text) if as_json else text
-                except Exception:  # noqa: BLE001 - corrupted cache: download again
-                    data = None
-                if data is not None:
-                    self.last_fetch[url] = cached
-                    return data
-        requested_at = utc_now_iso()
-        response = None
-        try:
-            response = self.session.get(url, timeout=20)
-            response.raise_for_status()
-            time.sleep(0.11)  # SEC fair-access limit: max 10 requests/second
-            data = response.json() if as_json else response.text
-        except Exception as e:  # noqa: BLE001 - recorded and surfaced
-            self.last_error = redact(f"{type(e).__name__}: {e}")
+        if prefetched is None:
+            data = self._cached(url, as_json, max_age)
+            if data is not None:
+                return data
+        requested_at, response, error = prefetched or self._download(url)
+        if error is None:
+            try:
+                data = response.json() if as_json else response.text
+            except Exception as e:  # noqa: BLE001
+                error = e
+        if error is not None:
+            self.last_error = redact(f"{type(error).__name__}: {error}")
             self.db.record_fetch(SEC_SOURCE, url, requested_at=requested_at,
                                  status=DATA_UNAVAILABLE, error=self.last_error,
                                  http_status=getattr(response, 'status_code', None))

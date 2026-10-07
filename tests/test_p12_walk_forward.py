@@ -166,3 +166,58 @@ def test_daily_summary_missing_or_stale(tmp_path):
     path.write_text(json.dumps({'status': 'OK', 'computed_at': old, 'metrics': {}}), encoding='utf-8')
     stale = latest_summary(path)
     assert stale['stale'] is True and 'rerun' in stale['reason']
+
+
+# ---------------------------------------------------------------- P1.2b: wider universe
+
+def test_cross_sectional_ic_ranks_tickers_within_each_date():
+    from src.walk_forward import cross_sectional_ic
+    rows = []
+    for d, day in enumerate(['2024-01-05', '2024-01-12', '2024-01-19', '2024-01-26']):
+        for t in range(12):
+            # score ranks tickers perfectly on every date, while the market moves by date
+            rows.append({'date': day, 'ticker': f'T{t}', 'combined': t, 'r': 0.001 * t + 0.05 * d})
+    x = cross_sectional_ic(rows, 'combined', 'r', horizon=5)
+    assert x['n_dates'] == 4 and x['mean_ic'] == 1.0 and x['positive_dates_pct'] == 100.0
+    assert cross_sectional_ic(rows[:5], 'combined', 'r', horizon=5)['mean_ic'] is None  # < 10 tickers
+
+
+def test_failing_ticker_is_reported_and_others_still_evaluated(monkeypatch):
+    from src.walk_forward import WalkForward
+    wf = walk_forward(monkeypatch, make_price_frame(300))
+    original = WalkForward.samples
+
+    def flaky(self, ticker):
+        if ticker == 'BAD':
+            raise RuntimeError('boom')
+        return original(self, ticker)
+    monkeypatch.setattr(WalkForward, 'samples', flaky)
+    result = wf.run(['BAD', 'MP'])
+    assert result['tickers']['BAD']['status'] == 'DATA UNAVAILABLE'
+    assert 'boom' in result['tickers']['BAD']['reason']
+    assert result['tickers']['MP']['status'] == 'OK' and result['universe'] == ['BAD', 'MP']
+
+
+def test_validation_universe_comes_from_config():
+    from src.common import tickers, validation_universe
+    universe = validation_universe()
+    assert set(tickers()) <= set(universe) and len(universe) >= 30
+
+
+def test_sec_prefetch_downloads_in_parallel_under_rate_limit(monkeypatch, sec):  # noqa: F811
+    from src import sec_parser
+    from src.sec_parser import IMMUTABLE, SECParser
+    payloads, calls = sec
+    for i in range(6):
+        payloads[f'doc{i}.xml'] = f'<x>{i}</x>'
+    starts = []
+    real_throttle = sec_parser._throttle
+    monkeypatch.setattr(sec_parser, '_throttle', lambda: (real_throttle(), starts.append(1)))
+    parser = SECParser()
+    urls = [f'https://www.sec.gov/doc{i}.xml' for i in range(6)]
+    downloads = parser.prefetch(urls, as_json=False, max_age=IMMUTABLE)
+    assert set(downloads) == set(urls) and len(starts) == 6       # every request throttled
+    for url in urls:
+        assert parser._get(url, as_json=False, max_age=IMMUTABLE, prefetched=downloads[url])
+    assert parser.prefetch(urls, as_json=False, max_age=IMMUTABLE) == {}   # all reusable now
+    assert sum(u.endswith('.xml') for u in calls) == 6

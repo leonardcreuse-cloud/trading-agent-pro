@@ -135,6 +135,11 @@ def tickers():
     return list(load_config().get('stocks', []))
 
 
+def validation_universe():
+    """Tickers for walk-forward validation (defaults to the daily universe)."""
+    return list(load_config().get('validation_universe') or tickers())
+
+
 def company_name(ticker):
     """Company name used for news queries; falls back to the ticker."""
     return load_config().get('companies', {}).get(ticker, ticker)

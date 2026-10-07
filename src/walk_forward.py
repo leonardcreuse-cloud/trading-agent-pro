@@ -28,6 +28,12 @@ Metrics (per horizon)
 - Combined signal classes: count, mean forward return, hit rate; versus the unconditional
   mean / up-rate of all evaluation dates (baseline: always long).
 - Per fold: IC of the combined score.
+- Cross-sectional IC (P1.2b): on each evaluation date with >= MIN_CROSS_SECTION tickers,
+  Spearman across tickers; mean over dates, t = mean / std * sqrt(n_dates_eff). This is the
+  standard measure for ranking stocks against each other (removes market-wide moves).
+
+Universe: config 'validation_universe' (default: the daily universe), or tickers on the
+command line. A failing ticker is reported and skipped; the others are still evaluated.
 
 Known limitations (reported in the output)
 - Adjusted prices are today's vintage (Yahoo revises them after splits / dividends);
@@ -41,7 +47,8 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from .common import DATA_UNAVAILABLE, redact, reports_dir, tickers, to_utc_iso, utc_now_iso
+from .common import (DATA_UNAVAILABLE, load_config, redact, reports_dir, to_utc_iso,
+                     utc_now_iso, validation_universe)
 from .database import Database
 from .insider_tracker import LOOKBACK_DAYS as INSIDER_WINDOW_DAYS, InsiderTracker, insider_score
 from .market_data import PriceFeed, session_close_utc
@@ -59,6 +66,7 @@ ENTRY_LAG = 1
 COMPONENTS = ('technical', 'fundamentals', 'insider', 'combined')
 RESULTS_FILE = 'walk_forward.json'
 STALE_AFTER_DAYS = 7
+MIN_CROSS_SECTION = 10
 
 
 def spearman(x, y):
@@ -83,6 +91,27 @@ def ic_stats(scores, returns, horizon, step=STEP):
         t_stat = ic * math.sqrt((n_eff - 2) / (1 - ic * ic))
     return {'n': n, 'n_effective': round(n_eff, 1),
             'ic': None if ic is None else round(ic, 4),
+            't_stat': None if t_stat is None else round(t_stat, 2),
+            'significant': bool(t_stat is not None and abs(t_stat) >= 2)}
+
+
+def cross_sectional_ic(rows, component, key, horizon, step=STEP, min_tickers=MIN_CROSS_SECTION):
+    """Mean over dates of the Spearman IC across tickers (see module docstring)."""
+    by_date = {}
+    for r in rows:
+        if r[component] is not None and r[key] is not None:
+            by_date.setdefault(r['date'], []).append((r[component], r[key]))
+    ics = [spearman([p[0] for p in pairs], [p[1] for p in pairs])
+           for pairs in by_date.values() if len(pairs) >= min_tickers]
+    ics = [ic for ic in ics if ic is not None]
+    if len(ics) < 3:
+        return {'n_dates': len(ics), 'mean_ic': None, 't_stat': None, 'significant': False}
+    mean = sum(ics) / len(ics)
+    std = (sum((x - mean) ** 2 for x in ics) / (len(ics) - 1)) ** 0.5
+    n_eff = len(ics) * min(1.0, step / horizon)
+    t_stat = mean / std * math.sqrt(n_eff) if std > 0 else None
+    return {'n_dates': len(ics), 'n_effective': round(n_eff, 1), 'mean_ic': round(mean, 4),
+            'positive_dates_pct': round(sum(ic > 0 for ic in ics) / len(ics) * 100, 1),
             't_stat': None if t_stat is None else round(t_stat, 2),
             'significant': bool(t_stat is not None and abs(t_stat) >= 2)}
 
@@ -134,6 +163,7 @@ def evaluate(samples, horizons=HORIZONS, step=STEP):
         buy, sell = classes['BUY']['mean_return_pct'], classes['SELL']['mean_return_pct']
         metrics[f'{h}d'] = {
             'ic_pooled': {c: ic_stats([s[c] for s in rows], all_returns, h, step) for c in COMPONENTS},
+            'ic_cross_sectional': {c: cross_sectional_ic(rows, c, key, h, step) for c in COMPONENTS},
             'ic_by_ticker': by_ticker,
             'combined_signal_classes': classes,
             'baseline_always_long': baseline,
@@ -228,9 +258,13 @@ class WalkForward:
         print(f"[WALK-FORWARD VALIDATION] {METHOD}, history {self.history_days} days")
         print("=" * 80)
         all_samples, per_ticker = [], {}
-        for ticker in universe or tickers():
-            print(f"\n[{ticker}]")
-            rows, info = self.samples(ticker)
+        universe = universe or validation_universe()
+        for n, ticker in enumerate(universe, 1):
+            print(f"\n[{ticker}] ({n}/{len(universe)})")
+            try:
+                rows, info = self.samples(ticker)
+            except Exception as e:  # noqa: BLE001 - one ticker must not stop the run
+                rows, info = None, {'reason': redact(f'{type(e).__name__}: {e}'), 'provenance': None}
             if rows is None:
                 print(f"  {DATA_UNAVAILABLE}: {info['reason']}")
                 per_ticker[ticker] = {'status': DATA_UNAVAILABLE, **info}
@@ -246,6 +280,8 @@ class WalkForward:
             'method': METHOD,
             'status': 'OK' if all_samples else DATA_UNAVAILABLE,
             'computed_at': utc_now_iso(),
+            'universe': universe,
+            'universe_rule': load_config().get('validation_universe_rule'),
             'protocol': {'history_days': self.history_days, 'step_sessions': STEP,
                          'min_history_sessions': MIN_HISTORY, 'entry_lag_sessions': ENTRY_LAG,
                          'horizons_sessions': list(HORIZONS),
@@ -254,7 +290,7 @@ class WalkForward:
                          'signal_weights': self.signal.WEIGHTS},
             'limitations': [
                 'Adjusted prices are the current vintage (revised by Yahoo after splits/dividends).',
-                'Universe of 4 tickers chosen today: selection / survivorship bias.',
+                'Universe chosen today (current large caps): selection / survivorship bias.',
                 'No transaction costs, positions or risk: this measures ranking skill only (P1.1).',
                 'Heuristic weights and thresholds were not fitted, so nothing is in-sample, '
                 'but they were also never optimised.'],
@@ -281,6 +317,11 @@ class WalkForward:
             for label, c in m['combined_signal_classes'].items():
                 print(f"    {label:5} n={c['n']:4}  mean {c['mean_return_pct']}%  hit {c['hit_rate_pct']}%")
             print(f"    Folds with positive combined IC: {m['folds_with_positive_ic']}")
+            print("    Cross-sectional IC (mean over dates, ranking tickers against each other):")
+            for c, x in m['ic_cross_sectional'].items():
+                flag = ' *' if x['significant'] else ''
+                print(f"      {c:13} {str(x['mean_ic']):>8}  t={str(x['t_stat']):>6}  "
+                      f"dates={x['n_dates']}{flag}")
 
 
 def latest_summary(path=None):
@@ -297,7 +338,12 @@ def latest_summary(path=None):
         'computed_at': data['computed_at'],
         'stale': age > timedelta(days=STALE_AFTER_DAYS),
         'excluded': data.get('protocol', {}).get('excluded'),
+        'n_tickers': len(data.get('universe') or []),
         'horizons': {h: {'ic_pooled': {c: s['ic'] for c, s in m['ic_pooled'].items()},
+                         'ic_cross_sectional': {c: s['mean_ic'] for c, s in
+                                                m.get('ic_cross_sectional', {}).items()},
+                         'significant_cross_sectional': [c for c, s in m.get('ic_cross_sectional', {}).items()
+                                                         if s['significant']],
                          'significant': [c for c, s in m['ic_pooled'].items() if s['significant']],
                          'buy_excess_vs_baseline_pct': m['buy_excess_vs_baseline_pct'],
                          'folds_with_positive_ic': m['folds_with_positive_ic']}

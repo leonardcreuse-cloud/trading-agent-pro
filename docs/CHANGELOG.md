@@ -1,5 +1,18 @@
 # Changelog
 
+## P1.2b — Wider validation universe
+
+- `scheduler_config.json` → `validation_universe` (40 US domestic filers across software,
+  semis, internet, industrials, materials, consumer, healthcare, energy; financials and REITs
+  excluded) used by `python main.py walkforward`; the daily `stocks` list is unchanged.
+  Tickers can also be passed on the command line. Chosen in 2026: selection / survivorship bias.
+- Cross-sectional IC: Spearman across tickers on each date (≥ 10 tickers), averaged over dates
+  with a t statistic from the dispersion of daily ICs (overlap-adjusted).
+- SEC requests: one process-wide rate limiter (≤ 9 req/s); `SECParser.prefetch()` downloads
+  Form 4 documents with 4 threads under it, storage and parsing stay single-threaded.
+- One failing ticker is reported (`DATA UNAVAILABLE` + reason) and the run continues.
+- Tests: 4 more in `tests/test_p12_walk_forward.py`. Total 148.
+
 ## P1.2 — Walk-forward validation (point-in-time, out-of-sample)
 
 **New command** `python main.py walkforward` (`src/walk_forward.py`), results in

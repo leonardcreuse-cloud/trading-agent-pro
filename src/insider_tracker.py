@@ -131,6 +131,9 @@ class InsiderTracker:
         start = to_utc_iso(datetime.fromisoformat(end) - timedelta(days=days))
         window = [f for f in filings['filings'] if f['form'] == '4' and f['published_at']
                   and start < f['published_at'] <= end]
+        urls = {f['accession_number']: form4_xml_url(cik, f['accession_number'], f['primary_document'])
+                for f in window if f.get('primary_document') and f['accession_number']}
+        downloads = self.sec.prefetch(list(urls.values()), as_json=False, max_age=IMMUTABLE)
         parsed, failures = 0, []
         for n, filing in enumerate(window, 1):
             if progress and n % 100 == 0:
@@ -140,8 +143,9 @@ class InsiderTracker:
                                  'published_at': filing['published_at'],
                                  'reason': 'primary document not listed in submissions feed'})
                 continue
-            url = form4_xml_url(cik, filing['accession_number'], filing['primary_document'])
-            xml_text = self.sec._get(url, as_json=False, max_age=IMMUTABLE)
+            url = urls[filing['accession_number']]
+            xml_text = self.sec._get(url, as_json=False, max_age=IMMUTABLE,
+                                     prefetched=downloads.get(url))
             if xml_text is None:
                 failures.append({'accession': filing['accession_number'],
                                  'published_at': filing['published_at'],

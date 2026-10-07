@@ -308,7 +308,7 @@ def test_insider_buys_by_two_insiders_score_bullish(sec):
     assert result['form4_filings_window'] == 2
     assert result['insider_buys'] == 2 and result['distinct_buyers'] == 2
     assert result['buy_value_usd'] == 30_500.0 and result['insider_sells'] == 0
-    assert result['insider_score'] == 70 and result['signal'] == 'BUY'
+    assert result['insider_score'] == 70 and result['signal'] == 'POSITIVE'
 
 
 def test_planned_sales_are_neutral_and_discretionary_sales_bearish(sec):
@@ -382,4 +382,4 @@ def test_signal_includes_insider_component():
     result = ScoringSignalFixed().analyze('MP', {'technical_score': 60}, {'fundamental_score': 70},
                                           {'news_score': 50}, {'insider_score': 40})
     assert result['coverage'] == '4/4'
-    assert result['combined_score'] == round(60 * .25 + 70 * .40 + 50 * .20 + 40 * .15, 2)
+    assert result['signal_strength'] == round(60 * .25 + 70 * .40 + 50 * .20 + 40 * .15, 2)

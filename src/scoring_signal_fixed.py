@@ -12,20 +12,95 @@ P0.1 changes:
   (phase P1 replaces them with trained, calibrated models).
 
 P0.3: insider activity (SEC Form 4 open-market transactions) is a fourth component.
+
+P1.4 relabel: the output is a QUANTITATIVE SIGNAL, not a trade recommendation.
+- Labels POSITIVE / NEUTRAL / NEGATIVE describe the direction of the heuristic score
+  (formerly BUY / HOLD / SELL). Keys: quantitative_signal, signal_strength, signal_summary.
+- validation_status() states whether the walk-forward validation has demonstrated
+  statistically significant out-of-sample predictive power (multiple-testing aware).
+- No score is converted into a probability: model prediction, prediction confidence and
+  risk score are reported as NOT IMPLEMENTED with their reason.
 """
 
-from .common import utc_now_iso
+import math
+
+from .common import NOT_IMPLEMENTED, utc_now_iso
 
 INSUFFICIENT_DATA = 'INSUFFICIENT DATA'
 
 
+NOT_A_RECOMMENDATION = ('Quantitative signal derived from heuristic scores. It is not a trade '
+                        'recommendation and not a probability.')
+VALIDATION_ALPHA = 0.05
+VALIDATION_COMPONENT = 'combined'
+
+
+def two_sided_p(t_stat):
+    """Two-sided p-value of a t statistic (normal approximation; large samples)."""
+    return math.erfc(abs(t_stat) / math.sqrt(2))
+
+
+def validation_status(walk_forward):
+    """
+    Has the combined signal demonstrated out-of-sample predictive power?
+    Criterion: cross-sectional IC of the combined score significant at VALIDATION_ALPHA after
+    Bonferroni correction over the horizons tested, in a walk-forward run that is not stale.
+    """
+    wf = walk_forward or {}
+    if wf.get('status') != 'OK' or not wf.get('horizons'):
+        return {'status': 'NOT VALIDATED', 'demonstrated': False,
+                'statement': ('No walk-forward validation is available: this signal has NOT '
+                              'demonstrated any predictive power. ' + (wf.get('reason') or ''))}
+    horizons = wf['horizons']
+    k = len(horizons)
+    threshold = VALIDATION_ALPHA / k
+    tests = {}
+    for h, d in horizons.items():
+        ic = (d.get('ic_cross_sectional') or {}).get(VALIDATION_COMPONENT)
+        t = (d.get('ic_cross_sectional_t') or {}).get(VALIDATION_COMPONENT)
+        p = None if t is None else round(two_sided_p(t), 4)
+        tests[h] = {'cross_sectional_ic': ic, 't_stat': t, 'p_value': p,
+                    'significant_after_correction': p is not None and p < threshold and ic > 0}
+    demonstrated = any(x['significant_after_correction'] for x in tests.values()) and not wf.get('stale')
+    detail = '; '.join(f"{h}: IC {x['cross_sectional_ic']}, t={x['t_stat']}, p={x['p_value']}"
+                       for h, x in tests.items())
+    if demonstrated:
+        statement = (f'The combined signal showed statistically significant out-of-sample ranking '
+                     f'power in the walk-forward of {wf.get("computed_at")} ({detail}; Bonferroni '
+                     f'threshold p < {threshold:.4f}). Past skill does not guarantee future skill.')
+    else:
+        statement = (f'This signal has NOT demonstrated statistically significant predictive power '
+                     f'out-of-sample (walk-forward {wf.get("computed_at")}, {wf.get("n_tickers")} '
+                     f'tickers: {detail}; required p < {threshold:.4f} after Bonferroni correction '
+                     f'over {k} horizons).' + (' The validation is stale.' if wf.get('stale') else ''))
+    return {'status': 'DEMONSTRATED' if demonstrated else 'NOT DEMONSTRATED',
+            'demonstrated': demonstrated, 'criterion': f'cross-sectional IC of the {VALIDATION_COMPONENT} '
+            f'score, two-sided p < {VALIDATION_ALPHA} / {k} horizons, IC > 0',
+            'tests': tests, 'computed_at': wf.get('computed_at'), 'stale': wf.get('stale'),
+            'excluded_from_validation': wf.get('excluded'), 'statement': statement}
+
+
+def not_implemented_fields(walk_forward=None):
+    """Model prediction / confidence / risk: explicitly unavailable (never a placeholder)."""
+    return {
+        'model_prediction': {
+            'status': NOT_IMPLEMENTED,
+            'reason': ('The walk-forward-fitted model has not shown out-of-sample skill; it is not '
+                       'used for live predictions.')},
+        'prediction_confidence': {
+            'status': NOT_IMPLEMENTED,
+            'reason': 'No calibrated model: no probability or confidence is produced.'},
+        'risk_score': {'status': NOT_IMPLEMENTED, 'reason': 'Risk engine not built yet (phase P3.1).'},
+    }
+
+
 class ScoringSignalFixed:
-    """Final heuristic recommendation from technical / fundamental / news / insider scores."""
+    """Quantitative signal from technical / fundamental / news / insider heuristic scores."""
 
     WEIGHTS = {'technical': 0.25, 'fundamentals': 0.40, 'news': 0.20, 'insider': 0.15}
     MIN_COMPONENTS = 2
-    BUY_THRESHOLD = 65
-    SELL_THRESHOLD = 40
+    POSITIVE_THRESHOLD = 65
+    NEGATIVE_THRESHOLD = 40
 
     def combine_scores(self, scores):
         """Weighted average over available scores (dict name -> score or None)."""
@@ -39,11 +114,11 @@ class ScoringSignalFixed:
     def generate_final_signal(self, combined_score):
         if combined_score is None:
             return INSUFFICIENT_DATA
-        if combined_score >= self.BUY_THRESHOLD:
-            return 'BUY'
-        if combined_score <= self.SELL_THRESHOLD:
-            return 'SELL'
-        return 'HOLD'
+        if combined_score >= self.POSITIVE_THRESHOLD:
+            return 'POSITIVE'
+        if combined_score <= self.NEGATIVE_THRESHOLD:
+            return 'NEGATIVE'
+        return 'NEUTRAL'
 
     @staticmethod
     def _calculate_signal_agreement(available_scores, combined):
@@ -85,17 +160,17 @@ class ScoringSignalFixed:
         agreement = self._calculate_signal_agreement([scores[k] for k in available], combined)
 
         if combined is None:
-            recommendation = (f"{INSUFFICIENT_DATA} ({len(available)}/{len(scores)} sources available; "
-                              f"missing: {', '.join(missing)})")
+            summary = (f"{INSUFFICIENT_DATA} ({len(available)}/{len(scores)} sources available; "
+                       f"missing: {', '.join(missing)})")
         else:
-            recommendation = (f"{final_signal} (heuristic score {combined}, coverage "
-                              f"{len(available)}/{len(scores)}"
-                              + (f", missing: {', '.join(missing)}" if missing else '') + ")")
+            summary = (f"Quantitative signal {final_signal} (signal strength {combined}/100, "
+                       f"coverage {len(available)}/{len(scores)}"
+                       + (f", missing: {', '.join(missing)}" if missing else '') + ")")
 
         return {
             'ticker': ticker,
-            'signal': final_signal,
-            'combined_score': combined,
+            'quantitative_signal': final_signal,
+            'signal_strength': combined,
             'signal_agreement': agreement,
             'coverage': f"{len(available)}/{len(scores)}",
             'available_components': available,
@@ -103,7 +178,8 @@ class ScoringSignalFixed:
             'component_scores': scores,
             'component_signals': signals,
             'score_type': 'heuristic 0-100 score, not a probability; weights not validated',
-            'recommendation': recommendation,
+            'signal_summary': summary,
+            'disclaimer': NOT_A_RECOMMENDATION,
             'timestamp': utc_now_iso(),
             'source': 'Multi-Source heuristic v4',
         }

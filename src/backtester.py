@@ -62,9 +62,9 @@ class Backtester:
         """Causal 20-day momentum signal (uses past prices only)"""
         data['momentum'] = (data['Close'] / data['Close'].rolling(20).mean() - 1) * 100
 
-        data['signal'] = 'HOLD'
-        data.loc[data['momentum'] > 2, 'signal'] = 'BUY'
-        data.loc[data['momentum'] < -2, 'signal'] = 'SELL'
+        data['signal'] = 'NEUTRAL'
+        data.loc[data['momentum'] > 2, 'signal'] = 'POSITIVE'
+        data.loc[data['momentum'] < -2, 'signal'] = 'NEGATIVE'
 
         return data
 
@@ -88,7 +88,7 @@ class Backtester:
                 actual = 'FLAT'
 
             correct = 0
-            if (signal == 'BUY' and actual == 'UP') or (signal == 'SELL' and actual == 'DOWN') or (signal == 'HOLD' and actual == 'FLAT'):
+            if (signal == 'POSITIVE' and actual == 'UP') or (signal == 'NEGATIVE' and actual == 'DOWN') or (signal == 'NEUTRAL' and actual == 'FLAT'):
                 correct = 1
 
             results.append({

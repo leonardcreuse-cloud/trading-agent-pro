@@ -110,11 +110,11 @@ class ScoringFundamentals:
         if composite is None:
             signal = None
         elif composite >= 70:
-            signal = 'BUY'
+            signal = 'POSITIVE'
         elif composite <= 40:
-            signal = 'SELL'
+            signal = 'NEGATIVE'
         else:
-            signal = 'HOLD'
+            signal = 'NEUTRAL'
 
         return {
             'ticker': ticker,

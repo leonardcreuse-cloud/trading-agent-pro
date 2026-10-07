@@ -237,7 +237,7 @@ class InsiderTracker:
 
         summary = self.summarize(ticker, known_at)
         score = insider_score(summary)
-        signal = 'BUY' if score >= 60 else 'SELL' if score <= 40 else 'HOLD'
+        signal = 'POSITIVE' if score >= 60 else 'NEGATIVE' if score <= 40 else 'NEUTRAL'
         status = 'PROVISIONAL' if failures else 'OK'
         filings = self.sec._filings_cache.get(ticker) or {}
         print(f"  Form 4 filings ({LOOKBACK_DAYS}d): {n_filings} (parsed {n_parsed})")

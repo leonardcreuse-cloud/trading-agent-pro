@@ -67,23 +67,23 @@ class PriceTechnical:
         """Score based on RSI (oversold < 30, overbought > 70)"""
         rsi_val = float(rsi_value)
         if rsi_val < 30:
-            return 80, 'BUY'
+            return 80, 'POSITIVE'
         elif rsi_val > 70:
-            return 20, 'SELL'
+            return 20, 'NEGATIVE'
         elif rsi_val < 50:
-            return 40, 'HOLD'
+            return 40, 'NEUTRAL'
         else:
-            return 60, 'HOLD'
+            return 60, 'NEUTRAL'
 
     def score_macd(self, histogram):
         """Score based on MACD histogram (bullish if > 0)"""
         hist_val = float(histogram)
         if hist_val > 0:
-            return 65, 'BUY'
+            return 65, 'POSITIVE'
         elif hist_val < 0:
-            return 35, 'SELL'
+            return 35, 'NEGATIVE'
         else:
-            return 50, 'HOLD'
+            return 50, 'NEUTRAL'
 
     def score_bollinger_bands(self, price, upper, middle, lower):
         """Score based on price position in Bollinger Bands"""
@@ -93,13 +93,13 @@ class PriceTechnical:
         lower_val = float(lower)
 
         if price_val > upper_val:
-            return 25, 'SELL'
+            return 25, 'NEGATIVE'
         elif price_val < lower_val:
-            return 75, 'BUY'
+            return 75, 'POSITIVE'
         elif price_val > middle_val:
-            return 60, 'HOLD'
+            return 60, 'NEUTRAL'
         else:
-            return 40, 'HOLD'
+            return 40, 'NEUTRAL'
 
     def analyze(self, ticker):
         """Complete technical analysis"""
@@ -158,11 +158,11 @@ class PriceTechnical:
 
         technical_score = round((rsi_score * 0.4 + macd_score * 0.35 + bb_score * 0.25), 2)
         if technical_score >= 65:
-            final_signal = 'BUY'
+            final_signal = 'POSITIVE'
         elif technical_score <= 35:
-            final_signal = 'SELL'
+            final_signal = 'NEGATIVE'
         else:
-            final_signal = 'HOLD'
+            final_signal = 'NEUTRAL'
         return {
             'signal': final_signal,
             'technical_score': technical_score,

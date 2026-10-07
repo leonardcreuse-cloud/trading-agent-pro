@@ -121,12 +121,12 @@ def cross_sectional_ic(rows, component, key, horizon, step=STEP, min_tickers=MIN
 def class_stats(rows, key):
     """Count, mean forward return (%) and hit rate per combined signal class."""
     out = {}
-    for label in ('BUY', 'HOLD', 'SELL'):
+    for label in ('POSITIVE', 'NEUTRAL', 'NEGATIVE'):
         returns = [r[key] for r in rows if r['signal'] == label and r[key] is not None]
         if not returns:
             out[label] = {'n': 0, 'mean_return_pct': None, 'hit_rate_pct': None}
             continue
-        hits = [x < 0 if label == 'SELL' else x > 0 for x in returns]
+        hits = [x < 0 if label == 'NEGATIVE' else x > 0 for x in returns]
         out[label] = {'n': len(returns),
                       'mean_return_pct': round(sum(returns) / len(returns) * 100, 3),
                       'hit_rate_pct': round(sum(hits) / len(hits) * 100, 2)}
@@ -154,7 +154,7 @@ def evaluate(samples, horizons=HORIZONS, step=STEP):
             f_rows = [s for s in rows if half_year(s['date']) == fold]
             folds[fold] = ic_stats([s['combined'] for s in f_rows], [s[key] for s in f_rows], h, step)
         fold_ics = [f['ic'] for f in folds.values() if f['ic'] is not None]
-        signal_rows = [s for s in rows if s['signal'] in ('BUY', 'HOLD', 'SELL')]
+        signal_rows = [s for s in rows if s['signal'] in ('POSITIVE', 'NEUTRAL', 'NEGATIVE')]
         classes = class_stats(signal_rows, key)
         baseline = {
             'n': len(all_returns),
@@ -162,16 +162,16 @@ def evaluate(samples, horizons=HORIZONS, step=STEP):
             'up_rate_pct': round(sum(r > 0 for r in all_returns) / len(all_returns) * 100, 2)
             if all_returns else None,
         }
-        buy, sell = classes['BUY']['mean_return_pct'], classes['SELL']['mean_return_pct']
+        pos, neg = classes['POSITIVE']['mean_return_pct'], classes['NEGATIVE']['mean_return_pct']
         metrics[f'{h}d'] = {
             'ic_pooled': {c: ic_stats([s[c] for s in rows], all_returns, h, step) for c in COMPONENTS},
             'ic_cross_sectional': {c: cross_sectional_ic(rows, c, key, h, step) for c in COMPONENTS},
             'ic_by_ticker': by_ticker,
             'combined_signal_classes': classes,
             'baseline_always_long': baseline,
-            'buy_excess_vs_baseline_pct': None if buy is None or baseline['mean_return_pct'] is None
-            else round(buy - baseline['mean_return_pct'], 3),
-            'buy_minus_sell_pct': None if buy is None or sell is None else round(buy - sell, 3),
+            'positive_excess_vs_baseline_pct': None if pos is None or baseline['mean_return_pct'] is None
+            else round(pos - baseline['mean_return_pct'], 3),
+            'positive_minus_negative_pct': None if pos is None or neg is None else round(pos - neg, 3),
             'folds': folds,
             'folds_with_positive_ic': f"{sum(ic > 0 for ic in fold_ics)}/{len(fold_ics)}",
         }
@@ -377,7 +377,9 @@ def latest_summary(path=None):
                          'significant_cross_sectional': [c for c, s in m.get('ic_cross_sectional', {}).items()
                                                          if s['significant']],
                          'significant': [c for c, s in m['ic_pooled'].items() if s['significant']],
-                         'buy_excess_vs_baseline_pct': m['buy_excess_vs_baseline_pct'],
+                         'ic_cross_sectional_t': {c: s['t_stat'] for c, s in
+                                                  m.get('ic_cross_sectional', {}).items()},
+                         'positive_excess_vs_baseline_pct': m.get('positive_excess_vs_baseline_pct'),
                          'model_oos_ic': ((data.get('model') or {}).get(h) or {}).get('model_oos', {})
                          .get('ic', {}).get('mean'),
                          'model_oos_significant': ((data.get('model') or {}).get(h) or {})

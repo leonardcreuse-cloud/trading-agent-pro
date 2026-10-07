@@ -124,10 +124,10 @@ def test_fundamentals_composite_uses_available_components_only():
 def test_signal_requires_two_components():
     from src.scoring_signal_fixed import ScoringSignalFixed, INSUFFICIENT_DATA
     s = ScoringSignalFixed()
-    result = s.analyze('MP', {'technical_score': 70, 'signal': 'BUY'}, {'fundamental_score': None},
+    result = s.analyze('MP', {'technical_score': 70, 'signal': 'POSITIVE'}, {'fundamental_score': None},
                        {'news_score': None})
-    assert result['combined_score'] is None
-    assert result['signal'] == INSUFFICIENT_DATA
+    assert result['signal_strength'] is None
+    assert result['quantitative_signal'] == INSUFFICIENT_DATA
     assert result['coverage'] == '1/4'          # P0.3: insider is the 4th component
     assert result['signal_agreement'] is None
 
@@ -137,7 +137,7 @@ def test_signal_renormalizes_weights_over_available_components():
     s = ScoringSignalFixed()
     result = s.analyze('MP', {'technical_score': 80}, {'fundamental_score': None}, {'news_score': 40})
     # technical 0.25 and news 0.20, renormalized: (80*0.25 + 40*0.20) / 0.45
-    assert result['combined_score'] == 62.22
+    assert result['signal_strength'] == 62.22
     assert result['coverage'] == '2/4'
     assert result['missing_components'] == ['fundamentals', 'insider']
 
@@ -291,8 +291,10 @@ def test_full_pipeline_runs_offline_and_reports_unavailability(tmp_path):
     assert [r['ticker'] for r in results] == ['CRWD', 'NET', 'RKLB', 'MP']
     for r in results:
         m = r['modules']
-        assert m['signal']['combined_score'] is None
-        assert m['signal']['signal'] == 'INSUFFICIENT DATA'
+        assert m['signal']['signal_strength'] is None
+        assert m['signal']['quantitative_signal'] == 'INSUFFICIENT DATA'
+        assert m['signal']['validation']['demonstrated'] is False      # P1.4
+        assert m['signal']['prediction_confidence']['status'] == 'NOT IMPLEMENTED'
         assert m['walk_forward']['status'] == 'DATA UNAVAILABLE'      # P1.2: not run yet
         assert 'main.py walkforward' in m['walk_forward']['reason']
         assert r['data_availability']['technical'] == 'DATA UNAVAILABLE'

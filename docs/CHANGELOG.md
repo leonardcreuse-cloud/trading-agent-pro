@@ -1,5 +1,21 @@
 # Changelog
 
+## P1.4 — Signals relabelled: quantitative signals, not trade recommendations
+
+- Labels BUY / HOLD / SELL → POSITIVE / NEUTRAL / NEGATIVE (direction of a heuristic score)
+  in every active module (technical, fundamentals, insider, news, combined, backtest check,
+  walk-forward classes). Combined output keys: `quantitative_signal`, `signal_strength`,
+  `signal_summary` (formerly `signal`, `combined_score`, `recommendation`), plus `disclaimer`.
+- New per-ticker blocks: `validation` (walk-forward evidence: cross-sectional IC of the combined
+  score, two-sided p, Bonferroni over horizons, IC > 0, not stale), `data_reliability`
+  (coverage, freshness, source rank per input), and `model_prediction`,
+  `prediction_confidence`, `risk_score` = NOT IMPLEMENTED with their reason. No score is
+  turned into a probability.
+- Report: banner stating whether predictive power was demonstrated (currently NOT
+  DEMONSTRATED: p = 0.43 at 5d and 20d, 40 tickers), "Quantitative assessment (not a trade
+  recommendation)" table per ticker; dashboard and console summary use the same terms.
+- Tests: `tests/test_p14_relabel.py` (7, incl. no trade words in HTML / dashboard). Total 167.
+
 ## P1.3 — Continuous features and walk-forward-fitted model
 
 - `src/features.py`: 12 point-in-time features (momentum 1/3/6/12-1 months, 3-month

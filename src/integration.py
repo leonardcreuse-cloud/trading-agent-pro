@@ -25,6 +25,10 @@ P0.3 changes:
 
 P1.2: the walk_forward block is the summary of the last 'python main.py walkforward' run
 (reports/walk_forward.json), flagged stale after 7 days; DATA UNAVAILABLE if never run.
+
+P1.4: the signal block carries validation (has predictive power been demonstrated?),
+data_reliability (coverage, freshness, source ranks) and explicit NOT IMPLEMENTED
+model_prediction / prediction_confidence / risk_score. It is not a trade recommendation.
 """
 
 import json
@@ -42,7 +46,7 @@ from .prediction_engine import PredictionEngine
 from .price_technical import PriceTechnical
 from .report_generator import ReportGenerator
 from .scoring_fundamentals import ScoringFundamentals
-from .scoring_signal_fixed import ScoringSignalFixed
+from .scoring_signal_fixed import ScoringSignalFixed, not_implemented_fields, validation_status
 from .sec_parser import SECParser
 from .walk_forward import latest_summary as walk_forward_summary
 
@@ -85,6 +89,27 @@ class Integration:
             print(redact(f"  [ERROR] {name}: {type(e).__name__}: {e}"))
             return unavailable(name, f"{type(e).__name__}: {e}")
 
+    @staticmethod
+    def _data_reliability(modules):
+        """Coverage, freshness and source rank of the inputs of the quantitative signal."""
+        sig = modules['signal']
+        names = {'technical': 'technical', 'fundamentals': 'sec', 'news': 'news', 'insider': 'insider'}
+        inputs = {}
+        for component, module in names.items():
+            m = modules.get(module) or {}
+            prov = m.get('financials_provenance') if module == 'sec' else m.get('provenance')
+            prov = prov or {}
+            inputs[component] = {
+                'status': m.get('status') or m.get('source_status'),
+                'source': prov.get('source'), 'source_rank': prov.get('source_rank'),
+                'freshness': (prov.get('freshness') or {}).get('status', 'UNKNOWN'),
+                'as_of_date': prov.get('as_of_date')}
+        weak = [c for c, i in inputs.items()
+                if c in sig.get('available_components', []) and i['freshness'] != 'FRESH']
+        return {'coverage': sig.get('coverage'), 'missing_components': sig.get('missing_components'),
+                'inputs': inputs, 'not_fresh_inputs': weak,
+                'note': 'Reliability of the data feeding the signal, not of the signal itself.'}
+
     def run_full_analysis(self, ticker):
         """Complete analysis for one ticker"""
         print(f"\n[ANALYZING {ticker}]\n")
@@ -101,8 +126,17 @@ class Integration:
                                        modules['technical'], modules['fundamentals'],
                                        modules['news'], modules['insider'])
         modules['prediction'] = self._safe('prediction', self.prediction.analyze, ticker)
+        if isinstance(modules['signal'], dict) and 'quantitative_signal' in modules['signal']:
+            modules['signal'].update({
+                'validation': validation_status(modules['walk_forward']),
+                'data_reliability': self._data_reliability(modules),
+                **not_implemented_fields(),
+            })
 
-        print(f"\n  Signal: {modules['signal'].get('recommendation', DATA_UNAVAILABLE)}")
+        sig = modules['signal']
+        print(f"\n  {sig.get('signal_summary', DATA_UNAVAILABLE)}")
+        if sig.get('validation'):
+            print(f"  Validation: {sig['validation']['status']} - not a trade recommendation")
 
         return {
             'ticker': ticker,

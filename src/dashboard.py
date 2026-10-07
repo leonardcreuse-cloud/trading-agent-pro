@@ -41,11 +41,13 @@ class Dashboard:
                 '<div class="card">'
                 f'<div class="ticker">{escape(result.get("ticker", "?"))}</div>'
                 f'<div>Last close: {_cell(price)} ({_cell(tech.get("last_price_date"))})</div>'
-                f'<div>Signal: {_cell(sig.get("signal"))}</div>'
-                f'<div>Heuristic score: {_cell(sig.get("combined_score"))} '
+                f'<div>Quantitative signal: {_cell(sig.get("quantitative_signal"))}</div>'
+                f'<div>Signal strength: {_cell(sig.get("signal_strength"))}/100 '
                 f'(coverage {_cell(sig.get("coverage"))})</div>'
-                f'<div>P(up): {_cell(None)} <span class="small">(no calibrated model yet)</span></div>'
-                f'<div>Risk: {_cell(None)} <span class="small">(risk engine: phase P3.1)</span></div>'
+                f'<div>Validation: {_cell((sig.get("validation") or {}).get("status"))}</div>'
+                f'<div>Model prediction: {_cell(None)} <span class="small">(not validated, not used)</span></div>'
+                f'<div>Prediction confidence: {_cell(None)} <span class="small">(no calibrated model)</span></div>'
+                f'<div>Risk score: {_cell(None)} <span class="small">(risk engine: phase P3.1)</span></div>'
                 f'<div class="small">Unavailable: {escape(", ".join(missing) or "none")}</div>'
                 '</div>')
         if not cards:
@@ -65,7 +67,9 @@ body {{ font-family: Arial, sans-serif; background: #0f1228; color: #e6e6e6; mar
 </style></head><body>
 <h1>Trading Agent Pro - Dashboard</h1>
 <p class="small">Generated {escape(self.last_update)} (UTC). Values come only from the latest analysis run;
-missing values are shown as "{escape(NA_DISPLAY)}". Scores are heuristic, not probabilities.</p>
+missing values are shown as "{escape(NA_DISPLAY)}". Quantitative signals are heuristic scores:
+not trade recommendations, not probabilities, and without demonstrated predictive power unless the
+validation line says otherwise.</p>
 <div class="grid">{''.join(cards)}</div>
 <p class="small">Prediction history and model performance: {escape(DATA_UNAVAILABLE)} (phase P3.3).
 Educational purposes only. Not financial advice.</p>

@@ -20,6 +20,14 @@ number may be invented, mocked or simulated in an analysis output.
 | `NOT IMPLEMENTED` | Feature does not exist yet; nothing is computed |
 | `INSUFFICIENT DATA` | Signal not produced: fewer than 2 of 3 component scores available |
 
+## Quantitative signal terminology (P1.4)
+
+Outputs are **quantitative signals**, never trade recommendations. POSITIVE / NEUTRAL / NEGATIVE
+describe the direction of a heuristic score (thresholds 65 / 40). `validation.status` is
+`DEMONSTRATED` only when the walk-forward cross-sectional IC of the combined score is positive and
+significant (two-sided p < 0.05 / number of horizons) in a run less than 7 days old; otherwise
+`NOT DEMONSTRATED` (or `NOT VALIDATED` when no run exists), and the report says so.
+
 ## Separate concepts (never mix them)
 
 | Concept | Current definition | Status |

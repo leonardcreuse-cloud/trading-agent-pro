@@ -57,11 +57,11 @@ class NewsSentiment:
         # Score ranges: 0-100 maps to 0-100 (not quantized to 25/50/75)
         
         if sentiment_value >= 65:
-            signal = 'BUY'
+            signal = 'POSITIVE'
         elif sentiment_value <= 40:
-            signal = 'SELL'
+            signal = 'NEGATIVE'
         else:
-            signal = 'HOLD'
+            signal = 'NEUTRAL'
         
         # FIXED: Score reflects actual sentiment, not default 50
         # Linear mapping: sentiment 0-100 -> score 0-100

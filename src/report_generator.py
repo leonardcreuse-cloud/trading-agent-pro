@@ -11,6 +11,11 @@ P0.1 changes:
 - Values are HTML-escaped; emoji mojibake removed.
 
 P0.3: SEC XBRL financials (TTM revenue, growth, debt / equity) and a Form 4 insider section.
+
+P1.4: signals are presented as quantitative signals (POSITIVE / NEUTRAL / NEGATIVE), never
+as trade recommendations; the report states whether predictive power has been demonstrated
+out-of-sample, and shows signal strength, data reliability, model prediction, prediction
+confidence and risk score separately (unavailable ones say why).
 """
 
 from html import escape
@@ -57,9 +62,10 @@ class ReportGenerator:
             '<div class="container"><h1>Trading Agent Pro - Analysis Report</h1>',
             f'<p class="small">Run started: {escape(run_started or "")} | '
             f'Generated: {escape(utc_now_iso())} (UTC)</p>',
-            '<div class="warning">Scores are heuristic (0-100) and not probabilities. '
-            'No calibrated prediction model exists yet (phase P1). Values marked '
-            f'"{escape(NA_DISPLAY)}" could not be obtained and were not replaced.</div>',
+            self._validation_banner(all_results),
+            '<div class="warning">Quantitative signals are heuristic scores (0-100), not trade '
+            'recommendations and not probabilities. No calibrated prediction model is in use. '
+            f'Values marked "{escape(NA_DISPLAY)}" could not be obtained and were not replaced.</div>',
             self._summary_table(all_results),
             self._availability_table(all_results),
             self._provenance_table(all_results, macro_provenance),
@@ -73,16 +79,30 @@ class ReportGenerator:
         return '\n'.join(parts)
 
     @staticmethod
+    def _validation_banner(all_results):
+        validation = next((r['modules']['signal'].get('validation') for r in all_results
+                           if (r.get('modules', {}).get('signal') or {}).get('validation')), None)
+        if not validation:
+            return ('<div class="warning"><strong>Predictive power NOT demonstrated:</strong> '
+                    'no walk-forward validation is available for these signals.</div>')
+        title = ('Predictive power demonstrated out-of-sample' if validation['demonstrated']
+                 else 'Predictive power NOT demonstrated')
+        return (f'<div class="warning"><strong>{escape(title)}.</strong> '
+                f'{escape(validation["statement"])}</div>')
+
+    @staticmethod
     def _summary_table(all_results):
-        rows = ['<h2>Summary</h2><table><tr><th>Ticker</th><th>Signal</th><th>Heuristic score</th>'
-                '<th>Coverage</th><th>Agreement</th><th>Technical</th><th>Fundamentals</th>'
-                '<th>News</th><th>Insider</th></tr>']
+        rows = ['<h2>Summary</h2><table><tr><th>Ticker</th><th>Quantitative signal</th>'
+                '<th>Signal strength (0-100, heuristic)</th><th>Validation</th>'
+                '<th>Data reliability (coverage)</th><th>Agreement</th><th>Technical</th>'
+                '<th>Fundamentals</th><th>News</th><th>Insider</th></tr>']
         for r in all_results:
             sig = r.get('modules', {}).get('signal', {})
             comp = sig.get('component_scores', {})
             rows.append(
                 f"<tr><td><strong>{escape(r['ticker'])}</strong></td>"
-                f"<td>{cell(sig.get('signal'))}</td><td>{cell(sig.get('combined_score'))}</td>"
+                f"<td>{cell(sig.get('quantitative_signal'))}</td><td>{cell(sig.get('signal_strength'))}</td>"
+                f"<td>{cell((sig.get('validation') or {}).get('status'))}</td>"
                 f"<td>{cell(sig.get('coverage'))}</td><td>{cell(sig.get('signal_agreement'), suffix='%')}</td>"
                 f"<td>{cell(comp.get('technical'))}</td><td>{cell(comp.get('fundamentals'))}</td>"
                 f"<td>{cell(comp.get('news'))}</td><td>{cell(comp.get('insider'))}</td></tr>")
@@ -146,10 +166,33 @@ class ReportGenerator:
             return f'<p class="small">Reason: {escape(str(module["reason"]))}</p>'
         return ''
 
+    @staticmethod
+    def _assessment(sig):
+        validation = sig.get('validation') or {}
+        rel = sig.get('data_reliability') or {}
+
+        def na(block):
+            block = block or {}
+            return f"{status_cell(block.get('status', DATA_UNAVAILABLE))} <span class='small'>{escape(str(block.get('reason') or ''))}</span>"
+        not_fresh = ', '.join(rel.get('not_fresh_inputs') or []) or 'none'
+        return ('<h3>Quantitative assessment (not a trade recommendation)</h3><table>'
+                f"<tr><td>Quantitative signal</td><td>{cell(sig.get('quantitative_signal'))}</td></tr>"
+                f"<tr><td>Signal strength</td><td>{cell(sig.get('signal_strength'))} / 100 "
+                "<span class='small'>(heuristic score, not a probability)</span></td></tr>"
+                f"<tr><td>Validation</td><td>{cell(validation.get('status'))} "
+                f"<span class='small'>{escape(str(validation.get('statement') or ''))}</span></td></tr>"
+                f"<tr><td>Data reliability</td><td>coverage {cell(rel.get('coverage'))}; "
+                f"missing: {escape(', '.join(rel.get('missing_components') or []) or 'none')}; "
+                f"inputs not fresh: {escape(not_fresh)}</td></tr>"
+                f"<tr><td>Model prediction</td><td>{na(sig.get('model_prediction'))}</td></tr>"
+                f"<tr><td>Prediction confidence</td><td>{na(sig.get('prediction_confidence'))}</td></tr>"
+                f"<tr><td>Risk score</td><td>{na(sig.get('risk_score'))}</td></tr>"
+                '</table>')
+
     def _ticker_section(self, result):
         m = result.get('modules', {})
         ticker = escape(result['ticker'])
-        out = [f'<div class="ticker-section"><h2>{ticker}</h2>']
+        out = [f'<div class="ticker-section"><h2>{ticker}</h2>', self._assessment(m.get('signal') or {})]
 
         sec = m.get('sec', {})
         latest = sec.get('latest_periodic_filing') or {}
@@ -178,14 +221,14 @@ class ReportGenerator:
                    f"({cell(ins.get('distinct_sellers'))} insiders, {cell(ins.get('sell_value_usd'), ',.0f')} USD)</td></tr>"
                    f"<tr><td>of which discretionary (not 10b5-1)</td>"
                    f"<td>{cell(ins.get('discretionary_sell_value_usd'), ',.0f')} USD</td></tr>"
-                   f"<tr><td>Score / signal</td><td>{cell(ins.get('insider_score'))} / {cell(ins.get('signal'))}</td></tr>"
+                   f"<tr><td>Score / direction</td><td>{cell(ins.get('insider_score'))} / {cell(ins.get('signal'))}</td></tr>"
                    '</table>')
         out.append(self._reason(ins))
 
         tech = m.get('technical', {})
         comps = tech.get('components', {})
         out.append('<h3>Technical</h3><table>'
-                   f"<tr><td>Signal / score</td><td>{cell(tech.get('signal'))} / {cell(tech.get('technical_score'))}</td></tr>"
+                   f"<tr><td>Direction / score</td><td>{cell(tech.get('signal'))} / {cell(tech.get('technical_score'))}</td></tr>"
                    f"<tr><td>RSI(14)</td><td>{cell(comps.get('rsi', {}).get('value'))}</td></tr>"
                    f"<tr><td>MACD histogram</td><td>{cell(comps.get('macd', {}).get('histogram'))}</td></tr>"
                    f"<tr><td>Last close</td><td>{cell(comps.get('bollinger', {}).get('price'))}"
@@ -240,7 +283,7 @@ class ReportGenerator:
         if wf.get('horizons'):
             out.append('<table><tr><th>Horizon</th><th>IC technical</th><th>IC fundamentals</th>'
                        '<th>IC insider</th><th>IC combined</th><th>Fitted model IC (out-of-sample, cross-sectional)</th>'
-                       '<th>BUY excess vs always long</th><th>Folds IC &gt; 0</th></tr>')
+                       '<th>POSITIVE-signal excess vs always long</th><th>Folds IC &gt; 0</th></tr>')
             for h, d in wf['horizons'].items():
                 ic = d.get('ic_pooled', {})
                 sig = d.get('significant', [])
@@ -248,7 +291,7 @@ class ReportGenerator:
                     f"<td>{cell(ic.get(c))}{' *' if c in sig else ''}</td>"
                     for c in ('technical', 'fundamentals', 'insider', 'combined'))
                     + f"<td>{cell(d.get('model_oos_ic'))}{' *' if d.get('model_oos_significant') else ''}</td>"
-                    + f"<td>{cell(d.get('buy_excess_vs_baseline_pct'), suffix='%')}</td>"
+                    + f"<td>{cell(d.get('positive_excess_vs_baseline_pct'), suffix='%')}</td>"
                     f"<td>{cell(d.get('folds_with_positive_ic'))}</td></tr>")
             out.append('</table><p class="small">IC = rank correlation between score and forward '
                        'return; * = |t| &ge; 2. News excluded (no history). See reports/walk_forward.json.</p>')
@@ -279,8 +322,10 @@ class ReportGenerator:
         for r in all_results:
             sig = r.get('modules', {}).get('signal', {})
             lines.append(f"\n{r['ticker']}")
-            lines.append(f"  Signal:   {display(sig.get('signal'))}")
-            lines.append(f"  Score:    {display(sig.get('combined_score'))} (heuristic, coverage {display(sig.get('coverage'))})")
+            lines.append(f"  Quantitative signal: {display(sig.get('quantitative_signal'))} (not a trade recommendation)")
+            lines.append(f"  Signal strength:     {display(sig.get('signal_strength'))}/100 "
+                         f"(heuristic, coverage {display(sig.get('coverage'))})")
+            lines.append(f"  Validation:          {display((sig.get('validation') or {}).get('status'))}")
             unavailable_sources = [n for n, s in r.get('data_availability', {}).items() if s not in ('OK', 'PROVISIONAL')]
             if unavailable_sources:
                 lines.append(f"  Unavailable / not implemented: {', '.join(unavailable_sources)}")

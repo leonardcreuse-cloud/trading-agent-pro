@@ -46,12 +46,13 @@ def test_ic_t_stat_uses_overlap_adjusted_sample_size():
     assert abs(long_['t_stat']) < abs(short['t_stat'])
 
 
-def test_sell_hit_rate_counts_negative_returns():
+def test_negative_signal_hit_rate_counts_negative_returns():
     from src.walk_forward import class_stats
-    rows = [{'signal': 'SELL', 'r': -0.01}, {'signal': 'SELL', 'r': 0.02}, {'signal': 'BUY', 'r': 0.03}]
+    rows = [{'signal': 'NEGATIVE', 'r': -0.01}, {'signal': 'NEGATIVE', 'r': 0.02},
+            {'signal': 'POSITIVE', 'r': 0.03}]
     stats = class_stats(rows, 'r')
-    assert stats['SELL'] == {'n': 2, 'mean_return_pct': 0.5, 'hit_rate_pct': 50.0}
-    assert stats['BUY']['hit_rate_pct'] == 100.0 and stats['HOLD']['n'] == 0
+    assert stats['NEGATIVE'] == {'n': 2, 'mean_return_pct': 0.5, 'hit_rate_pct': 50.0}
+    assert stats['POSITIVE']['hit_rate_pct'] == 100.0 and stats['NEUTRAL']['n'] == 0
 
 
 def test_evaluate_reports_baseline_folds_and_excess():
@@ -59,13 +60,13 @@ def test_evaluate_reports_baseline_folds_and_excess():
     samples = []
     for i, day in enumerate(['2024-01-10', '2024-02-10', '2024-03-10', '2024-08-10', '2024-09-10', '2024-10-10']):
         samples.append({'ticker': 'MP', 'date': day, 'technical': i, 'fundamentals': None,
-                        'insider': 50, 'combined': i, 'signal': 'BUY' if i >= 3 else 'HOLD',
+                        'insider': 50, 'combined': i, 'signal': 'POSITIVE' if i >= 3 else 'NEUTRAL',
                         'fwd_5d': 0.01 * i, 'fwd_20d': None})
     m = evaluate(samples, horizons=(5, 20))
     assert m['5d']['ic_pooled']['combined']['ic'] == 1.0
     assert m['5d']['ic_pooled']['insider']['ic'] is None
     assert m['5d']['baseline_always_long']['mean_return_pct'] == 2.5
-    assert m['5d']['buy_excess_vs_baseline_pct'] == 1.5
+    assert m['5d']['positive_excess_vs_baseline_pct'] == 1.5
     assert set(m['5d']['folds']) == {'2024H1', '2024H2'}
     assert m['20d']['baseline_always_long']['n'] == 0
 

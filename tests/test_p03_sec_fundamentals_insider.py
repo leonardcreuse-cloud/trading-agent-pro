@@ -175,7 +175,8 @@ def test_debt_uses_first_reported_definition_and_never_defaults_to_zero():
     instants = {'ConvertibleDebtNoncurrent': {d: {'value': 2_000.0}},
                 'ConvertibleDebtCurrent': {d: {'value': 1_000.0}}}
     assert debt_at(instants, d) == {'value': 3_000.0,
-                                    'tags': ['ConvertibleDebtNoncurrent', 'ConvertibleDebtCurrent']}
+                                    'tags': ['ConvertibleDebtNoncurrent', 'ConvertibleDebtCurrent'],
+                                    'definition': 'convertible', 'includes_finance_leases': False}
     instants['LongTermDebt'] = {d: {'value': 500.0}}
     assert debt_at(instants, d)['tags'] == ['LongTermDebt']
     assert debt_at({}, d) is None

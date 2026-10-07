@@ -20,11 +20,22 @@ Definitions (documented, not calibrated):
   Tags tried: REVENUE_TAGS; the tag with the most recent computable TTM wins (ties: order).
   Tags are never mixed inside one TTM computation.
 - Revenue growth: TTM(E) / TTM(~E - 1 year) - 1, same tag.
-- Debt: first definition of DEBT_DEFINITIONS whose main tag is reported at the balance-sheet
-  date; optional current portions of the same definition are added when reported.
-  Lease liabilities are excluded. No debt tag at that date -> debt unavailable (never 0).
-- Debt / equity: debt / StockholdersEquity (parent only) at the same date; unavailable when
-  equity <= 0 (ratio not meaningful).
+- Debt (P1.5 mapping): the first definition of DEBT_DEFINITIONS whose main concept is reported
+  at the balance-sheet date. Each definition says how its current portion is found and whether
+  short-term borrowings must be added (first of ShortTermBorrowings, CommercialPaper: commercial
+  paper is part of short-term borrowings, never both). DebtCurrent already contains short-term
+  borrowings, so they are not added on top of it. Definitions are checked against reported
+  totals (e.g. ORCL 2024-05-31: DebtLongtermAndShorttermCombinedAmount 86.87 B =
+  LongTermNotesAndLoans 76.26 + NotesPayableCurrent 10.61; GE 2023-09-30: 20.82 =
+  LongTermDebtAndCapitalLeaseObligations 19.49 + DebtCurrent 1.33).
+  'debt_and_finance_leases' includes finance-lease obligations (flagged in the output).
+  No debt concept at that date -> debt unavailable (never 0): companies that tag debt only
+  with company-specific extensions (not in company facts) stay DATA UNAVAILABLE.
+- Equity: StockholdersEquity (parent); else total equity including noncontrolling interests
+  (flagged).
+- Debt / equity at the latest balance-sheet date where both debt and equity are reported
+  (some filers tag debt only in the 10-K), at most MAX_BALANCE_AGE_DAYS before the latest
+  equity date; unavailable when equity <= 0 (ratio not meaningful).
 """
 
 from datetime import date, timedelta
@@ -36,15 +47,24 @@ REVENUE_TAGS = ('Revenues',
                 'RevenueFromContractWithCustomerIncludingAssessedTax',
                 'SalesRevenueNet')
 EQUITY_TAG = 'StockholdersEquity'
-# (main tags (first reported is used), optional additional tags of the same definition)
+EQUITY_TAGS = (EQUITY_TAG, 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest')
+SHORT_TERM_TAGS = ('ShortTermBorrowings', 'CommercialPaper')
+MAX_BALANCE_AGE_DAYS = 400
+# name: (main concepts (first reported wins), current-portion concepts (first reported wins),
+#        add short-term borrowings?, includes finance leases?)
+# A current portion given by 'DebtCurrent' already includes short-term borrowings.
 DEBT_DEFINITIONS = (
-    (('LongTermDebt',), ()),
-    (('LongTermDebtNoncurrent',), ('LongTermDebtCurrent', 'DebtCurrent')),
-    (('ConvertibleDebtNoncurrent', 'ConvertibleNotesPayable'),
-     ('ConvertibleDebtCurrent', 'ConvertibleNotesPayableCurrent')),
+    ('combined_total', ('DebtLongtermAndShorttermCombinedAmount',), (), False, False),
+    ('long_term_debt_total', ('LongTermDebt',), (), True, False),
+    ('long_term_debt_split', ('LongTermDebtNoncurrent',), ('LongTermDebtCurrent', 'DebtCurrent'), True, False),
+    ('debt_and_finance_leases', ('LongTermDebtAndCapitalLeaseObligations',),
+     ('LongTermDebtAndCapitalLeaseObligationsCurrent', 'DebtCurrent'), True, True),
+    ('notes_and_loans', ('LongTermNotesAndLoans',), ('NotesPayableCurrent', 'DebtCurrent'), True, False),
+    ('convertible', ('ConvertibleDebtNoncurrent', 'ConvertibleNotesPayable', 'ConvertibleLongTermNotesPayable'),
+     ('ConvertibleDebtCurrent', 'ConvertibleNotesPayableCurrent'), True, False),
 )
-DEBT_TAGS = tuple(dict.fromkeys(t for main, extra in DEBT_DEFINITIONS for t in main + extra))
-INSTANT_TAGS = (EQUITY_TAG,) + DEBT_TAGS
+DEBT_TAGS = tuple(dict.fromkeys([t for d in DEBT_DEFINITIONS for t in d[1] + d[2]] + list(SHORT_TERM_TAGS)))
+INSTANT_TAGS = EQUITY_TAGS + DEBT_TAGS
 DURATION_TAGS = REVENUE_TAGS
 PERIODIC_FORMS = ('10-K', '10-Q', '10-K/A', '10-Q/A', '10-KT', '10-QT')
 DURATION_MONTHS = (3, 6, 9, 12)
@@ -155,12 +175,55 @@ def latest_ttm(durations):
 def debt_at(instants, as_of):
     """
     Debt at balance-sheet date `as_of` from {tag: {end: row}}.
-    Returns {'value', 'tags'} or None when no debt definition is reported at that date.
+    Returns {'value', 'tags', 'definition', 'includes_finance_leases'} or None when no debt
+    definition is reported at that date.
     """
-    for main_tags, extra_tags in DEBT_DEFINITIONS:
-        main = next((t for t in main_tags if as_of in instants.get(t, {})), None)
+    def first(tags):
+        return next((t for t in tags if as_of in instants.get(t, {})), None)
+    for name, main_tags, current_tags, add_short_term, leases in DEBT_DEFINITIONS:
+        main = first(main_tags)
         if main is None:
             continue
-        used = [main] + [t for t in extra_tags if as_of in instants.get(t, {})]
-        return {'value': sum(instants[t][as_of]['value'] for t in used), 'tags': used}
+        used = [main]
+        current = first(current_tags)
+        if current:
+            used.append(current)
+        if add_short_term and current != 'DebtCurrent':
+            short = first(SHORT_TERM_TAGS)
+            if short:
+                used.append(short)
+        return {'value': sum(instants[t][as_of]['value'] for t in used), 'tags': used,
+                'definition': name, 'includes_finance_leases': leases}
     return None
+
+
+def equity_at(instants, as_of):
+    """(row, tag) of stockholders' equity at as_of: parent first, else including NCI."""
+    for tag in EQUITY_TAGS:
+        if as_of in instants.get(tag, {}):
+            return instants[tag][as_of], tag
+    return None, None
+
+
+def balance_sheet(instants, max_age_days=MAX_BALANCE_AGE_DAYS):
+    """
+    Latest date with both equity and debt reported, within max_age_days of the latest
+    equity date. Returns {'latest_equity_date', 'date', 'equity', 'equity_tag', 'debt'}.
+    """
+    equity_dates = sorted({d for t in EQUITY_TAGS for d in instants.get(t, {})}, reverse=True)
+    if not equity_dates:
+        return {'latest_equity_date': None, 'date': None, 'equity': None, 'equity_tag': None,
+                'debt': None}
+    latest = equity_dates[0]
+    limit = date.fromisoformat(latest) - timedelta(days=max_age_days)
+    for day in equity_dates:
+        if date.fromisoformat(day) < limit:
+            break
+        debt = debt_at(instants, day)
+        if debt:
+            equity, tag = equity_at(instants, day)
+            return {'latest_equity_date': latest, 'date': day, 'equity': equity,
+                    'equity_tag': tag, 'debt': debt}
+    equity, tag = equity_at(instants, latest)
+    return {'latest_equity_date': latest, 'date': latest, 'equity': equity, 'equity_tag': tag,
+            'debt': None}

@@ -1,5 +1,32 @@
 # Changelog
 
+## P1.5 — Debt / equity XBRL mapping fixed
+
+**Diagnosis** (40 tickers, 720 quarterly point-in-time checks 2022-05 → 2026-09): debt-to-equity
+was missing in 33 % of walk-forward samples because the parser knew 3 debt concepts and one
+equity concept, and only looked at the latest equity date. Real filers use others:
+`LongTermNotesAndLoans` + `NotesPayableCurrent` (ORCL), `DebtLongtermAndShorttermCombinedAmount`
+(GE, AMD), `LongTermDebtAndCapitalLeaseObligations` (HD, NUE, MU), `ConvertibleLongTermNotesPayable`
+(DDOG), equity only including noncontrolling interests (CAT), debt tagged only in the 10-K (CAT, CVX).
+
+**Fix** (`src/sec_xbrl.py`): 6 documented debt definitions in priority order, each stating how its
+current portion is found and whether short-term borrowings are added (first of ShortTermBorrowings
+/ CommercialPaper, never both; never on top of DebtCurrent, which includes them). Checked against
+reported totals (ORCL 2024-05-31: 76.26 + 10.61 = 86.87 B combined; GE 2023-09-30: 19.49 + 1.33 =
+20.82 B). Finance-lease-inclusive definition flagged (`debt_includes_finance_leases`). Equity falls
+back to equity incl. NCI (flagged). D/E uses the latest date where both debt and equity are
+reported (≤ 400 days before the latest equity date); outputs `balance_sheet_date`,
+`latest_equity_date`, `debt_definition`, `equity_tag`.
+
+**Result**: missing 33 % → 10.7 % (77 / 720). Every remaining gap is genuine and stays
+DATA UNAVAILABLE (no estimate): negative equity, ratio not meaningful (BA 2022-25, ORCL 2022-23,
+HD 2022); no debt concept because the company had no debt (ISRG; META before its first bond in
+2022-08; PANW after its convertibles were retired); debt only in company-specific extension tags
+absent from SEC company facts (DE; XOM except 2 dates). XOM revenue is also unavailable (only 4
+standard revenue facts, no annual value).
+
+**Tests**: `tests/test_p15_debt_mapping.py` (8). Total 177.
+
 ## P1.4 — Signals relabelled: quantitative signals, not trade recommendations
 
 - Labels BUY / HOLD / SELL → POSITIVE / NEUTRAL / NEGATIVE (direction of a heuristic score)
@@ -14,7 +41,7 @@
 - Report: banner stating whether predictive power was demonstrated (currently NOT
   DEMONSTRATED: p = 0.43 at 5d and 20d, 40 tickers), "Quantitative assessment (not a trade
   recommendation)" table per ticker; dashboard and console summary use the same terms.
-- Tests: `tests/test_p14_relabel.py` (7, incl. no trade words in HTML / dashboard). Total 167.
+- Tests: `tests/test_p14_relabel.py` (7, incl. no trade words in HTML / dashboard). Total 168.
 
 ## P1.3 — Continuous features and walk-forward-fitted model
 

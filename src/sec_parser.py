@@ -50,7 +50,8 @@ import requests
 from .common import (end_of_us_trading_day_utc, redact, to_utc_iso, unavailable, utc_now_iso,
                      DATA_UNAVAILABLE)
 from .database import Database
-from .sec_xbrl import (DEBT_TAGS, DURATION_MONTHS, EQUITY_TAG, REVENUE_TAGS, debt_at,
+from .sec_xbrl import (DEBT_TAGS, DURATION_MONTHS, EQUITY_TAGS, MAX_BALANCE_AGE_DAYS, REVENUE_TAGS,
+                       balance_sheet,
                        facts_to_observations, latest_ttm)
 
 SEC_SOURCE = 'SEC EDGAR'
@@ -318,15 +319,15 @@ class SECParser:
         if revenue is None:
             reasons.append('no computable trailing-twelve-month revenue in XBRL facts')
 
-        instants = self._instants(ticker, (EQUITY_TAG,) + DEBT_TAGS, known)
-        equity_series = instants[EQUITY_TAG]
-        balance_date = max(equity_series) if equity_series else None
-        equity = equity_series[balance_date] if balance_date else None
-        debt = debt_at(instants, balance_date) if balance_date else None
+        instants = self._instants(ticker, EQUITY_TAGS + DEBT_TAGS, known)
+        sheet = balance_sheet(instants)
+        balance_date, equity, debt = sheet['date'], sheet['equity'], sheet['debt']
         if not balance_date:
-            reasons.append('StockholdersEquity not reported')
+            reasons.append('stockholders equity not reported')
         elif debt is None:
-            reasons.append(f'no debt tag reported at {balance_date} (leases excluded)')
+            reasons.append(f'no recognised debt concept reported between {balance_date} and '
+                           f'{MAX_BALANCE_AGE_DAYS} days earlier (leases excluded; company-specific '
+                           f'extension tags are not in SEC company facts)')
         de_ratio = None
         if debt and equity:
             if equity['value'] > 0:
@@ -352,9 +353,13 @@ class SECParser:
             'revenue_prior_year': revenue['prior']['value'] if revenue and revenue['prior'] else None,
             'revenue_growth_pct': growth,
             'balance_sheet_date': balance_date,
+            'latest_equity_date': sheet['latest_equity_date'],
             'equity': equity['value'] if equity else None,
+            'equity_tag': sheet['equity_tag'],
             'debt': debt['value'] if debt else None,
             'debt_tags': debt['tags'] if debt else None,
+            'debt_definition': debt['definition'] if debt else None,
+            'debt_includes_finance_leases': debt['includes_finance_leases'] if debt else None,
             'debt_to_equity': de_ratio,
             'revenue_published_at': latest_pub,
             'fetch': fetch,

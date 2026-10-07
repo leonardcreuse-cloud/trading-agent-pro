@@ -319,6 +319,28 @@ class Database:
             row = conn.execute('SELECT * FROM source_fetches WHERE fetch_id=?', (fetch_id,)).fetchone()
         return dict(row) if row else None
 
+    def latest_fetch(self, source, endpoint, since=None):
+        """
+        Most recent successful fetch of `endpoint` with a stored raw payload, completed
+        after `since` (any time when None). Used to reuse immutable or recent documents
+        instead of downloading them again. Returns a fetch dict like record_fetch.
+        """
+        sql = ("SELECT * FROM source_fetches WHERE source=? AND endpoint=? AND status='OK' "
+               "AND raw_path IS NOT NULL")
+        args = [source, redact(endpoint)]
+        if since is not None:
+            sql += ' AND completed_at >= ?'
+            args.append(to_utc_iso(since))
+        with self.connect() as conn:
+            row = conn.execute(sql + ' ORDER BY completed_at DESC, fetch_id DESC LIMIT 1',
+                               args).fetchone()
+        if not row:
+            return None
+        return {'fetch_id': row['fetch_id'], 'source': row['source'],
+                'retrieved_at': row['completed_at'], 'status': row['status'],
+                'raw_path': row['raw_path'], 'raw_sha256': row['raw_sha256'],
+                'raw_bytes': row['raw_bytes'], 'reused': True}
+
     def read_raw(self, fetch_id):
         """Decompressed raw payload of a fetch, after checking its SHA-256."""
         fetch = self.get_fetch(fetch_id)

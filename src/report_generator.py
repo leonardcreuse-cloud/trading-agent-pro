@@ -9,6 +9,8 @@ P0.1 changes:
 - Historical base rates are labelled as such (not predictions); the provisional
   backtest is shown with its majority-class baseline and warning.
 - Values are HTML-escaped; emoji mojibake removed.
+
+P0.3: SEC XBRL financials (TTM revenue, growth, debt / equity) and a Form 4 insider section.
 """
 
 from html import escape
@@ -74,7 +76,7 @@ class ReportGenerator:
     def _summary_table(all_results):
         rows = ['<h2>Summary</h2><table><tr><th>Ticker</th><th>Signal</th><th>Heuristic score</th>'
                 '<th>Coverage</th><th>Agreement</th><th>Technical</th><th>Fundamentals</th>'
-                '<th>News</th></tr>']
+                '<th>News</th><th>Insider</th></tr>']
         for r in all_results:
             sig = r.get('modules', {}).get('signal', {})
             comp = sig.get('component_scores', {})
@@ -83,7 +85,7 @@ class ReportGenerator:
                 f"<td>{cell(sig.get('signal'))}</td><td>{cell(sig.get('combined_score'))}</td>"
                 f"<td>{cell(sig.get('coverage'))}</td><td>{cell(sig.get('signal_agreement'), suffix='%')}</td>"
                 f"<td>{cell(comp.get('technical'))}</td><td>{cell(comp.get('fundamentals'))}</td>"
-                f"<td>{cell(comp.get('news'))}</td></tr>")
+                f"<td>{cell(comp.get('news'))}</td><td>{cell(comp.get('insider'))}</td></tr>")
         rows.append('</table>')
         return ''.join(rows)
 
@@ -156,11 +158,29 @@ class ReportGenerator:
                    f"<tr><td>Latest 10-K/10-Q</td><td>{cell(latest.get('form'))} "
                    f"filed {cell(latest.get('filing_date'))}</td></tr>"
                    f"<tr><td>Form 4 filings (90d)</td><td>{cell(sec.get('form4_filings_90d'))}</td></tr>"
-                   f"<tr><td>Revenue</td><td>{cell(sec.get('revenue'), ',.0f')}</td></tr>"
-                   f"<tr><td>Debt / equity</td><td>{cell(sec.get('debt_to_equity'))}</td></tr>"
+                   f"<tr><td>Revenue (TTM, USD)</td><td>{cell(sec.get('revenue'), ',.0f')}"
+                   f" (period end {cell(sec.get('revenue_ttm_period_end'))})</td></tr>"
+                   f"<tr><td>Revenue growth (YoY TTM)</td><td>{cell(sec.get('revenue_growth_pct'), suffix='%')}</td></tr>"
+                   f"<tr><td>Debt / equity</td><td>{cell(sec.get('debt_to_equity'))}"
+                   f" (balance sheet {cell(sec.get('balance_sheet_date'))})</td></tr>"
                    '</table>')
+        out.append(self._reason(sec.get('financials_status') or {}))
         if sec.get('error'):
             out.append(f'<p class="small">SEC error: {escape(str(sec["error"]))}</p>')
+
+        ins = m.get('insider', {})
+        out.append('<h3>Insider activity (SEC Form 4)</h3><table>'
+                   f"<tr><td>Form 4 filings / parsed ({cell(ins.get('window_days'))}d)</td>"
+                   f"<td>{cell(ins.get('form4_filings_window'))} / {cell(ins.get('form4_parsed'))}</td></tr>"
+                   f"<tr><td>Open-market buys</td><td>{cell(ins.get('insider_buys'))} "
+                   f"({cell(ins.get('distinct_buyers'))} insiders, {cell(ins.get('buy_value_usd'), ',.0f')} USD)</td></tr>"
+                   f"<tr><td>Open-market sells</td><td>{cell(ins.get('insider_sells'))} "
+                   f"({cell(ins.get('distinct_sellers'))} insiders, {cell(ins.get('sell_value_usd'), ',.0f')} USD)</td></tr>"
+                   f"<tr><td>of which discretionary (not 10b5-1)</td>"
+                   f"<td>{cell(ins.get('discretionary_sell_value_usd'), ',.0f')} USD</td></tr>"
+                   f"<tr><td>Score / signal</td><td>{cell(ins.get('insider_score'))} / {cell(ins.get('signal'))}</td></tr>"
+                   '</table>')
+        out.append(self._reason(ins))
 
         tech = m.get('technical', {})
         comps = tech.get('components', {})

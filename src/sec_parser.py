@@ -23,8 +23,17 @@ P0.2 changes (provenance):
 - The 90-day Form 4 count is computed point-in-time from those observations
   (filings available at the evaluation instant only). The legacy sec_data cache, which
   had no publication time, is gone (backed up and dropped by the v2 migration).
+
+P0.3 changes (financial statements, efficiency):
+- Revenue (TTM), revenue growth, debt and debt-to-equity come from SEC XBRL company facts
+  (see sec_xbrl.py for definitions). Every fact is stored as a point-in-time observation;
+  fundamentals(known_at=T) only uses facts whose filing was public at T.
+- Documents are reused instead of re-downloaded: the ticker file for 24 h, company facts
+  for 12 h, Form 4 XML documents forever (filed documents are immutable). The reused fetch
+  keeps its original retrieval time in the provenance.
 """
 
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -35,10 +44,15 @@ import requests
 from .common import (end_of_us_trading_day_utc, redact, to_utc_iso, unavailable, utc_now_iso,
                      DATA_UNAVAILABLE)
 from .database import Database
+from .sec_xbrl import (DEBT_TAGS, DURATION_MONTHS, EQUITY_TAG, REVENUE_TAGS, debt_at,
+                       facts_to_observations, latest_ttm)
 
 SEC_SOURCE = 'SEC EDGAR'
 PERIODIC_FORMS = ('10-K', '10-Q')
 NEW_YORK = ZoneInfo('America/New_York')
+TICKER_FILE_MAX_AGE = timedelta(hours=24)
+COMPANY_FACTS_MAX_AGE = timedelta(hours=12)
+IMMUTABLE = 'immutable'
 ACCEPTANCE_BASIS = ('SEC acceptanceDateTime read as New York time '
                     '(conservative: >= the UTC reading of the feed)')
 
@@ -63,21 +77,39 @@ class SECParser:
             self.session.headers.update({'User-Agent': self.user_agent})
         self._cik_map = None
         self._filings_cache = {}
+        self._facts_fetch = {}
+        self._fundamentals_cache = {}
         self.last_error = None
         self.last_fetch = {}
 
-    def _get_json(self, url):
-        """GET a JSON document from SEC, logged with its raw payload; None on failure."""
+    def _get(self, url, as_json=True, max_age=None):
+        """
+        GET a document from SEC, logged with its raw payload; None on failure.
+        max_age: reuse the last successful fetch of this URL if it is more recent than
+        this timedelta, or whatever its age when max_age == IMMUTABLE.
+        """
         if not self.user_agent:
             self.last_error = 'SEC_USER_AGENT not set (SEC requires a User-Agent with contact info)'
             return None
+        if max_age is not None:
+            since = None if max_age == IMMUTABLE else datetime.now(timezone.utc) - max_age
+            cached = self.db.latest_fetch(SEC_SOURCE, url, since=since)
+            if cached:
+                try:
+                    text = self.db.read_raw(cached['fetch_id'])
+                    data = json.loads(text) if as_json else text
+                except Exception:  # noqa: BLE001 - corrupted cache: download again
+                    data = None
+                if data is not None:
+                    self.last_fetch[url] = cached
+                    return data
         requested_at = utc_now_iso()
         response = None
         try:
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url, timeout=20)
             response.raise_for_status()
             time.sleep(0.11)  # SEC fair-access limit: max 10 requests/second
-            data = response.json()
+            data = response.json() if as_json else response.text
         except Exception as e:  # noqa: BLE001 - recorded and surfaced
             self.last_error = redact(f"{type(e).__name__}: {e}")
             self.db.record_fetch(SEC_SOURCE, url, requested_at=requested_at,
@@ -88,13 +120,17 @@ class SECParser:
         self.last_fetch[url] = self.db.record_fetch(
             SEC_SOURCE, url, requested_at=requested_at, status='OK',
             http_status=getattr(response, 'status_code', None),
-            raw=raw if isinstance(raw, (bytes, str)) else data)
+            raw=raw if isinstance(raw, (bytes, str)) else data,
+            raw_ext='json' if as_json else 'xml')
         return data
+
+    def _get_json(self, url, max_age=None):
+        return self._get(url, as_json=True, max_age=max_age)
 
     def get_cik(self, ticker):
         """Resolve a ticker to its 10-digit CIK using the official SEC ticker file."""
         if self._cik_map is None:
-            data = self._get_json(self.TICKER_FILE_URL)
+            data = self._get_json(self.TICKER_FILE_URL, max_age=TICKER_FILE_MAX_AGE)
             if not data:
                 return None
             self._cik_map = {
@@ -105,7 +141,7 @@ class SECParser:
 
     @staticmethod
     def _recent_filings(data):
-        """Rows of the 'recent' block: form, filing_date, report_date, accession, accepted_at."""
+        """Rows of the 'recent' block: form, dates, accession, primary document, publication."""
         recent = (data or {}).get('filings', {}).get('recent', {})
         forms = recent.get('form', [])
 
@@ -114,9 +150,9 @@ class SECParser:
             return list(values) + [None] * (len(forms) - len(values))
 
         filings = []
-        for form, filed, report, accession, accepted in zip(
+        for form, filed, report, accession, accepted, document in zip(
                 forms, col('filingDate'), col('reportDate'), col('accessionNumber'),
-                col('acceptanceDateTime')):
+                col('acceptanceDateTime'), col('primaryDocument')):
             if accepted:
                 published, basis = acceptance_to_utc(accepted), ACCEPTANCE_BASIS
             elif filed:
@@ -126,6 +162,7 @@ class SECParser:
                 published, basis = None, 'unknown'
             filings.append({'form': form, 'filing_date': filed or None,
                             'report_date': report or None, 'accession_number': accession,
+                            'primary_document': document or None,
                             'published_at': published, 'published_at_basis': basis})
         return filings
 
@@ -166,16 +203,116 @@ class SECParser:
         return {k: latest[k] for k in ('form', 'filing_date', 'report_date', 'accession_number',
                                        'published_at', 'published_at_basis')}
 
-    def fetch_revenue(self, ticker):
-        """
-        Revenue is not available yet: the previous implementation returned invented
-        constants. Real values will come from SEC XBRL company facts (phase P0.3).
-        """
-        return None
+    # ------------------------------------------------------------------ XBRL fundamentals
 
-    def fetch_debt_equity(self, ticker):
-        """Debt-to-equity: DATA UNAVAILABLE until XBRL ingestion (phase P0.3)."""
-        return None
+    def ingest_company_facts(self, ticker):
+        """
+        Download (or reuse, < 12 h) the XBRL company facts and store the revenue, equity and
+        debt facts as observations. Returns the fetch dict, or None if SEC was unreachable.
+        """
+        if ticker in self._facts_fetch:
+            return self._facts_fetch[ticker]
+        cik = self.get_cik(ticker)
+        if not cik:
+            if not self.last_error:
+                self.last_error = f'CIK not found for {ticker} in SEC ticker file'
+            return None
+        url = f"{self.SEC_API}/api/xbrl/companyfacts/CIK{cik}.json"
+        data = self._get_json(url, max_age=COMPANY_FACTS_MAX_AGE)
+        if not data:
+            return None
+        filings = self.get_filings(ticker)
+        acceptance = {f['accession_number']: (f['published_at'], f['published_at_basis'])
+                      for f in (filings or {}).get('filings', [])
+                      if f['accession_number'] and f['published_at']}
+        fetch = self.last_fetch[url]
+        self.db.upsert_observations(fetch, facts_to_observations(ticker, data, acceptance))
+        self._facts_fetch[ticker] = fetch
+        return fetch
+
+    def _instants(self, ticker, tags, known_at):
+        return {tag: dict(self.db.series(ticker, f'xbrl:{tag}', known_at=known_at,
+                                         source=SEC_SOURCE)) for tag in tags}
+
+    def fundamentals(self, ticker, known_at=None):
+        """
+        Revenue TTM, revenue growth, debt and debt-to-equity from facts available at
+        known_at (default: now). Missing values are None with a reason, never 0.
+        """
+        if ticker in self._fundamentals_cache and known_at is None:
+            return self._fundamentals_cache[ticker]
+        fetch = self.ingest_company_facts(ticker)
+        if not fetch:
+            return {'status': DATA_UNAVAILABLE, 'revenue': None, 'revenue_growth_pct': None,
+                    'debt': None, 'equity': None, 'debt_to_equity': None, 'fetch': None,
+                    'reason': f'SEC XBRL company facts unavailable: {self.last_error}'}
+        known = to_utc_iso(known_at) if known_at else utc_now_iso()
+        reasons = []
+
+        revenue = None
+        for tag in REVENUE_TAGS:
+            durations = {m: dict(self.db.series(ticker, f'xbrl:{tag}:{m}M', known_at=known,
+                                                source=SEC_SOURCE))
+                         for m in DURATION_MONTHS}
+            current, prior = latest_ttm(durations)
+            if current and (revenue is None or current['end'] > revenue['current']['end']):
+                revenue = {'tag': tag, 'current': current, 'prior': prior}
+        if revenue is None:
+            reasons.append('no computable trailing-twelve-month revenue in XBRL facts')
+
+        instants = self._instants(ticker, (EQUITY_TAG,) + DEBT_TAGS, known)
+        equity_series = instants[EQUITY_TAG]
+        balance_date = max(equity_series) if equity_series else None
+        equity = equity_series[balance_date] if balance_date else None
+        debt = debt_at(instants, balance_date) if balance_date else None
+        if not balance_date:
+            reasons.append('StockholdersEquity not reported')
+        elif debt is None:
+            reasons.append(f'no debt tag reported at {balance_date} (leases excluded)')
+        de_ratio = None
+        if debt and equity:
+            if equity['value'] > 0:
+                de_ratio = round(debt['value'] / equity['value'], 3)
+            else:
+                reasons.append('stockholders equity <= 0: debt-to-equity not meaningful')
+
+        growth = None
+        if revenue and revenue['prior'] and revenue['prior']['value'] > 0:
+            growth = round((revenue['current']['value'] / revenue['prior']['value'] - 1) * 100, 2)
+        elif revenue:
+            reasons.append('revenue one year earlier not computable: growth unavailable')
+
+        rev_inputs = revenue['current']['inputs'] if revenue else []
+        latest_pub = max((r['published_at'] for r in rev_inputs if r.get('published_at')), default=None)
+        result = {
+            'status': 'OK' if revenue or de_ratio is not None else DATA_UNAVAILABLE,
+            'known_at': known,
+            'revenue': revenue['current']['value'] if revenue else None,
+            'revenue_tag': revenue['tag'] if revenue else None,
+            'revenue_period_end': revenue['current']['end'] if revenue else None,
+            'revenue_method': revenue['current']['method'] if revenue else None,
+            'revenue_prior_year': revenue['prior']['value'] if revenue and revenue['prior'] else None,
+            'revenue_growth_pct': growth,
+            'balance_sheet_date': balance_date,
+            'equity': equity['value'] if equity else None,
+            'debt': debt['value'] if debt else None,
+            'debt_tags': debt['tags'] if debt else None,
+            'debt_to_equity': de_ratio,
+            'revenue_published_at': latest_pub,
+            'fetch': fetch,
+            'reason': '; '.join(reasons) or None,
+        }
+        if known_at is None:
+            self._fundamentals_cache[ticker] = result
+        return result
+
+    def fetch_revenue(self, ticker, known_at=None):
+        """Trailing-twelve-month revenue (USD) from SEC XBRL; None if unavailable."""
+        return self.fundamentals(ticker, known_at)['revenue']
+
+    def fetch_debt_equity(self, ticker, known_at=None):
+        """Debt / stockholders' equity from SEC XBRL; None if unavailable."""
+        return self.fundamentals(ticker, known_at)['debt_to_equity']
 
     def fetch_form4_count(self, ticker, known_at=None, days=90):
         """
@@ -196,37 +333,71 @@ class SECParser:
         self.last_error = None
         latest = self.fetch_latest_periodic_filing(ticker)
         form4s = self.fetch_form4_count(ticker)
+        filings_error = self.last_error
+        self.last_error = None
+        fin = self.fundamentals(ticker)
         cik = self._cik_map.get(ticker.upper()) if self._cik_map else None
         filings = self._filings_cache.get(ticker)
         fetch = filings['fetch'] if filings else None
+        fin_fetch = fin.get('fetch')
+
+        if fin['status'] == 'OK':
+            financials_status = {'status': 'OK', 'source': SEC_SOURCE, 'reason': fin['reason'],
+                                 'method': 'SEC XBRL company facts (see sec_xbrl.py)'}
+        else:
+            financials_status = unavailable(SEC_SOURCE, fin['reason'] or 'no usable XBRL facts')
 
         results = {
             'ticker': ticker,
             'cik': cik,
             'latest_periodic_filing': latest,
             'form4_filings_90d': form4s,
-            'revenue': None,
-            'debt_to_equity': None,
-            'financials_status': unavailable(
-                SEC_SOURCE, 'XBRL financial statement ingestion not implemented yet (phase P0.3)'),
+            'revenue': fin['revenue'],
+            'revenue_ttm_period_end': fin.get('revenue_period_end'),
+            'revenue_tag': fin.get('revenue_tag'),
+            'revenue_method': fin.get('revenue_method'),
+            'revenue_growth_pct': fin.get('revenue_growth_pct'),
+            'balance_sheet_date': fin.get('balance_sheet_date'),
+            'debt': fin.get('debt'),
+            'debt_tags': fin.get('debt_tags'),
+            'equity': fin.get('equity'),
+            'debt_to_equity': fin['debt_to_equity'],
+            'financials_status': financials_status,
             'source': SEC_SOURCE,
             'source_status': 'OK' if latest or form4s is not None else DATA_UNAVAILABLE,
-            'error': self.last_error,
+            'error': filings_error,
             'provenance': self.db.provenance(
                 fetch, cadence='quarterly_filing',
                 as_of_date=latest and (latest['report_date'] or latest['filing_date']),
                 published_at=latest and latest['published_at'],
                 published_at_basis=latest and latest['published_at_basis'],
                 freshness_date=latest and latest['published_at']) if fetch else None,
+            'financials_provenance': self.db.provenance(
+                fin_fetch, cadence='quarterly_filing',
+                as_of_date=fin.get('revenue_period_end') or fin.get('balance_sheet_date'),
+                published_at=fin.get('revenue_published_at'),
+                published_at_basis='filing acceptance time of the latest revenue fact',
+                freshness_date=fin.get('revenue_published_at')) if fin_fetch else None,
             'retrieved_at': fetch['retrieved_at'] if fetch else utc_now_iso(),
         }
 
+        def money(v):
+            return f"{v / 1e6:,.1f} M USD" if v is not None else DATA_UNAVAILABLE
         print(f"   CIK:          {cik or DATA_UNAVAILABLE}")
         print(f"   Latest 10-K/Q: {latest['form'] + ' accepted ' + str(latest['published_at']) if latest else DATA_UNAVAILABLE}")
         print(f"   Form 4 (90d): {form4s if form4s is not None else DATA_UNAVAILABLE}")
-        print(f"   Revenue/D-E:  {DATA_UNAVAILABLE} (XBRL ingestion planned P0.3)")
-        if self.last_error:
-            print(f"   Error:        {self.last_error}")
+        print(f"   Revenue TTM:  {money(fin['revenue'])}"
+              + (f" (period end {fin['revenue_period_end']})" if fin['revenue'] is not None else ''))
+        growth = fin.get('revenue_growth_pct')
+        print(f"   Rev. growth:  {str(growth) + ' % YoY' if growth is not None else DATA_UNAVAILABLE}")
+        de = fin['debt_to_equity']
+        print(f"   Debt/equity:  {de if de is not None else DATA_UNAVAILABLE}"
+              + (f" (debt {money(fin['debt'])}, equity {money(fin['equity'])}, "
+                 f"{fin['balance_sheet_date']})" if de is not None else ''))
+        if fin['reason']:
+            print(f"   Note:         {fin['reason']}")
+        if filings_error:
+            print(f"   Error:        {filings_error}")
         print("=" * 60)
         return results
 

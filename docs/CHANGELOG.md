@@ -1,5 +1,42 @@
 # Changelog
 
+## P0.3 — SEC XBRL fundamentals and Form 4 insider transactions
+
+**Fundamentals (`src/sec_xbrl.py`, `SECParser.fundamentals`)**
+- Source: SEC XBRL company facts (`data.sec.gov/api/xbrl/companyfacts`), 10-K / 10-Q facts in USD.
+  Each fact is an observation (`xbrl:<Tag>` for balance-sheet values, `xbrl:<Tag>:<m>M` for
+  3/6/9/12-month periods, period start in `value_text`) published at the filing's acceptance
+  time (accession matched in the submissions feed), else the end of the `filed` date.
+- Revenue TTM = 12M fact, else FY + YTD − prior-year YTD (tags never mixed); growth = TTM vs
+  TTM one year earlier; debt = first reported definition (`LongTermDebt`, else
+  `LongTermDebtNoncurrent` + current portion, else convertible debt), leases excluded;
+  D/E unavailable when equity ≤ 0 or no debt tag is reported (never 0).
+- Point-in-time: `fundamentals(known_at=T)` uses only facts public at T; restatements are new
+  versions. Fundamental score has 3 components (revenue scale, revenue growth, leverage).
+
+**Insider (`src/insider_tracker.py`)**
+- Form 4 XML documents of the last 90 days parsed (owners, Rule 10b5-1 box, non-derivative
+  transactions), each transaction stored as an event `form4:transaction` with the filing's
+  acceptance time. Only open-market purchases (P) and sales (S) are scored; 10b5-1 planned
+  sales are neutral. Heuristic score (60–90 for buys by 1–4+ insiders, 45 / 35 for
+  discretionary sales by 1–2 / ≥3 insiders, else 50). Partial document failures →
+  `PROVISIONAL`; all failed or SEC unreachable → `DATA UNAVAILABLE`.
+
+**Combined signal**: insider is a 4th component (technical 0.25, fundamentals 0.40, news 0.20,
+insider 0.15); coverage is now reported out of 4.
+
+**Efficiency**: `Database.latest_fetch()` lets SEC documents be reused: ticker file 24 h,
+company facts 12 h, Form 4 XML forever (immutable). A reused document keeps its original
+fetch (and retrieval time) in the provenance. Second run of the day ≈ 2× faster.
+
+**Report**: TTM revenue, growth, D/E with balance-sheet date; new "Insider activity" section;
+Insider column in the summary.
+
+**Tests**: `tests/test_p03_sec_fundamentals_insider.py` (21 tests, offline). Total 131 tests.
+
+**Not changed in P0.3**: Form 4/A amendments and derivative transactions are not used;
+other XBRL metrics (margins, cash flow) and vintage-consistent transforms are P0.4+.
+
 ## P0.2 — Provenance layer (database.py)
 
 **Schema v2, single owner (`src/database.py`)**

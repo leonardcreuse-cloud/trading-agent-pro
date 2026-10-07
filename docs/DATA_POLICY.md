@@ -61,6 +61,19 @@ versions; history is never overwritten. Unverifiable legacy data is not migrated
 **Freshness**: `FRESH` if the age of `as_of_date` (publication date for filings) is within the cadence
 limit: market sessions 5 days, daily series 7, monthly series 80, 10-K/10-Q 120, news 7.
 
+## SEC financials and insider activity (P0.3)
+
+| Metric | Definition |
+|---|---|
+| Revenue TTM | 12-month fact, else FY + YTD − prior-year YTD, from one XBRL tag (see `sec_xbrl.py`) |
+| Revenue growth | Revenue TTM / revenue TTM one year earlier − 1 |
+| Debt | First reported definition: `LongTermDebt`; else non-current + current long-term debt; else convertible debt. Leases excluded |
+| Debt / equity | Debt / `StockholdersEquity` at the same balance-sheet date; unavailable if equity ≤ 0 or no debt tag |
+| Insider score | Heuristic 0–100 from open-market Form 4 purchases (P) and discretionary sales (S) over 90 days; 10b5-1 planned sales, grants, exercises and tax withholding are not scored |
+
+An insider score of 50 is computed ("no informative transaction observed"); it is not a default:
+when SEC or the Form 4 documents cannot be read, the score is `None`.
+
 ## Configuration
 
 Secrets go in `.env` (see `.env.example`): `SEC_USER_AGENT`, `FRED_API_KEY`, `NEWSAPI_KEY`.

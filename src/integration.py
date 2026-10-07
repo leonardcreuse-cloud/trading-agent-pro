@@ -17,6 +17,11 @@ P0.2 changes:
 - Each result carries a `provenance` summary per module (source, rank, fetch id,
   retrieval / publication time, freshness).
 - Reports are passed through redact() before being written (no API key on disk).
+
+P0.3 changes:
+- Fundamentals from SEC XBRL company facts; insider activity from parsed Form 4 XML.
+  Both share the run's SECParser (one ticker file, one submissions feed per ticker).
+- The insider score is the fourth component of the combined signal.
 """
 
 import json
@@ -56,7 +61,7 @@ class Integration:
         self.db = Database()
         self.prices = PriceFeed(db=self.db)
         self.sec = SECParser(db=self.db)
-        self.insider = InsiderTracker()
+        self.insider = InsiderTracker(sec_parser=self.sec)
         self.backtester = Backtester(price_feed=self.prices)
         self.technical = PriceTechnical(price_feed=self.prices)
         self.news = NewsProcessor(db=self.db)
@@ -93,7 +98,7 @@ class Integration:
         modules['fundamentals'] = self._safe('fundamentals', self.fundamentals.analyze, ticker)
         modules['signal'] = self._safe('signal', self.signal.analyze, ticker,
                                        modules['technical'], modules['fundamentals'],
-                                       modules['news'])
+                                       modules['news'], modules['insider'])
         modules['prediction'] = self._safe('prediction', self.prediction.analyze, ticker)
 
         print(f"\n  Signal: {modules['signal'].get('recommendation', DATA_UNAVAILABLE)}")

@@ -10,6 +10,8 @@ P0.1 changes:
 - The output states its coverage (e.g. "2/3") and that the score is a heuristic,
   not a probability. Weights and thresholds are NOT empirically validated yet
   (phase P1 replaces them with trained, calibrated models).
+
+P0.3: insider activity (SEC Form 4 open-market transactions) is a fourth component.
 """
 
 from .common import utc_now_iso
@@ -18,9 +20,9 @@ INSUFFICIENT_DATA = 'INSUFFICIENT DATA'
 
 
 class ScoringSignalFixed:
-    """Final heuristic recommendation from technical / fundamental / news scores."""
+    """Final heuristic recommendation from technical / fundamental / news / insider scores."""
 
-    WEIGHTS = {'technical': 0.25, 'fundamentals': 0.50, 'news': 0.25}
+    WEIGHTS = {'technical': 0.25, 'fundamentals': 0.40, 'news': 0.20, 'insider': 0.15}
     MIN_COMPONENTS = 2
     BUY_THRESHOLD = 65
     SELL_THRESHOLD = 40
@@ -56,18 +58,21 @@ class ScoringSignalFixed:
         strength_pct = min(100, abs(combined - 50) / 50 * 100)
         return round(max(0, min(100, agreement_pct * 0.60 + strength_pct * 0.40)), 2)
 
-    def analyze(self, ticker, tech_result, fund_result, news_result):
+    def analyze(self, ticker, tech_result, fund_result, news_result, insider_result=None):
         print(f"  [SIGNAL] {ticker}...")
+        insider_result = insider_result or {}
 
         scores = {
             'technical': tech_result.get('technical_score'),
             'fundamentals': fund_result.get('fundamental_score'),
             'news': news_result.get('news_score'),
+            'insider': insider_result.get('insider_score'),
         }
         signals = {
             'technical': tech_result.get('signal'),
             'fundamentals': fund_result.get('signal'),
             'news': news_result.get('signal'),
+            'insider': insider_result.get('signal'),
         }
         available = [k for k, v in scores.items() if v is not None]
         missing = [k for k in scores if k not in available]
@@ -100,7 +105,7 @@ class ScoringSignalFixed:
             'score_type': 'heuristic 0-100 score, not a probability; weights not validated',
             'recommendation': recommendation,
             'timestamp': utc_now_iso(),
-            'source': 'Multi-Source heuristic v3',
+            'source': 'Multi-Source heuristic v4',
         }
 
 

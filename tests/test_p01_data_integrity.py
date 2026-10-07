@@ -90,7 +90,7 @@ def test_sec_resolves_cik_and_counts_form4_from_api(monkeypatch):
     assert result['cik'] == '0001535527'
     assert result['form4_filings_90d'] == 2
     assert result['latest_periodic_filing']['form'] == '10-Q'
-    assert result['revenue'] is None   # still unavailable until XBRL (P0.3)
+    assert result['revenue'] is None   # company facts not served by the fake (404)
 
 
 # ---------------------------------------------------------------- insider / fundamentals
@@ -109,7 +109,7 @@ def test_fundamentals_missing_inputs_give_none_not_50():
     assert result['fundamental_score'] is None
     assert result['signal'] is None
     assert result['status'] == 'DATA UNAVAILABLE'
-    assert result['coverage'] == '0/2'
+    assert result['coverage'] == '0/3'          # P0.3: revenue_scale, revenue_growth, leverage
 
 
 def test_fundamentals_composite_uses_available_components_only():
@@ -128,7 +128,7 @@ def test_signal_requires_two_components():
                        {'news_score': None})
     assert result['combined_score'] is None
     assert result['signal'] == INSUFFICIENT_DATA
-    assert result['coverage'] == '1/3'
+    assert result['coverage'] == '1/4'          # P0.3: insider is the 4th component
     assert result['signal_agreement'] is None
 
 
@@ -136,10 +136,10 @@ def test_signal_renormalizes_weights_over_available_components():
     from src.scoring_signal_fixed import ScoringSignalFixed
     s = ScoringSignalFixed()
     result = s.analyze('MP', {'technical_score': 80}, {'fundamental_score': None}, {'news_score': 40})
-    # technical 0.25 and news 0.25 -> equal weights once renormalized
-    assert result['combined_score'] == 60.0
-    assert result['coverage'] == '2/3'
-    assert result['missing_components'] == ['fundamentals']
+    # technical 0.25 and news 0.20, renormalized: (80*0.25 + 40*0.20) / 0.45
+    assert result['combined_score'] == 62.22
+    assert result['coverage'] == '2/4'
+    assert result['missing_components'] == ['fundamentals', 'insider']
 
 
 # ---------------------------------------------------------------- technical

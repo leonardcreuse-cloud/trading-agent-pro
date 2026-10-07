@@ -313,7 +313,7 @@ def test_sec_filings_stored_with_acceptance_time_and_counted_point_in_time(monke
     prov = result['provenance']
     assert prov['source'] == 'SEC EDGAR' and prov['source_rank'] == 1
     assert prov['as_of_date'] == '2026-06-30' and prov['raw_sha256']
-    assert parser.db.count('source_fetches') == 2
+    assert parser.db.count('source_fetches') == 3   # ticker file, submissions, company facts (P0.3)
 
 
 def test_fred_vintages_stored_and_current_vintage_displayed(monkeypatch):

@@ -10,6 +10,11 @@ P0.1 changes:
   but for these companies Form 4s are mostly sales and RSU vesting. Insider activity
   will come back once transactions are parsed (buy vs sell).
 - Thresholds remain heuristic (not calibrated) and will be replaced in phase P1.
+
+P0.3 changes:
+- Inputs come from SEC XBRL company facts (SECParser.fundamentals): trailing-twelve-month
+  revenue, year-over-year TTM revenue growth and debt-to-equity, all point-in-time.
+- New component revenue_growth. Components missing in the filings stay None.
 """
 
 
@@ -20,15 +25,20 @@ from .sec_parser import SECParser
 class ScoringFundamentals:
     """Heuristic fundamental score from SEC data (None when inputs are missing)."""
 
-    WEIGHTS = {'revenue_scale': 0.55, 'leverage': 0.45}
+    WEIGHTS = {'revenue_scale': 0.30, 'revenue_growth': 0.35, 'leverage': 0.35}
 
     def __init__(self, sec_parser=None):
         self.sec_parser = sec_parser or SECParser()
 
-    def get_sec_data(self, ticker):
+    def get_sec_data(self, ticker, known_at=None):
+        fin = self.sec_parser.fundamentals(ticker, known_at)
         return {
-            'revenue': self.sec_parser.fetch_revenue(ticker),
-            'debt_to_equity': self.sec_parser.fetch_debt_equity(ticker),
+            'revenue': fin['revenue'],
+            'revenue_growth_pct': fin.get('revenue_growth_pct'),
+            'debt_to_equity': fin['debt_to_equity'],
+            'revenue_period_end': fin.get('revenue_period_end'),
+            'balance_sheet_date': fin.get('balance_sheet_date'),
+            'reason': fin.get('reason'),
         }
 
     @staticmethod
@@ -43,6 +53,21 @@ class ScoringFundamentals:
         if revenue > 200_000_000:
             return 60
         return 45
+
+    @staticmethod
+    def calculate_revenue_growth_score(growth_pct):
+        """Heuristic score on YoY TTM revenue growth (%). None if missing."""
+        if is_missing(growth_pct):
+            return None
+        if growth_pct > 30:
+            return 85
+        if growth_pct > 15:
+            return 70
+        if growth_pct > 5:
+            return 60
+        if growth_pct > 0:
+            return 50
+        return 35
 
     @staticmethod
     def calculate_leverage_score(de_ratio):
@@ -67,12 +92,13 @@ class ScoringFundamentals:
         total_weight = sum(self.WEIGHTS[k] for k in available)
         return round(sum(v * self.WEIGHTS[k] for k, v in available.items()) / total_weight, 2)
 
-    def analyze(self, ticker):
+    def analyze(self, ticker, known_at=None):
         print(f"  [FUNDAMENTALS] {ticker}...")
-        sec_data = self.get_sec_data(ticker)
+        sec_data = self.get_sec_data(ticker, known_at)
 
         components = {
             'revenue_scale': self.calculate_revenue_scale_score(sec_data['revenue']),
+            'revenue_growth': self.calculate_revenue_growth_score(sec_data['revenue_growth_pct']),
             'leverage': self.calculate_leverage_score(sec_data['debt_to_equity']),
         }
         composite = self.calculate_composite_score(components)
@@ -96,8 +122,8 @@ class ScoringFundamentals:
             'components': components,
             'inputs': sec_data,
             'score_type': 'heuristic 0-100 score, not a probability',
-            'reason': None if composite is not None else
-                      'Revenue and debt-to-equity not available (SEC XBRL ingestion planned P0.3)',
+            'reason': sec_data['reason'] if composite is not None else
+                      (sec_data['reason'] or 'No usable SEC XBRL financial facts'),
             'timestamp': utc_now_iso(),
             'source': 'SEC EDGAR',
         }

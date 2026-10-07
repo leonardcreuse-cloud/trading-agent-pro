@@ -289,7 +289,8 @@ class Study:
         out = reports_dir() / f'research_stage{self.stage}.json'
         out.write_text(redact(json.dumps(report, indent=1, default=str)), encoding='utf-8')
         print_summary(report)
-        print(f"\n  Results: {out}")
+        md = write_markdown(report, reports_dir() / f'research_stage{self.stage}.md')
+        print(f"\n  Results: {out}\n  Summary: {md}")
         return report
 
 
@@ -333,3 +334,81 @@ def print_summary(report):
     print("  (* BH q < 0.05, ** Bonferroni p < 0.05)\n")
     for line in report['conclusion']:
         print('  ' + line)
+
+
+# ---------------------------------------------------------------- markdown report
+
+def _fmt(v, nd=4, signed=True):
+    if v is None:
+        return 'n/a'
+    if isinstance(v, float):
+        return f'{v:+.{nd}f}' if signed else f'{v:.{nd}f}'
+    return str(v)
+
+
+def write_markdown(report, path):
+    """Human-readable results (every pre-registered test, nothing filtered by performance)."""
+    s, u = report['sample'], report['universe']
+    lines = [f"# Research study — stage {report['stage']} results", '',
+             f"Computed {report['computed_at']}. Generated from `reports/research_stage{report['stage']}.json` "
+             "by `src/research/experiment.py`; the protocol is fixed in code before results.", '',
+             '## Conclusion', ''] + [f'- {c}' for c in report['conclusion']] + [
+             '', '## Sample', '',
+             f"- Universe: {u['rule']}.",
+             f"- Stocks: {u['n_stocks_with_data']} with data of {u['n_stocks_requested']} requested; "
+             f"median {s['stocks_per_date_median']} stocks per date.",
+             f"- Observations: {s['n_observations']:,} stock-dates on {s['n_dates']} weekly dates, "
+             f"{s['first_date']} → {s['last_date']} (every {s['step_sessions']} sessions).",
+             '- Biases: ' + '; '.join(u['biases']) + '.',
+             '- Excluded stocks: ' + (', '.join(f"{t} ({i.get('reason')})" for t, i in report['ticker_info'].items()
+                                                if i['status'] != 'OK') or 'none') + '.',
+             '- Not testable (no free point-in-time data) or deferred: ' + '; '.join(
+                 f'{k}: {v}' for k, v in report['unavailable_groups'].items()) + '.',
+             '', '## Group composites (no fitting) — mean daily rank IC in the pre-registered direction', '',
+             'Newey-West t; q = Benjamini-Hochberg within the 35 group tests. Portfolio: top minus bottom '
+             'quintile, rebalanced every H sessions, net of 10 bp per unit of turnover, risk-free rate 0.', '',
+             '| Group | H | IC | t | p | q (BH) | 95 % CI | L/S net ann. | L/S Sharpe | L/S Sortino | L/S max DD | '
+             'Top-Q net ann. | Equal-weight ann. | SPY ann. | Turnover | Periods |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    for t in report['group_tests']:
+        p = t['portfolio']
+        ls, lo = p['long_short_net'], p['long_only_top_quintile_net']
+        ew, spy = p['benchmark_equal_weight_universe'], p['benchmark_spy']
+        ci = t['ci95'] and f"[{t['ci95'][0]:+.3f}, {t['ci95'][1]:+.3f}]"
+        lines.append(f"| {t['group']} | {t['horizon']} | {_fmt(t['mean'])} | {_fmt(t['t_stat'], 2)} | "
+                     f"{_fmt(t['p_value'], 3, signed=False)} | {_fmt(t['q_value_bh'], 3, signed=False)} | {ci} | "
+                     f"{ls.get('annualised_return_pct')} % | {ls.get('sharpe')} | {ls.get('sortino')} | "
+                     f"{ls.get('max_drawdown_pct')} % | {lo.get('annualised_return_pct')} % | "
+                     f"{ew.get('annualised_return_pct')} % | {spy.get('annualised_return_pct')} % | "
+                     f"{p['mean_turnover_per_rebalance']} | {ls.get('n_periods')} |")
+    lines += ['', '## Models — strict walk-forward, out-of-sample only', '',
+              'Yearly test folds; each fitted on samples whose outcome was known before the fold '
+              '(purged), with at least 3 years of history; hyperparameters fixed a priori (no '
+              'validation set). q = BH within the model tests.', '',
+              '| Model | H | Training (first fold) | OOS period | IC | t | p | q (BH) | AUC | L/S net ann. | '
+              'L/S Sharpe | L/S Sortino | L/S max DD | Turnover | Baseline (all groups) IC same dates |',
+              '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    for m in report['model_tests']:
+        if m.get('status') != 'OK':
+            lines.append(f"| {m['model']} | {m['horizon']} | {m.get('status')} |" + ' |' * 12)
+            continue
+        first = next((f for f in m['folds'].values() if f['status'] == 'tested'), {})
+        ls = m['portfolio']['long_short_net']
+        lines.append(f"| {m['model']} | {m['horizon']} | {first.get('train_start')} → {first.get('train_end')} | "
+                     f"{m['oos_period'][0]} → {m['oos_period'][1]} | {_fmt(m.get('mean'))} | "
+                     f"{_fmt(m.get('t_stat'), 2)} | {_fmt(m.get('p_value'), 3, signed=False)} | {_fmt(m.get('q_value_bh'), 3, signed=False)} | "
+                     f"{m.get('auc')} | {ls.get('annualised_return_pct')} % | {ls.get('sharpe')} | "
+                     f"{ls.get('sortino')} | {ls.get('max_drawdown_pct')} % | "
+                     f"{m['portfolio']['mean_turnover_per_rebalance']} | "
+                     f"{_fmt(m['baseline_all_groups_same_dates'].get('mean'))} |")
+    lines += ['', f"Gradient boosting: {report['gradient_boosting']['reason']}.", '',
+              '## Individual features — mean daily rank IC in the pre-registered direction', '',
+              'q = BH within the 155 feature tests.', '',
+              '| Feature | Group | Sign | Basis | H | IC | t | p | q (BH) | Coverage |',
+              '|---|---|---|---|---|---|---|---|---|---|']
+    for t in report['feature_tests']:
+        lines.append(f"| {t['feature']} | {t['group']} | {t['expected_sign']:+d} | {t['basis']} | {t['horizon']} | "
+                     f"{_fmt(t['mean'])} | {_fmt(t['t_stat'], 2)} | {_fmt(t['p_value'], 4, signed=False)} | "
+                     f"{_fmt(t['q_value_bh'], 3, signed=False)} | {t['coverage_pct']} % |")
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return path

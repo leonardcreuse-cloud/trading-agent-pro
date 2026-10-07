@@ -1,5 +1,29 @@
 # Changelog
 
+## P2.1 — Expanded predictive-edge study, stage 1 (148 stocks, 2017-09 → 2026-09)
+
+**Framework** (`src/research/`, `python main.py research --stage 1`): S&P 500 universe excl.
+Financials / Real Estate (third-party list, provenance logged), seeded sample of 150, membership
+from date added, one listing per company; point-in-time panel (prices, SEC XBRL replayed by
+acceptance time, market cap with split unit conversion); 31 features in 6 groups with expected
+sign and literature basis fixed in `factors.py` before any result; Newey-West IC tests,
+Benjamini-Hochberg and Bonferroni corrections per family; non-overlapping quintile portfolios net
+of 10 bp (turnover, Sharpe, Sortino, max drawdown, SPY and equal-weight benchmarks); strict
+walk-forward logistic / L2 logistic / random forest (yearly folds, purged, ≥ 3 years history,
+fixed hyperparameters); gradient boosting gated on a significant simpler model.
+
+**Result** (full tables: `docs/research/STAGE1_RESULTS.md`): 58,348 stock-dates, 457 weekly dates,
+205 tests. **0 significant after BH or Bonferroni.** Only 3 of 155 feature tests have uncorrected
+p < 0.05, fewer than the ~7.8 expected by chance alone. Largest: accruals at 252d (IC +0.054 in the
+expected direction, t = 2.87, p = 0.004, q = 0.63). Group composites: |t| ≤ 1.73; market structure
+(low beta / low vol / small size) and value ran opposite to the literature (not significant).
+Models out-of-sample 2021-2026: IC −0.044 … +0.019, |t| ≤ 1.26, AUC 0.47–0.51; L/S net Sharpe
+−0.19 … 0.47 with 24–40 % drawdowns. Gradient boosting not run (not justified). Excluded: PSKY
+(Yahoo returns 7 sessions in 10 years), Q (237 sessions, recent listing).
+
+**Limits**: survivorship (current members only), current GICS sectors, 252-session portfolios have
+9 periods, insider / macro / events / analyst revisions not in stage 1.
+
 ## P1.5 — Debt / equity XBRL mapping fixed
 
 **Diagnosis** (40 tickers, 720 quarterly point-in-time checks 2022-05 → 2026-09): debt-to-equity

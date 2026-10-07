@@ -266,6 +266,15 @@ class Database:
         with self.connect() as conn:
             conn.execute('CREATE INDEX IF NOT EXISTS ix_fetches_endpoint ON source_fetches '
                          '(source, endpoint, completed_at)')
+        # WAL: readers never block writers (a long read query stalled a concurrent download
+        # with 'database is locked'). The mode is stored in the database file.
+        conn = sqlite3.connect(self.db_path, timeout=60)
+        try:
+            conn.execute('PRAGMA journal_mode=WAL')
+        except sqlite3.OperationalError:
+            pass                    # another process holds a lock: keep the current mode
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------ fetch log + raw
 

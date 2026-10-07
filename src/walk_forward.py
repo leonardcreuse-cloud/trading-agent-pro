@@ -356,20 +356,32 @@ class WalkForward:
                       f"dates={x['n_dates']}{flag}")
 
 
-def latest_summary(path=None):
-    """Walk-forward block for the daily report, from the last saved run."""
+def latest_summary(path=None, now=None):
+    """
+    Walk-forward block for the daily report, from the last saved run. `now` (default: the
+    wall clock) is the instant the summary is evaluated at; a run computed after `now` is
+    not visible at that instant (weekly reports pass their cutoff).
+    """
     path = path or reports_dir() / RESULTS_FILE
     if not path.exists():
         return {'status': DATA_UNAVAILABLE,
                 'reason': "walk-forward not run yet: run 'python main.py walkforward'"}
     data = json.loads(path.read_text(encoding='utf-8'))
-    age = datetime.now(timezone.utc) - datetime.fromisoformat(data['computed_at'])
+    now = datetime.fromisoformat(to_utc_iso(now)) if now else datetime.now(timezone.utc)
+    computed = datetime.fromisoformat(data['computed_at'])
+    if computed > now:
+        return {'status': DATA_UNAVAILABLE,
+                'reason': f"the latest walk-forward run ({data['computed_at']}) was computed after "
+                          f"{now.isoformat()}: no validation was available at that instant"}
+    age = now - computed
     summary = {
         'status': data.get('status', DATA_UNAVAILABLE),
         'method': data.get('method'),
         'computed_at': data['computed_at'],
         'stale': age > timedelta(days=STALE_AFTER_DAYS),
         'excluded': data.get('protocol', {}).get('excluded'),
+        'validated_components': [c for c in data.get('protocol', {}).get('components', [])
+                                 if c != 'combined'],
         'n_tickers': len(data.get('universe') or []),
         'horizons': {h: {'ic_pooled': {c: s['ic'] for c, s in m['ic_pooled'].items()},
                          'ic_cross_sectional': {c: s['mean_ic'] for c, s in

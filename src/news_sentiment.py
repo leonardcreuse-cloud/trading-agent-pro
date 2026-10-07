@@ -6,6 +6,9 @@ P0.1: words are matched as whole tokens. Substring matching made 'up' match
 'update'/'supply'/'group' and 'cut' match 'executive', biasing the score.
 'earnings' and 'revenue' were removed from the positive list (neutral topic words),
 and 'risk' from the negative list (boilerplate). Still a naive lexicon (phase P2.2).
+
+P1.6: a text with no lexicon word has NO sentiment (None), not a neutral 50: on real
+NewsAPI payloads 56-86 % of articles matched no word and pulled every average to ~50.
 """
 
 import re
@@ -17,9 +20,9 @@ class NewsSentiment:
 
     @staticmethod
     def analyze_sentiment(text):
-        """Analyze sentiment from text (0-100)"""
+        """Lexicon sentiment of a text (0-100), or None when no lexicon word occurs."""
         if not text:
-            return 50
+            return None
 
         tokens = set(TOKEN_RE.findall(text.lower()))
 
@@ -45,7 +48,7 @@ class NewsSentiment:
         negative_count = len(tokens & set(negative_words))
 
         if positive_count == 0 and negative_count == 0:
-            return 50
+            return None
 
         score = 50 + (positive_count - negative_count) * 3
         return max(0, min(100, score))

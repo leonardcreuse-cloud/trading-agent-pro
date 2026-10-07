@@ -54,6 +54,7 @@ SOURCES = {
 CADENCE_MAX_AGE_DAYS = {
     'daily_market': 5,     # trading sessions: weekend + holiday
     'daily': 7,            # daily official series (published with a lag)
+    'weekly': 14,          # weekly official series (jobless claims, NFCI, mortgage rates)
     'monthly': 80,         # monthly series: period start + ~6 weeks publication lag
     'quarterly_filing': 120,  # 10-Q / 10-K publication date
     'news': 7,

@@ -46,7 +46,8 @@ from .prediction_engine import PredictionEngine
 from .price_technical import PriceTechnical
 from .report_generator import ReportGenerator
 from .scoring_fundamentals import ScoringFundamentals
-from .scoring_signal_fixed import ScoringSignalFixed, not_implemented_fields, validation_status
+from .scoring_signal_fixed import (ScoringSignalFixed, not_implemented_fields, research_summary,
+                                   validation_status)
 from .sec_parser import SECParser
 from .walk_forward import latest_summary as walk_forward_summary
 
@@ -128,7 +129,8 @@ class Integration:
         modules['prediction'] = self._safe('prediction', self.prediction.analyze, ticker)
         if isinstance(modules['signal'], dict) and 'quantitative_signal' in modules['signal']:
             modules['signal'].update({
-                'validation': validation_status(modules['walk_forward']),
+                'validation': validation_status(modules['walk_forward'],
+                                                [research_summary(1), research_summary(2)]),
                 'data_reliability': self._data_reliability(modules),
                 **not_implemented_fields(),
             })

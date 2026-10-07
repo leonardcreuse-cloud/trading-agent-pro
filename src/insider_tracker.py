@@ -28,6 +28,9 @@ Insider score (heuristic 0-100, NOT a probability, not calibrated):
   else (no purchase, sales only under 10b5-1 plans, or no P/S transaction) -> 50
 50 here is a computed observation ("nothing informative was traded"), not a default for
 missing data: when SEC cannot be reached the score is None.
+
+P1.6: distinct insiders = distinct primary reporting owners: a Form 4 jointly filed by
+several affiliated entities is one insider (it was counted once per entity).
 """
 
 import json
@@ -189,7 +192,9 @@ class InsiderTracker:
             return round(sum(t['value_usd'] for t in rows if t.get('value_usd')), 2)
 
         def people(rows):
-            return len({name for t in rows for name in (t.get('owners') or [])})
+            # One Form 4 = one reporting group: joint filers (a fund and its general partners)
+            # count once, under the primary (first) reporting owner (P1.6).
+            return len({(t.get('owners') or [t.get('accession')])[0] for t in rows})
 
         other = {}
         for t in txns:

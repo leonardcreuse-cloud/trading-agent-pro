@@ -181,7 +181,7 @@ def test_news_with_articles_reports_publication_range(monkeypatch):
     monkeypatch.setattr('src.news_processor.requests.get',
                         lambda *a, **k: FakeResponse({'articles': articles}))
     result = NewsProcessor().analyze('NET')
-    assert result['status'] == 'OK'
+    assert result['status'] == 'PROVISIONAL'              # P1.6: naive lexicon, never validated
     assert result['articles_count'] == 2
     assert result['oldest_article_published_at'] == '2026-09-28T08:00:00Z'
     assert result['newest_article_published_at'] == '2026-10-01T10:00:00Z'
@@ -190,7 +190,7 @@ def test_news_with_articles_reports_publication_range(monkeypatch):
 def test_sentiment_matches_whole_words_only():
     from src.news_sentiment import NewsSentiment
     # 'update', 'supply', 'group', 'executive' used to match 'up' / 'cut' as substrings
-    assert NewsSentiment.analyze_sentiment('Company update on supply group executive') == 50
+    assert NewsSentiment.analyze_sentiment('Company update on supply group executive') is None   # P1.6
     assert NewsSentiment.analyze_sentiment('Shares surge') > 50
     assert NewsSentiment.analyze_sentiment('Shares plunge') < 50
 

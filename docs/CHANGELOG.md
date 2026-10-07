@@ -1,5 +1,22 @@
 # Changelog
 
+## P1.6 — Fixes from the weekly-report scouting critic
+
+- **News component had a hidden neutral 50**: articles without any lexicon word scored exactly 50
+  (56–86 % of real articles), pulling every average to ~50. Now such articles carry no sentiment;
+  the score averages scored articles only; none scored → DATA UNAVAILABLE. Fixed 7-day window
+  (`from`), coverage = returned / totalResults with a partial-coverage flag, status PROVISIONAL
+  (naive lexicon, never validated).
+- **Joint Form 4 filers** (a fund and its affiliates on one filing) counted as several insiders in
+  the live tracker; now one insider per filing (primary reporting owner), as in the research code.
+- **Validation statement** now says that the walk-forward tested the signal WITHOUT news, that the
+  live signal's news component has never been validated, and cites the research stages from their
+  results files. `walk_forward.latest_summary(now=)` evaluates at a given instant (a run computed
+  after it is not visible).
+- **DATA_POLICY**: 4 components, walk-forward universe, S&P list rank 3, weekly cadence (14 days),
+  and the evidence levels STRONGLY SUPPORTED / UNCERTAIN / DATA UNAVAILABLE used by the weekly report.
+- Tests: `tests/test_p16_news_insider_fixes.py` (6). Total 215.
+
 ## P2.1 — Expanded predictive-edge study, stage 1 (148 stocks, 2017-09 → 2026-09)
 
 **Framework** (`src/research/`, `python main.py research --stage 1`): S&P 500 universe excl.

@@ -18,7 +18,7 @@ number may be invented, mocked or simulated in an analysis output.
 | `PROVISIONAL` | Computed from real data, but the methodology is known to be incomplete (see `warning`) |
 | `DATA UNAVAILABLE` | Source unreachable, key missing, or data not ingested yet (see `reason`) |
 | `NOT IMPLEMENTED` | Feature does not exist yet; nothing is computed |
-| `INSUFFICIENT DATA` | Signal not produced: fewer than 2 of 3 component scores available |
+| `INSUFFICIENT DATA` | Signal not produced: fewer than 2 of the 4 component scores (technical, fundamentals, news, insider) available |
 
 ## Quantitative signal terminology (P1.4)
 
@@ -26,7 +26,25 @@ Outputs are **quantitative signals**, never trade recommendations. POSITIVE / NE
 describe the direction of a heuristic score (thresholds 65 / 40). `validation.status` is
 `DEMONSTRATED` only when the walk-forward cross-sectional IC of the combined score is positive and
 significant (two-sided p < 0.05 / number of horizons) in a run less than 7 days old; otherwise
-`NOT DEMONSTRATED` (or `NOT VALIDATED` when no run exists), and the report says so.
+`NOT DEMONSTRATED` (or `NOT VALIDATED` when no run exists), and the report says so. The live signal
+includes news (weight 0.20), which the walk-forward cannot evaluate: the live signal itself is therefore
+never "validated", only its ex-news variant is tested.
+
+## Evidence levels for conclusions (weekly report, P3.0)
+
+Every conclusion in the weekly report carries exactly one level, decided by these rules (the weakest
+necessary premise decides; weak premises never add up to a strong conclusion):
+
+| Level | Rule |
+|---|---|
+| `STRONGLY SUPPORTED` | Admissible at the cutoff (published before it, correct vintage), fresh at the cutoff, no unresolved conflict, and one of: (a) a rank-1 source authoritative for that fact type (SEC filings and XBRL facts, FRED official series and release dates); (b) at least two independent rank <= 2 sources agreeing; (c) a statement about the system's own deterministic output, reproducible from stored inputs. Change claims also need a change beyond the pre-declared threshold. |
+| `UNCERTAIN` | Admissible evidence exists but: only rank-3 / aggregator sources (any number of copies); a single rank-2 source (e.g. yfinance prices) without a second source; stale or unknown freshness; a first print within revision noise; conflicting sources; partial coverage; an interpretation, estimate or heuristic threshold; any model output whose predictive power is not demonstrated. |
+| `DATA UNAVAILABLE` | No admissible evidence; a reason is mandatory (blocked host, key missing, HTTP error, history limit, not ingested). Never listed as "uncertain" and never filled. |
+
+Additional rules: timing is reported as "coincided with", never as a cause; a negative fact ("no 8-K this
+week") needs a successful fetch made after the cutoff covering the whole window; freshness and staleness
+are evaluated at the cutoff, never with the wall clock; independent sources must have different
+originators (an issuer's press release and its 8-K are one originator; syndicated copies count once).
 
 ## Separate concepts (never mix them)
 
@@ -65,8 +83,8 @@ A publication time later than retrieval is clamped to retrieval. Revised values 
 versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
 (`data/backups/`) and refilled from the sources.
 
-**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, yfinance 2, NewsAPI 3.
-**Freshness**: `FRESH` if the age of `as_of_date` (publication date for filings) is within the cadence
+**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, yfinance 2, NewsAPI 3, S&P 500 list (datasets/s-and-p-500-companies, third-party compilation) 3.
+**Freshness**: `FRESH` if the age of `as_of_date` (publication date for filings) is within the cadence (weekly series: 14 days)
 limit: market sessions 5 days, daily series 7, monthly series 80, 10-K/10-Q 120, news 7.
 
 ## SEC financials and insider activity (P0.3)
@@ -91,7 +109,7 @@ when SEC or the Form 4 documents cannot be read, the score is `None`.
 | t statistic | IC × √((n_eff − 2) / (1 − IC²)); `significant` when \|t\| ≥ 2 |
 | Always long | Mean return and up-rate over all evaluation dates (baseline) |
 
-Walk-forward results describe past ranking skill of the fixed heuristics on 4 tickers; they are
+Walk-forward results describe past ranking skill of the fixed heuristics on the validation universe (40 tickers in the latest run) **without the news component**, which has no history; they are
 not a probability and do not include costs (full backtest: P1.1).
 
 ## Configuration

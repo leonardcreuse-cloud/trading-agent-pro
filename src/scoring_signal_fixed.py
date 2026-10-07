@@ -40,17 +40,57 @@ def two_sided_p(t_stat):
     return math.erfc(abs(t_stat) / math.sqrt(2))
 
 
-def validation_status(walk_forward):
+def research_summary(stage, path=None):
+    """One-line summary of a research stage from its results file (None if not run)."""
+    import json
+    from .common import reports_dir
+    path = path or reports_dir() / f'research_stage{stage}.json'
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding='utf-8'))
+    tests = data.get('feature_tests', []) + data.get('group_tests', []) + data.get('model_tests', [])
+    conf = data.get('confirmatory') or []
+    return {'stage': stage, 'computed_at': data.get('computed_at'),
+            'n_stocks': (data.get('universe') or {}).get('n_stocks_with_data'),
+            'n_tests': len(tests),
+            'n_significant_bh': sum(bool(t.get('significant_bh')) for t in tests),
+            'n_significant_bonferroni': sum(bool(t.get('significant_bonferroni')) for t in tests),
+            'confirmatory': [{'id': c['id'], 'confirmed': c['confirmed'], 'p_holm': c.get('p_holm')}
+                             for c in conf]}
+
+
+def _research_sentence(research):
+    parts = []
+    for r in research or []:
+        if r is None:
+            continue
+        line = (f"research stage {r['stage']} ({r['n_stocks']} stocks, {r['computed_at']}): "
+                f"{r['n_significant_bh']} of {r['n_tests']} pre-registered factor and model tests "
+                f"significant after Benjamini-Hochberg, {r['n_significant_bonferroni']} after Bonferroni")
+        if r['confirmatory']:
+            confirmed = [c['id'] for c in r['confirmatory'] if c['confirmed']]
+            line += (f"; confirmatory family: {len(confirmed)} of {len(r['confirmatory'])} confirmed"
+                     + (f" ({', '.join(confirmed)})" if confirmed else ''))
+        parts.append(line)
+    return ('; '.join(parts) + '.') if parts else ''
+
+
+def validation_status(walk_forward, research=None):
     """
     Has the combined signal demonstrated out-of-sample predictive power?
     Criterion: cross-sectional IC of the combined score significant at VALIDATION_ALPHA after
     Bonferroni correction over the horizons tested, in a walk-forward run that is not stale.
     """
     wf = walk_forward or {}
+    research_text = _research_sentence(research)
+    news_note = ('The live signal includes a news component (weight 0.20) that has never been '
+                 'validated (no news history). ')
     if wf.get('status') != 'OK' or not wf.get('horizons'):
         return {'status': 'NOT VALIDATED', 'demonstrated': False,
                 'statement': ('No walk-forward validation is available: this signal has NOT '
-                              'demonstrated any predictive power. ' + (wf.get('reason') or ''))}
+                              'demonstrated any predictive power. ' + news_note
+                              + (wf.get('reason') or '') + (' Separately: ' + research_text
+                                                             if research_text else ''))}
     horizons = wf['horizons']
     k = len(horizons)
     threshold = VALIDATION_ALPHA / k
@@ -69,14 +109,18 @@ def validation_status(walk_forward):
                      f'power in the walk-forward of {wf.get("computed_at")} ({detail}; Bonferroni '
                      f'threshold p < {threshold:.4f}). Past skill does not guarantee future skill.')
     else:
+        components = ', '.join(wf.get('validated_components') or []) or 'technical, fundamentals, insider'
         statement = (f'This signal has NOT demonstrated statistically significant predictive power '
-                     f'out-of-sample (walk-forward {wf.get("computed_at")}, {wf.get("n_tickers")} '
-                     f'tickers: {detail}; required p < {threshold:.4f} after Bonferroni correction '
-                     f'over {k} horizons).' + (' The validation is stale.' if wf.get('stale') else ''))
+                     f'out-of-sample. The walk-forward ({wf.get("computed_at")}, {wf.get("n_tickers")} '
+                     f'tickers) evaluated the signal WITHOUT news ({components}): {detail}; required '
+                     f'p < {threshold:.4f} after Bonferroni correction over {k} horizons. ' + news_note
+                     + ('The validation is stale. ' if wf.get('stale') else '')
+                     + ('Separately, ' + research_text if research_text else ''))
     return {'status': 'DEMONSTRATED' if demonstrated else 'NOT DEMONSTRATED',
             'demonstrated': demonstrated, 'criterion': f'cross-sectional IC of the {VALIDATION_COMPONENT} '
             f'score, two-sided p < {VALIDATION_ALPHA} / {k} horizons, IC > 0',
             'tests': tests, 'computed_at': wf.get('computed_at'), 'stale': wf.get('stale'),
+            'live_signal_validated': False, 'research': [r for r in (research or []) if r],
             'excluded_from_validation': wf.get('excluded'), 'statement': statement}
 
 

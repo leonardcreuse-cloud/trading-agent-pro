@@ -60,7 +60,8 @@ NEW_YORK = ZoneInfo('America/New_York')
 TICKER_FILE_MAX_AGE = timedelta(hours=24)
 COMPANY_FACTS_MAX_AGE = timedelta(hours=12)
 IMMUTABLE = 'immutable'
-MIN_REQUEST_INTERVAL = 0.11      # seconds between SEC requests, all threads: <= 9 req/s
+MIN_REQUEST_INTERVAL = float(os.getenv('TRADING_AGENT_SEC_MIN_INTERVAL', '0.11'))  # all threads: <= 9 req/s;
+# raise it (e.g. 1.0) when another process is already using the SEC budget
 PREFETCH_WORKERS = 4
 _RATE_LOCK = threading.Lock()
 _LAST_REQUEST = [0.0]

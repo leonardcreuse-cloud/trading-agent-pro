@@ -45,6 +45,10 @@ def main():
     elif command == 'walkforward':
         from src.walk_forward import WalkForward
         WalkForward().run([t.upper() for t in sys.argv[2:]] or None)
+    elif command == 'weekly':
+        from src.weekly.report import run
+        cutoff = sys.argv[sys.argv.index('--cutoff') + 1] if '--cutoff' in sys.argv else None
+        run(cutoff)
     elif command == 'research':
         from src.research.experiment import Study
         stage = int(sys.argv[sys.argv.index('--stage') + 1]) if '--stage' in sys.argv else 1
@@ -70,6 +74,7 @@ def print_menu():
     print("                              validation universe (slow first run)")
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
     print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] - Predictive-edge study")
+    print("  python main.py weekly [--cutoff ISO] - Weekly analyst report (source-verified)")
     print("  python main.py status    - Show configuration status")
 
 

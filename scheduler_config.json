@@ -57,5 +57,60 @@
     "XOM",
     "CVX"
   ],
-  "validation_universe_rule": "US domestic filers (10-K/10-Q, Form 4) across sectors; financials and REITs excluded (revenue and debt-to-equity not comparable); chosen in 2026 (selection / survivorship bias)"
+  "validation_universe_rule": "US domestic filers (10-K/10-Q, Form 4) across sectors; financials and REITs excluded (revenue and debt-to-equity not comparable); chosen in 2026 (selection / survivorship bias)",
+  "weekly": {
+    "note": "Pre-declared before any weekly report: benchmark, sector ETF and peers per company (SPDR sector ETFs verified reachable 2026-10-07). Peers come from the validation universe with the same or adjacent SEC SIC industry.",
+    "benchmark": "SPY",
+    "sector_etf": {
+      "CRWD": "XLK",
+      "NET": "XLK",
+      "RKLB": "XLI",
+      "MP": "XLB"
+    },
+    "peers": {
+      "CRWD": [
+        "PANW",
+        "ZS",
+        "NET",
+        "DDOG"
+      ],
+      "NET": [
+        "CRWD",
+        "ZS",
+        "DDOG",
+        "PANW"
+      ],
+      "RKLB": [
+        "LMT",
+        "BA",
+        "HON",
+        "GE"
+      ],
+      "MP": [
+        "FCX",
+        "ALB",
+        "NUE"
+      ]
+    },
+    "all_sector_etfs": [
+      "XLK",
+      "XLV",
+      "XLE",
+      "XLI",
+      "XLF",
+      "XLY",
+      "XLP",
+      "XLB",
+      "XLU",
+      "XLC",
+      "XLRE"
+    ],
+    "thresholds_version": "v1-2026-10-07",
+    "thresholds": {
+      "abs_excess_return_z": 2.0,
+      "volume_ratio": 2.0,
+      "sigma20_change_rel": 0.25,
+      "drawdown_new_low_pct": -20.0
+    }
+  }
 }

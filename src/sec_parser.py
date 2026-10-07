@@ -65,15 +65,33 @@ MIN_REQUEST_INTERVAL = float(os.getenv('TRADING_AGENT_SEC_MIN_INTERVAL', '0.11')
 PREFETCH_WORKERS = 4
 _RATE_LOCK = threading.Lock()
 _LAST_REQUEST = [0.0]
+_PAUSE_UNTIL = [0.0]          # set on HTTP 429 / 503: every thread waits (SEC blocks abusers)
+RETRY_STATUSES = (429, 503)
+MAX_RETRIES = 5
+BACKOFF_SECONDS = 2.0
 
 
 def _throttle():
     """Block until a request may start without exceeding the SEC rate limit."""
     with _RATE_LOCK:
-        wait = _LAST_REQUEST[0] + MIN_REQUEST_INTERVAL - time.monotonic()
+        now = time.monotonic()
+        wait = max(_LAST_REQUEST[0] + MIN_REQUEST_INTERVAL, _PAUSE_UNTIL[0]) - now
         if wait > 0:
             time.sleep(wait)
         _LAST_REQUEST[0] = time.monotonic()
+
+
+def _back_off(response, attempt):
+    """Pause all threads after a 429 / 503: Retry-After when given, else exponential."""
+    retry_after = None
+    try:
+        retry_after = float((response.headers or {}).get('Retry-After'))
+    except (TypeError, ValueError, AttributeError):
+        retry_after = None
+    delay = retry_after if retry_after is not None else BACKOFF_SECONDS * (2 ** attempt)
+    with _RATE_LOCK:
+        _PAUSE_UNTIL[0] = max(_PAUSE_UNTIL[0], time.monotonic() + delay)
+    return delay
 ACCEPTANCE_BASIS = ('SEC acceptanceDateTime read as New York time '
                     '(conservative: >= the UTC reading of the feed)')
 
@@ -120,16 +138,26 @@ class SECParser:
         return data
 
     def _download(self, url):
-        """(requested_at, response, exception) - thread-safe, rate limited, no DB access."""
+        """
+        (requested_at, response, exception) - thread-safe, rate limited, no DB access.
+        HTTP 429 / 503 (SEC throttling or overload) pause every thread and are retried up to
+        MAX_RETRIES times; other errors are returned at once.
+        """
         requested_at = utc_now_iso()
         response = None
-        try:
-            _throttle()
-            response = self.session.get(url, timeout=20)
-            response.raise_for_status()
-            return requested_at, response, None
-        except Exception as e:  # noqa: BLE001 - recorded by the caller
-            return requested_at, response, e
+        for attempt in range(MAX_RETRIES + 1):
+            response = None
+            try:
+                _throttle()
+                response = self.session.get(url, timeout=20)
+                if getattr(response, 'status_code', None) in RETRY_STATUSES and attempt < MAX_RETRIES:
+                    _back_off(response, attempt)
+                    continue
+                response.raise_for_status()
+                return requested_at, response, None
+            except Exception as e:  # noqa: BLE001 - recorded by the caller
+                return requested_at, response, e
+        return requested_at, response, RuntimeError('SEC retries exhausted')
 
     def prefetch(self, urls, as_json=True, max_age=None, workers=PREFETCH_WORKERS):
         """Download the urls not reusable from storage, in parallel; returns {url: download}."""

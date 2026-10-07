@@ -72,3 +72,31 @@ def test_walk_forward_summary_respects_cutoff(tmp_path):
     assert before['status'] == 'DATA UNAVAILABLE' and 'after' in before['reason']
     later = latest_summary(path, now='2026-10-20T00:00:00+00:00')
     assert later['stale'] is True
+
+
+def test_sec_429_backs_off_and_retries(monkeypatch):
+    from src import sec_parser
+    from src.sec_parser import SECParser
+    from tests.conftest import FakeResponse
+    monkeypatch.setenv('SEC_USER_AGENT', 'TestAgent test@example.com')
+    sleeps, calls = [], []
+    monkeypatch.setattr('src.sec_parser.time.sleep', lambda s: sleeps.append(s))
+    monkeypatch.setattr(sec_parser, '_PAUSE_UNTIL', [0.0])
+    responses = [FakeResponse({}, 429), FakeResponse({}, 503), FakeResponse({'ok': 1})]
+
+    def fake_get(self, url, timeout=None):
+        calls.append(url)
+        return responses.pop(0)
+    monkeypatch.setattr('requests.Session.get', fake_get)
+    assert SECParser()._get_json('https://data.sec.gov/x.json') == {'ok': 1}
+    assert len(calls) == 3 and sleeps                      # paused before retrying
+
+
+def test_sec_404_is_not_retried(monkeypatch):
+    from src.sec_parser import SECParser
+    from tests.conftest import FakeResponse
+    monkeypatch.setenv('SEC_USER_AGENT', 'TestAgent test@example.com')
+    monkeypatch.setattr('src.sec_parser.time.sleep', lambda s: None)
+    calls = []
+    monkeypatch.setattr('requests.Session.get', lambda self, url, timeout=None: calls.append(url) or FakeResponse({}, 404))
+    assert SECParser()._get_json('https://data.sec.gov/missing.json') is None and len(calls) == 1

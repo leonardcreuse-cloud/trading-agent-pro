@@ -46,6 +46,8 @@ SOURCES = {
     'FRED': {'rank': 1, 'kind': 'official statistics (Federal Reserve Bank of St. Louis)'},
     'yfinance': {'rank': 2, 'kind': 'unofficial market data (Yahoo Finance via yfinance)'},
     'NewsAPI': {'rank': 3, 'kind': 'news aggregator (not a primary source)'},
+    'S&P 500 list (datasets/s-and-p-500-companies)': {
+        'rank': 3, 'kind': 'third-party compiled list of current S&P 500 members (GitHub)'},
 }
 
 # Maximum age (days) of as_of_date for a value to count as FRESH, per update cadence.

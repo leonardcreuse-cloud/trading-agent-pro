@@ -80,19 +80,23 @@ def duration_months(start, end):
     return None
 
 
-def facts_to_observations(ticker, companyfacts, acceptance_by_accession=None):
+def facts_to_observations(ticker, companyfacts, acceptance_by_accession=None,
+                          instant_tags=INSTANT_TAGS, duration_tags=DURATION_TAGS,
+                          namespace='us-gaap', unit='USD'):
     """
     Observation rows (see module docstring) from a companyfacts document.
     acceptance_by_accession: {accession: (published_at, basis)} from the submissions feed.
+    instant_tags / duration_tags / namespace / unit select other concepts (research panel:
+    e.g. dei EntityCommonStockSharesOutstanding in 'shares'); defaults = production set.
     """
     acceptance_by_accession = acceptance_by_accession or {}
-    gaap = ((companyfacts or {}).get('facts') or {}).get('us-gaap') or {}
+    gaap = ((companyfacts or {}).get('facts') or {}).get(namespace) or {}
     rows, seen = [], set()
-    for tag in INSTANT_TAGS + DURATION_TAGS:
-        for fact in ((gaap.get(tag) or {}).get('units') or {}).get('USD', []):
+    for tag in tuple(instant_tags) + tuple(duration_tags):
+        for fact in ((gaap.get(tag) or {}).get('units') or {}).get(unit, []):
             if fact.get('form') not in PERIODIC_FORMS or fact.get('val') is None or not fact.get('end'):
                 continue
-            if tag in DURATION_TAGS:
+            if tag in duration_tags:
                 if not fact.get('start'):
                     continue
                 months = duration_months(fact['start'], fact['end'])
@@ -116,7 +120,7 @@ def facts_to_observations(ticker, companyfacts, acceptance_by_accession=None):
                 continue
             seen.add(key)
             rows.append({'entity': ticker, 'metric': metric, 'as_of_date': fact['end'],
-                         'value': float(fact['val']), 'value_text': start, 'unit': 'USD',
+                         'value': float(fact['val']), 'value_text': start, 'unit': unit,
                          'published_at': published, 'published_at_basis': basis})
     return rows
 

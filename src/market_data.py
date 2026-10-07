@@ -126,9 +126,12 @@ class PriceFeed:
         series = pd.Series(frame['close'].to_numpy(dtype=float),
                            index=pd.to_datetime(list(frame.index)), name='Close')
         last = frame.index[-1] if len(frame) else None
+        full = frame.copy()
+        full.index = pd.to_datetime(list(full.index))
         return {
             'status': 'OK' if len(frame) else 'DATA UNAVAILABLE',
             'close': series,
+            'frame': full,          # close (adjusted), volume, close_raw (split-adjusted only)
             'fetch': fetch,
             'dropped_incomplete_sessions': dropped,
             'provenance': self.db.provenance(
@@ -140,7 +143,7 @@ class PriceFeed:
         }
 
     def _unavailable(self, fetch, reason):
-        return {'status': 'DATA UNAVAILABLE', 'close': None, 'fetch': fetch,
+        return {'status': 'DATA UNAVAILABLE', 'close': None, 'frame': None, 'fetch': fetch,
                 'dropped_incomplete_sessions': 0,
                 'provenance': self.db.provenance(fetch, cadence='daily_market'),
                 'reason': reason}

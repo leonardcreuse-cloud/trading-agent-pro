@@ -1,5 +1,26 @@
 # Changelog
 
+## P1.3 — Continuous features and walk-forward-fitted model
+
+- `src/features.py`: 12 point-in-time features (momentum 1/3/6/12-1 months, 3-month
+  volatility, distance to 1-year high, revenue growth, log revenue, debt/equity, insider
+  buyers, open-market and discretionary sale values). Missing stays `None`.
+- `src/model.py`: ridge regression of cross-sectional return ranks on feature ranks; missing
+  feature = median rank (contributes nothing); penalty fixed a priori. Refitted for each
+  half-year fold on samples whose outcome was known before the fold (purged); scored
+  out-of-sample with the cross-sectional IC and the top-minus-bottom quintile spread.
+- Walk-forward output adds per-feature IC and the model; the daily report shows the model's
+  out-of-sample IC. Tests: `tests/test_p13_model.py` (10, incl. no leakage of test-fold
+  outcomes, recovery of a planted signal, no signal found in noise). Total 160.
+
+**Results, 40 tickers, 8,800 weekly samples (2022-05 → 2026-09; model tested 2023-07 → 2026-09)**
+- No feature has a significant cross-sectional IC (largest: 3-month volatility 0.059 at 20d,
+  t = 1.44).
+- Fitted model out-of-sample IC: −0.0002 (5d), −0.0045 (20d); positive in 3–4 of 7 folds.
+  Fixed heuristic on the same dates: 0.016 / 0.030 (t ≤ 1.0). Neither has demonstrated skill.
+- Heuristic BUY vs always long: +0.15 pp (5d), +0.45 pp (20d), not significant; no SELL issued.
+- Debt/equity is missing for 33 % of samples (debt tags not reported in the recognised form).
+
 ## P1.2b — Wider validation universe
 
 - `scheduler_config.json` → `validation_universe` (40 US domestic filers across software,

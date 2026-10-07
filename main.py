@@ -48,7 +48,11 @@ def main():
     elif command == 'research':
         from src.research.experiment import Study
         stage = int(sys.argv[sys.argv.index('--stage') + 1]) if '--stage' in sys.argv else 1
-        Study(stage=stage).run(rebuild='--rebuild' in sys.argv)
+        study = Study(stage=stage)
+        if '--prefetch-insider' in sys.argv:
+            study.prefetch_insider()
+        else:
+            study.run(rebuild='--rebuild' in sys.argv)
     elif command == 'audit':
         from src.pipeline_audit import PipelineAudit
         report = PipelineAudit().run([t.upper() for t in sys.argv[2:]] or None)
@@ -65,7 +69,7 @@ def print_menu():
     print("  python main.py walkforward [TICKER ...] - Walk-forward validation on the")
     print("                              validation universe (slow first run)")
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
-    print("  python main.py research [--stage 1|2] [--rebuild] - Predictive-edge study (slow)")
+    print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] - Predictive-edge study")
     print("  python main.py status    - Show configuration status")
 
 

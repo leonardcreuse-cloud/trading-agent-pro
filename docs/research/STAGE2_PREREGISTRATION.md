@@ -61,3 +61,12 @@ within each family. These results are reported but **cannot confirm** anything.
   these data, and the quantitative section keeps the "not demonstrated" label.
 - No hypothesis, horizon, feature definition, cost or sample rule will be changed after stage 2
   data is seen. Any later change is a new, separately labelled exploratory analysis.
+
+## Amendment 1 — before any stage 2 analysis (implementation of "distinct insiders")
+
+Found while smoke-testing the Form 4 loader on two companies, before any holdout outcome was
+computed: a single Form 4 jointly filed by a fund and its affiliated entities (8 reporting owners
+for one $99.8 M purchase) was counted as 8 "distinct insiders". A joint filing is one economic
+decision, so **each filing counts as one insider, identified by its primary (first) reporting
+owner (CIK when present)**. Transaction values were already counted once and are unchanged. No
+hypothesis, horizon, sign, window or threshold changes.

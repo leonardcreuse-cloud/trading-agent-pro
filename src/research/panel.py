@@ -40,7 +40,8 @@ from ..market_data import PriceFeed, session_close_utc
 from ..sec_parser import COMPANY_FACTS_MAX_AGE, SECParser
 from ..sec_xbrl import (DEBT_TAGS, DURATION_MONTHS, EQUITY_TAGS, REVENUE_TAGS, balance_sheet,
                         facts_to_observations, latest_ttm)
-from .factors import FEATURES, HORIZONS
+from .factors import FEATURES, HORIZONS, INSIDER_FEATURES
+from .insider_history import InsiderHistory, insider_features_at
 from .universe import member_at
 
 HISTORY_DAYS = 3700            # ~10 years of prices
@@ -265,11 +266,12 @@ def add_sector_features(rows):
 
 
 class PanelBuilder:
-    def __init__(self, db, history_days=HISTORY_DAYS):
+    def __init__(self, db, history_days=HISTORY_DAYS, insider=False):
         self.db = db
         self.sec = SECParser(db=db)
         self.prices = PriceFeed(db=db, lookback_days=history_days)
         self.splits_cache = {}
+        self.insider = InsiderHistory(sec=self.sec) if insider else None
 
     def splits(self, yahoo_ticker):
         """[(date, ratio)] from yfinance, logged as a fetch (unit conversion only)."""
@@ -320,6 +322,9 @@ class PanelBuilder:
         rows_sec, sec_error = self.sec_rows(member['cik']) if member.get('cik') else (None, 'no CIK')
         pit = PointInTimeFacts(rows_sec or [])
         splits, split_error = self.splits(member['yahoo_ticker'])
+        history = None
+        if self.insider is not None:
+            history = self.insider.load(member['cik']) if member.get('cik') else {'error': 'no CIK'}
         out = []
         for day in calendar:
             i = index.get(day)
@@ -334,6 +339,9 @@ class PanelBuilder:
                 feats.update(fundamental_features(fund, raw[i], splits))
             else:
                 feats.update(dict.fromkeys(FUNDAMENTAL_FEATURES))
+            if self.insider is not None:
+                mcap = 10 ** feats['log_market_cap'] if feats.get('log_market_cap') is not None else None
+                feats.update(insider_features_at(history, known, mcap))
             row = {'ticker': member['ticker'], 'date': day, 'known_at': known,
                    'sector': member['sector'], 'features': feats, 'entry_date': None,
                    'shares_source': shares_source}
@@ -347,6 +355,10 @@ class PanelBuilder:
         return out, {'status': 'OK', 'n_rows': len(out), 'sec_error': sec_error,
                      'split_error': split_error, 'sec_facts': len(rows_sec or []),
                      'first_session': dates[0], 'last_session': dates[-1],
+                     'insider': None if history is None else (
+                         {'error': history['error']} if history.get('error') else
+                         {k: history[k] for k in ('coverage_start', 'n_filings', 'n_parsed')}
+                         | {'n_failed': len(history['failed_at'])}),
                      'price_fetch_id': prices['fetch']['fetch_id']}
 
     def build(self, members, progress=True):
@@ -385,9 +397,9 @@ def json_dumps(value):
     return json.dumps(value)
 
 
-def check_features(rows):
+def check_features(rows, features=FEATURES):
     """Every row must carry exactly the pre-registered features."""
-    expected = set(FEATURES)
+    expected = set(features)
     for r in rows:
         missing = expected - set(r['features'])
         if missing:

@@ -161,6 +161,7 @@ class Database:
         self.verbose = verbose
         self.last_migration = None
         self.migrate()
+        self.ensure_indexes()
 
     # ------------------------------------------------------------------ connection
 
@@ -258,6 +259,12 @@ class Database:
             conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
         self.last_migration = info
         return info
+
+    def ensure_indexes(self):
+        """Indexes added after schema v2 (idempotent): cache lookups by endpoint."""
+        with self.connect() as conn:
+            conn.execute('CREATE INDEX IF NOT EXISTS ix_fetches_endpoint ON source_fetches '
+                         '(source, endpoint, completed_at)')
 
     # ------------------------------------------------------------------ fetch log + raw
 

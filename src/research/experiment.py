@@ -31,13 +31,14 @@ import numpy as np
 
 from ..common import data_dir, redact, reports_dir, utc_now_iso
 from ..database import Database
-from .factors import FEATURES, GROUPS, HORIZONS, UNAVAILABLE_GROUPS, expected_sign, group_features
+from .factors import (CONFIRMATORY, CONFIRMATORY_ALPHA, FEATURES, HORIZONS, UNAVAILABLE_GROUPS,
+                      features_for)
 from .panel import STEP, PanelBuilder, check_features
 from .stats import (MIN_STOCKS, correct, daily_ics, mean_test, nw_lags, quintile_portfolios,
                     spearman)
 from .universe import SEED, Universe
 
-STAGES = {0: 10, 1: 150, 2: None}      # 0 = smoke test only
+STAGES = {0: 10, 1: 150, 2: 'holdout'}      # 0 = smoke test; 2 = eligible stocks not in stage 1
 MIN_TRAIN_YEARS = 3
 MODEL_SPECS = ('logistic', 'logistic_l2', 'random_forest')
 
@@ -80,22 +81,43 @@ def centred_ranks(values):
     return out
 
 
-def add_composites(dates):
+def groups_of(features):
+    return tuple(dict.fromkeys(g for g, _, _ in features.values()))
+
+
+def add_composites(dates, features=FEATURES):
     """Signed per-date ranks of every feature, group composites and the all-group composite."""
+    groups = groups_of(features)
     for group_rows in dates.values():
         signed = {}
-        for f in FEATURES:
+        for f, (_, sign, _) in features.items():
             ranks = centred_ranks([r['features'].get(f) for r in group_rows])
-            signed[f] = [None if v is None else v * expected_sign(f) for v in ranks]
+            signed[f] = [None if v is None else v * sign for v in ranks]
         for j, r in enumerate(group_rows):
-            r['ranks'] = {f: signed[f][j] for f in FEATURES}
+            r['ranks'] = {f: signed[f][j] for f in features}
             comps = {}
-            for g in GROUPS:
-                vals = [signed[f][j] for f in group_features(g) if signed[f][j] is not None]
+            for g in groups:
+                vals = [signed[f][j] for f, (fg, _, _) in features.items() if fg == g and signed[f][j] is not None]
                 comps[g] = float(np.mean(vals)) if vals else None
             avail = [v for v in comps.values() if v is not None]
             comps['all_groups'] = float(np.mean(avail)) if avail else None
             r['composites'] = comps
+
+
+def holm(tests, alpha):
+    """Holm-Bonferroni adjusted p-values (in place: p_holm, rejected)."""
+    order = sorted(range(len(tests)), key=lambda i: tests[i]['p_value'] if tests[i]['p_value'] is not None else 2)
+    m = len(tests)
+    running = 0.0
+    for k, i in enumerate(order):
+        p = tests[i]['p_value']
+        if p is None:
+            tests[i]['p_holm'], tests[i]['rejected'] = None, False
+            continue
+        running = max(running, min(1.0, (m - k) * p))
+        tests[i]['p_holm'] = round(running, 5)
+        tests[i]['rejected'] = running < alpha
+    return tests
 
 
 def ic_test(dates, score, horizon):
@@ -125,7 +147,7 @@ def portfolio(dates, score, horizon, calendar, benchmark):
 
 # ---------------------------------------------------------------- models
 
-def walk_forward_models(rows, horizon, calendar, benchmark, names):
+def walk_forward_models(rows, horizon, calendar, benchmark, names, features=FEATURES):
     """OOS predictions per model on yearly folds; returns {model: result}."""
     from sklearn.metrics import roc_auc_score
     key, exit_key = f'fwd_{horizon}d', f'exit_{horizon}d'
@@ -135,7 +157,7 @@ def walk_forward_models(rows, horizon, calendar, benchmark, names):
         rets = [r[key] for r in rs if r[key] is not None]
         median = float(np.median(rets)) if len(rets) >= MIN_STOCKS else None
         for r in rs:
-            x = [r['ranks'][f] if r['ranks'][f] is not None else 0.0 for f in FEATURES]
+            x = [r['ranks'][f] if r['ranks'][f] is not None else 0.0 for f in features]
             y = None if median is None or r[key] is None else int(r[key] > median)
             labelled.append((r, x, y))
     X = np.array([l[1] for l in labelled], float)
@@ -191,11 +213,34 @@ class Study:
     def __init__(self, stage=1, db=None):
         self.stage = stage
         self.db = db or Database()
+        self.features = features_for(stage)
         self.cache = data_dir() / 'research' / f'panel_stage{stage}.pkl'
+
+    def members(self, universe):
+        if STAGES[self.stage] == 'holdout':
+            used = {m['ticker'] for m in universe.stage(STAGES[1])}
+            return [m for m in universe.eligible() if m['ticker'] not in used]
+        return universe.stage(STAGES[self.stage])
+
+    def prefetch_insider(self):
+        """Download (or reuse) the Form 4 history of every stage stock; resumable."""
+        from .insider_history import InsiderHistory
+        universe = Universe(db=self.db)
+        members = self.members(universe)
+        history = InsiderHistory(db=self.db)
+        print(f"[INSIDER PREFETCH] stage {self.stage}: {len(members)} stocks", flush=True)
+        for n, m in enumerate(members, 1):
+            try:
+                h = history.load(m['cik'])
+                status = h.get('error') or (f"{h['n_parsed']}/{h['n_filings']} parsed, "
+                                            f"{len(h['failed_at'])} failed, coverage from {h['coverage_start']}")
+            except Exception as e:  # noqa: BLE001 - reported; rerun resumes
+                status = f'ERROR {type(e).__name__}: {e}'
+            print(f"  {m['ticker']:6} ({n}/{len(members)}) {status}", flush=True)
 
     def panel(self, rebuild=False):
         universe = Universe(db=self.db)
-        members = universe.stage(STAGES[self.stage])
+        members = self.members(universe)
         if self.cache.exists() and not rebuild:
             with open(self.cache, 'rb') as fh:
                 cached = pickle.load(fh)
@@ -203,8 +248,8 @@ class Study:
                 print(f"  panel reused from {self.cache} (built {cached['built_at']})")
                 return cached, universe
         print(f"\n[PANEL] stage {self.stage}: {len(members)} stocks")
-        rows, info, benchmark, calendar = PanelBuilder(self.db).build(members)
-        check_features(rows)
+        rows, info, benchmark, calendar = PanelBuilder(self.db, insider=self.stage >= 2).build(members)
+        check_features(rows, self.features)
         cached = {'tickers': [m['ticker'] for m in members], 'members': members, 'rows': rows,
                   'info': info, 'benchmark': benchmark, 'calendar': calendar,
                   'built_at': utc_now_iso(), 'universe_fetch': universe.fetch}
@@ -217,22 +262,34 @@ class Study:
         panel, universe = self.panel(rebuild)
         rows, calendar, benchmark = panel['rows'], panel['calendar'], panel['benchmark']
         dates = by_date(rows)
-        add_composites(dates)
+        features, groups = self.features, groups_of(self.features)
+        add_composites(dates, features)
         print(f"\n[TESTS] {len(rows)} observations, {len({r['ticker'] for r in rows})} stocks, "
               f"{len(dates)} dates")
 
         feature_tests = []
-        for f in FEATURES:
+        for f in features:
             for h in HORIZONS:
                 t = ic_test(dates, lambda r, f=f: r['ranks'][f], h)
-                feature_tests.append({'feature': f, 'group': FEATURES[f][0], 'expected_sign': FEATURES[f][1],
-                                      'basis': FEATURES[f][2], 'horizon': h, **t,
+                feature_tests.append({'feature': f, 'group': features[f][0], 'expected_sign': features[f][1],
+                                      'basis': features[f][2], 'horizon': h, **t,
                                       'coverage_pct': round(100 * sum(r['features'].get(f) is not None
                                                                       for r in rows) / len(rows), 1)})
         correct(feature_tests)
 
+        confirmatory = []
+        if self.stage >= 2:
+            for cid, f, h in CONFIRMATORY:
+                t = next(x for x in feature_tests if x['feature'] == f and x['horizon'] == h)
+                confirmatory.append({'id': cid, 'feature': f, 'horizon': h, 'expected_sign': features[f][1],
+                                     **{k: t[k] for k in ('n', 'n_dates', 'n_observations', 'mean', 'se',
+                                                         't_stat', 'p_value', 'ci95', 'period')}})
+            holm(confirmatory, CONFIRMATORY_ALPHA)
+            for c in confirmatory:
+                c['confirmed'] = bool(c['rejected'] and (c['mean'] or 0) > 0)
+
         group_tests = []
-        for g in GROUPS + ('all_groups',):
+        for g in groups + ('all_groups',):
             for h in HORIZONS:
                 t = ic_test(dates, lambda r, g=g: r['composites'][g], h)
                 t.update({'group': g, 'horizon': h,
@@ -244,14 +301,14 @@ class Study:
         model_tests, gb_status = [], {}
         for h in HORIZONS:
             print(f"  models, horizon {h} ...")
-            res = walk_forward_models(rows, h, calendar, benchmark, MODEL_SPECS)
+            res = walk_forward_models(rows, h, calendar, benchmark, MODEL_SPECS, features)
             for name, r in res.items():
                 model_tests.append({'model': name, 'horizon': h, **r, **(r.get('ic') or {})})
         correct(model_tests)
         justified = [m for m in model_tests if m.get('significant_bh') and (m.get('mean') or 0) > 0]
         if justified:
             for h in sorted({m['horizon'] for m in justified}):
-                res = walk_forward_models(rows, h, calendar, benchmark, ('gradient_boosting',))
+                res = walk_forward_models(rows, h, calendar, benchmark, ('gradient_boosting',), features)
                 model_tests.append({'model': 'gradient_boosting', 'horizon': h, **res['gradient_boosting'],
                                     **(res['gradient_boosting'].get('ic') or {})})
             correct(model_tests)
@@ -265,9 +322,11 @@ class Study:
             'stage': self.stage, 'computed_at': utc_now_iso(),
             'universe': {'source': universe.fetch and universe.fetch['source'],
                          'fetch_id': panel['universe_fetch'] and panel['universe_fetch']['fetch_id'],
-                         'rule': 'current S&P 500 members excl. Financials and Real Estate; '
-                                 f'seeded random sample (seed {SEED}) of {STAGES[self.stage] or "all"}; '
-                                 'stock included from its date added to the index',
+                         'rule': 'current S&P 500 members excl. Financials and Real Estate, one listing '
+                                 'per company; ' + ('holdout: every eligible stock not in the stage 1 sample'
+                                                    if STAGES[self.stage] == 'holdout' else
+                                                    f'seeded random sample (seed {SEED}) of {STAGES[self.stage]}')
+                                 + '; stock included from its date added to the index',
                          'n_stocks_requested': len(panel['tickers']),
                          'n_stocks_with_data': len({r['ticker'] for r in rows}),
                          'biases': ['survivorship: members removed before today are absent',
@@ -279,6 +338,10 @@ class Study:
             'horizons_sessions': list(HORIZONS),
             'unavailable_groups': UNAVAILABLE_GROUPS,
             'n_tests_total': n_tests,
+            'confirmatory': confirmatory,
+            'confirmatory_rule': (f'Holm-Bonferroni over {len(confirmatory)} pre-registered tests, alpha '
+                                  f'{CONFIRMATORY_ALPHA}, IC in the expected direction '
+                                  '(docs/research/STAGE2_PREREGISTRATION.md)') if confirmatory else None,
             'feature_tests': feature_tests,
             'group_tests': group_tests,
             'model_tests': [{k: v for k, v in m.items() if k != 'ic'} for m in model_tests],
@@ -298,7 +361,13 @@ def conclusion(report):
     sig = lambda tests: [t for t in tests if t.get('significant_bh')]  # noqa: E731
     f, g, m = sig(report['feature_tests']), sig(report['group_tests']), sig(report['model_tests'])
     right = lambda ts: [t for t in ts if (t.get('mean') or 0) > 0]  # noqa: E731
-    lines = [f"{len(report['feature_tests'])} feature tests, {len(report['group_tests'])} group tests, "
+    lines = []
+    if report.get('confirmatory'):
+        conf = [c for c in report['confirmatory'] if c['confirmed']]
+        lines.append(f"Confirmatory family ({report['confirmatory_rule']}): {len(conf)} of "
+                     f"{len(report['confirmatory'])} confirmed" + (': ' + ', '.join(
+                         f"{c['id']} {c['feature']} {c['horizon']}d" for c in conf) if conf else '.'))
+    lines += [f"{len(report['feature_tests'])} feature tests, {len(report['group_tests'])} group tests, "
              f"{len(report['model_tests'])} model tests ({report['n_tests_total']} in total)."]
     lines.append(f"After Benjamini-Hochberg correction (q < 0.05) within each family: "
                  f"{len(f)} feature, {len(g)} group and {len(m)} model results are significant "
@@ -317,7 +386,7 @@ def conclusion(report):
 def print_summary(report):
     print("\n  Group composites (pre-registered direction), mean daily rank IC:")
     print(f"    {'group':17}" + ''.join(f"{str(h) + 'd':>18}" for h in HORIZONS))
-    for g in GROUPS + ('all_groups',):
+    for g in dict.fromkeys(t['group'] for t in report['group_tests']):
         cells = []
         for h in HORIZONS:
             t = next(x for x in report['group_tests'] if x['group'] == g and x['horizon'] == h)
@@ -364,8 +433,16 @@ def write_markdown(report, path):
                                                 if i['status'] != 'OK') or 'none') + '.',
              '- Not testable (no free point-in-time data) or deferred: ' + '; '.join(
                  f'{k}: {v}' for k, v in report['unavailable_groups'].items()) + '.',
+             ] + (['', '## Confirmatory tests (pre-registered)', '', report['confirmatory_rule'] + '.', '',
+                   '| ID | Feature | H | IC | t | p | p (Holm) | 95 % CI | Dates | Observations | Confirmed |',
+                   '|---|---|---|---|---|---|---|---|---|---|---|'] + [
+                 f"| {c['id']} | {c['feature']} | {c['horizon']} | {_fmt(c['mean'])} | {_fmt(c['t_stat'], 2)} | "
+                 f"{_fmt(c['p_value'], 4, signed=False)} | {_fmt(c['p_holm'], 4, signed=False)} | {c['ci95']} | "
+                 f"{c['n_dates']} | {c['n_observations']} | {'YES' if c['confirmed'] else 'no'} |"
+                 for c in report['confirmatory']] if report.get('confirmatory') else []) + [
              '', '## Group composites (no fitting) — mean daily rank IC in the pre-registered direction', '',
-             'Newey-West t; q = Benjamini-Hochberg within the 35 group tests. Portfolio: top minus bottom '
+             f"Newey-West t; q = Benjamini-Hochberg within the {len(report['group_tests'])} group tests. "
+             'Portfolio: top minus bottom '
              'quintile, rebalanced every H sessions, net of 10 bp per unit of turnover, risk-free rate 0.', '',
              '| Group | H | IC | t | p | q (BH) | 95 % CI | L/S net ann. | L/S Sharpe | L/S Sortino | L/S max DD | '
              'Top-Q net ann. | Equal-weight ann. | SPY ann. | Turnover | Periods |',
@@ -403,7 +480,7 @@ def write_markdown(report, path):
                      f"{_fmt(m['baseline_all_groups_same_dates'].get('mean'))} |")
     lines += ['', f"Gradient boosting: {report['gradient_boosting']['reason']}.", '',
               '## Individual features — mean daily rank IC in the pre-registered direction', '',
-              'q = BH within the 155 feature tests.', '',
+              f"q = BH within the {len(report['feature_tests'])} feature tests.", '',
               '| Feature | Group | Sign | Basis | H | IC | t | p | q (BH) | Coverage |',
               '|---|---|---|---|---|---|---|---|---|---|']
     for t in report['feature_tests']:

@@ -60,6 +60,24 @@ class PipelineAudit:
                 "SELECT fetch_id FROM source_fetches WHERE status='OK' AND raw_path IS NOT NULL")]
         out.append(check('observations published after retrieval', FAIL if bad else PASS,
                          f'{bad} rows'))
+        # Synthetic / backdated rows (test helpers run outside pytest isolation wrote such rows once):
+        # a fetch logged later (higher fetch_id) cannot have completed more than an hour earlier than
+        # an earlier fetch, and real FRED calls always log their (redacted) api_key parameter.
+        with self.db.connect() as conn:
+            seq = conn.execute('SELECT fetch_id, completed_at FROM source_fetches ORDER BY fetch_id').fetchall()
+            no_key = [r[0] for r in conn.execute(
+                "SELECT fetch_id FROM source_fetches WHERE source='FRED' AND "
+                "(request_params IS NULL OR request_params NOT LIKE '%api_key%') LIMIT 50")]
+        backdated, running = [], None
+        for fetch_id, completed in seq:
+            when = datetime.fromisoformat(completed)
+            if running is not None and when < running - timedelta(hours=1):
+                backdated.append(fetch_id)
+            running = when if running is None or when > running else running
+        out.append(check('fetch rows completed earlier than previously logged rows (backdated)',
+                         WARN if backdated else PASS, f'{len(backdated)} rows', [str(i) for i in backdated[:20]]))
+        out.append(check('FRED fetch rows without api_key parameter (not a real call)',
+                         WARN if no_key else PASS, f'{len(no_key)} rows', [str(i) for i in no_key[:20]]))
         sample = random.Random(0).sample(ids, min(RAW_SAMPLE, len(ids)))
         broken, leaked = [], []
         secrets = [os.getenv(n, '').strip() for n in SECRET_ENV_VARS]

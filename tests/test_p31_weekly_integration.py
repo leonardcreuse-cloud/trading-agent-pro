@@ -51,3 +51,14 @@ def test_validation_reason_is_a_sentence():
     from src.scoring_signal_fixed import validation_status
     v = validation_status({'status': 'DATA UNAVAILABLE', 'reason': 'the latest run was computed later'})
     assert 'The latest run was computed later.' in v['statement']
+
+
+def test_validation_states_a_significantly_negative_ic():
+    from src.scoring_signal_fixed import validation_status
+    wf = {'status': 'OK', 'computed_at': '2026-10-07T09:00:00+00:00', 'stale': False, 'n_tickers': 40,
+          'validated_components': ['technical'],
+          'horizons': {'5d': {'ic_cross_sectional': {'combined': -0.05}, 'ic_cross_sectional_t': {'combined': -3.5}},
+                       '20d': {'ic_cross_sectional': {'combined': 0.01}, 'ic_cross_sectional_t': {'combined': 0.4}}}}
+    v = validation_status(wf)
+    assert v['demonstrated'] is False and v['adverse_horizons'] == ['5d']
+    assert 'significantly NEGATIVE at 5d' in v['statement']

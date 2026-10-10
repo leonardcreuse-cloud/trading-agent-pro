@@ -376,7 +376,7 @@ def test_target_range_change_and_no_change():
     res = macro.build(FakeCtx(store), series=list(macro.TARGET))
     c = find(res, 'No change of the federal funds target range')
     assert c['level'] == UNCERTAIN and c['reason_codes'] == ['PARTIAL_COVERAGE']
-    assert 'no change effective on any date from 2026-09-29 to 2026-10-06' in c['statement']
+    assert 'no change effective on any date after 2026-09-29 up to 2026-10-06' in c['statement']   # d_p excluded
     assert 'a decision announced on 2026-10-06 (inside the window) would appear only after T_c' in c['statement']
     assert 'effective dates after 2026-10-06' in c['what_would_resolve_it']
     assert not [x for x in res.conclusions if x['statement'].startswith('DFEDTAR')]

@@ -47,3 +47,18 @@ def test_audit_without_sec_reports_warnings_not_crashes(monkeypatch):
     assert report['summary']['FAIL'] == 0 and report['status'] == 'WARN'
     groups = {c['group'] for c in report['tickers']['MP']}
     assert groups == {'prices', 'sec', 'insider'}
+
+
+def test_audit_flags_backdated_and_keyless_fred_rows():
+    from src.database import Database
+    from src.pipeline_audit import PipelineAudit
+    db = Database()
+    db.record_fetch('FRED', 'https://api.stlouisfed.org/fred/series/observations',
+                    requested_at='2026-10-07T10:00:00+00:00', status='OK', params={'api_key': 'k'})
+    with db.connect() as conn:          # a synthetic row: backdated, no api_key
+        conn.execute("INSERT INTO source_fetches (source, endpoint, request_params, requested_at, completed_at, "
+                     "status) VALUES ('FRED', 'https://api.stlouisfed.org/fred/release/dates', '{}', "
+                     "'2026-09-01T12:00:00+00:00', '2026-09-01T12:00:00+00:00', 'OK')")
+    checks = {c['check']: c for c in PipelineAudit(db=db).storage_checks()}
+    assert checks['fetch rows completed earlier than previously logged rows (backdated)']['status'] == 'WARN'
+    assert checks['FRED fetch rows without api_key parameter (not a real call)']['status'] == 'WARN'

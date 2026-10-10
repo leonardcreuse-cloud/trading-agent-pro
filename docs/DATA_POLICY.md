@@ -112,6 +112,31 @@ when SEC or the Form 4 documents cannot be read, the score is `None`.
 Walk-forward results describe past ranking skill of the fixed heuristics on the validation universe (40 tickers in the latest run) **without the news component**, which has no history; they are
 not a probability and do not include costs (full backtest: P1.1).
 
+## Weekly report rules (P3.1)
+
+These rules are applied by the weekly report sections (`src/weekly/sections/`). Thresholds live in
+`scheduler_config.json` → `weekly.thresholds` (version `thresholds_version`); they are pre-declared
+heuristics, never fitted, and every crossing carries the `HEURISTIC_THRESHOLD` reason code.
+
+| Rule | Definition |
+|---|---|
+| Drawdown | drawdown vs the 252-session high at T_c <= `drawdown_new_low_pct` (−20 %) and deeper than at T_p |
+| Volume | 5-session volume ratio at T_c >= `volume_ratio` (2.0) and higher than at T_p |
+| Volatility | relative change of 20-session volatility between T_p and T_c >= `sigma20_change_rel` (0.25) |
+| FRED stress rows | change > 1 sample standard deviation of Friday-to-Friday changes as known at T_p |
+| Red flag | 8-K item 4.01, 4.02, 1.05, 3.01, 2.05 or 2.06, or an NT 10-K / NT 10-Q, accepted in (T_p, T_c] |
+| Macro materiality | \|change\| at or above `macro_abs_change[series]`, compared with a tolerance of 1e-9 × max(1, threshold); a series without a threshold is reported as a fact, "materiality not assessed" — never compared with 0 |
+| Revision noise | a change is beyond revision noise only if \|change\| > max(largest revision of the change, largest revision of the level) observed in the stored vintages (level revision in % of the first print for percent-change series); otherwise `FIRST_PRINT_WITHIN_REVISION_NOISE` |
+| Historical vintages | an item "as known at T_p" has its freshness evaluated at T_p; a FRED revision is a publication event dated by its vintage date (cadence `event`, 14 days) |
+| End-of-day series | for daily end-of-day FRED series, a version whose vintage date is earlier than its own observation date is not used, and snapshots stop at s_0 (T_c) and s_-5 (T_p) |
+| Target range | "no change" covers effective dates after d_p up to the last date known at T_c; FRED dates changes by their effective date, so a decision announced on s_0 is not ruled out (`PARTIAL_COVERAGE`) |
+| Geopolitical news | pre-declared topics `geo-topics-v1-2026-10-07`: sanctions, export controls, tariffs, armed conflict, elections, government shutdown; syndicated copies count once (canonical URL, normalized title, token-set Jaccard >= 0.6); news is always `UNCERTAIN` (aggregator) |
+
+**Synthetic data**: synthetic values exist only inside `tests/` with the isolated data directory of
+`tests/conftest.py`. Test helpers must never be imported to write into `data/` (it happened once, on
+2026-10-07 and 2026-10-10: 43 synthetic fetch rows, deleted after a backup); `python main.py audit`
+flags backdated fetch rows and FRED calls logged without their api_key parameter.
+
 ## Configuration
 
 Secrets go in `.env` (see `.env.example`): `SEC_USER_AGENT`, `FRED_API_KEY`, `NEWSAPI_KEY`.

@@ -494,7 +494,7 @@ def _assess(spec, delta, bound, thr, version):
         codes.append('HEURISTIC_THRESHOLD')
         if below:
             codes.append('BELOW_THRESHOLD')
-        parts.append(f"|difference| {_fmt(abs(delta), 4)} {'below' if below else 'at or above'} the pre-declared "
+        parts.append(f"|difference| {abs(delta):.10g} {'below' if below else 'at or above'} the pre-declared "
                      f"materiality threshold {_fmt(thr, 4)} (thresholds {version}, heuristic, not validated; compared "
                      f"with tolerance {THRESHOLD_REL_TOL:g} x max(1, threshold))")
     return beyond, codes, '; '.join(parts)
@@ -916,7 +916,7 @@ def _target_range(ctx, res, data):
         days = blind_lo if blind_lo == tm.s0 else f'{blind_lo}..{tm.s0}'
         statement = (f'No change of the federal funds target range was first published by FRED in the window: '
                      f'{rng_p} for {d_p} as known at T_p and {rng_c} for {d_c} as known at T_c, i.e. no change '
-                     f'effective on any date from {d_p} to {d_cov}. Source: FRED DFEDTARU / DFEDTARL. '
+                     f'effective on any date after {d_p} up to {d_cov}. Source: FRED DFEDTARU / DFEDTARL. '
                      + (f'FRED dates the target range by its effective date (the day after an FOMC announcement) and '
                         f'publishes that observation with the same vintage date, so a decision announced on {days} '
                         '(inside the window) would appear only after T_c: such a decision is not ruled out here. '

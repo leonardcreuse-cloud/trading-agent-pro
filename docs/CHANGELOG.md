@@ -1,5 +1,23 @@
 # Changelog
 
+## P3.0 / P3.1 — Weekly analyst report (`python main.py weekly`)
+
+- `src/weekly/`: core contract (cutoff / week time model from observed sessions, evidence records
+  that reject look-ahead, conclusion levels decided by the DATA_POLICY rules, mandatory reasons for
+  DATA UNAVAILABLE, immutable versioned archive in `reports/weekly/<s_0>/`), shared point-in-time
+  context, 8 sections answering the 14 questions: market (Q1), sec_events (Q2, Q7), macro (Q3, Q4
+  indices, Q5), news (Q4, Q1), sector (Q6), risks (Q8), catalysts (Q9), quant (Q10, Q11); Q12–Q14 are
+  built from the sections' records.
+- Built by a 5-group workflow; every group was reviewed by two independent adversarial reviewers
+  (policy / look-ahead and correctness) and fixed; macro and catalysts / quant were re-fixed and
+  independently verified after a session-limit interruption.
+- Integration fixes: fact ingestion reuses the stored submissions feed; no re-stored duplicate facts
+  (1,076 duplicate rows removed after backup); run archives in `reports/history/`; thresholds v2.
+- Data contamination found by a verifier and removed: 43 synthetic fetch rows written by test helpers
+  run outside pytest isolation (backup in `data/backups/`); the audit now detects such rows.
+- Environment limits (this sandbox): Yahoo options / earnings calendar, FINRA, federalreserve.gov,
+  GDELT and the GPR index are blocked → reported as DATA UNAVAILABLE with the reason.
+
 ## P1.6 — Fixes from the weekly-report scouting critic
 
 - **News component had a hidden neutral 50**: articles without any lexicon word scored exactly 50

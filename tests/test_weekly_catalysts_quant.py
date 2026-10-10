@@ -909,3 +909,13 @@ def test_catalysts_horizon_uses_calendar_dates():
     assert catalysts.horizon(tm) == (date(2026, 10, 6), date(2026, 10, 21))
     assert not catalysts.in_horizon(tm, '2026-10-06') and catalysts.in_horizon(tm, '2026-10-07')
     assert catalysts.in_horizon(tm, '2026-10-21') and not catalysts.in_horizon(tm, '2026-10-22')
+
+
+def test_catalysts_pattern_annual_filer_does_not_call_this_year_one_year_earlier():
+    annual = [filing('10-K', '2025-03-10', '2025-01-31'), filing('10-K', '2026-03-10', '2026-01-31')]
+    out = run_cat(cat_ctx(filings=annual))
+    p = next(c for c in out['conclusions'] if c['scope'] == 'AAA')
+    assert p['kind'] == 'interpretation' and p['level'] == UNCERTAIN
+    assert 'is itself the filing that followed its counterpart one year earlier' in p['statement']
+    assert 'one year earlier, the periodic filing that followed' not in p['statement']
+    assert 'one year after it is 2027-03-10' in p['statement']

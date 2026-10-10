@@ -115,6 +115,10 @@ def validation_status(walk_forward, research=None):
         p = None if t is None else round(two_sided_p(t), 4)
         tests[h] = {'cross_sectional_ic': ic, 't_stat': t, 'p_value': p,
                     'significant_after_correction': p is not None and p < threshold and ic > 0}
+    for x in tests.values():
+        x['significant_negative_after_correction'] = (x['p_value'] is not None and x['p_value'] < threshold
+                                                      and (x['cross_sectional_ic'] or 0) < 0)
+    adverse = [h for h, x in tests.items() if x['significant_negative_after_correction']]
     demonstrated = any(x['significant_after_correction'] for x in tests.values()) and not wf.get('stale')
     detail = '; '.join(f"{h}: IC {x['cross_sectional_ic']}, t={x['t_stat']}, p={x['p_value']}"
                        for h, x in tests.items())
@@ -128,10 +132,13 @@ def validation_status(walk_forward, research=None):
                      f'out-of-sample. The walk-forward ({wf.get("computed_at")}, {wf.get("n_tickers")} '
                      f'tickers) evaluated the signal WITHOUT news ({components}): {detail}; required '
                      f'p < {threshold:.4f} after Bonferroni correction over {k} horizons. ' + news_note
+                     + (f"The cross-sectional IC was significantly NEGATIVE at {', '.join(adverse)} after "
+                        'correction: out-of-sample, the signal ranked stocks in the wrong direction. '
+                        if adverse else '')
                      + ('The validation is stale. ' if wf.get('stale') else '')
                      + ('Separately, ' + research_text if research_text else ''))
     return {'status': 'DEMONSTRATED' if demonstrated else 'NOT DEMONSTRATED',
-            'demonstrated': demonstrated, 'criterion': f'cross-sectional IC of the {VALIDATION_COMPONENT} '
+            'demonstrated': demonstrated, 'adverse_horizons': adverse, 'criterion': f'cross-sectional IC of the {VALIDATION_COMPONENT} '
             f'score, two-sided p < {VALIDATION_ALPHA} / {k} horizons, IC > 0',
             'tests': tests, 'computed_at': wf.get('computed_at'), 'stale': wf.get('stale'),
             'live_signal_validated': False, 'research': [r for r in (research or []) if r],

@@ -569,7 +569,18 @@ def _company(ctx, res, t, calendar_fn):
                          + f" ({'inside' if inside else 'outside'} the horizon ({lo}, {hi}])"])
             used = {id(f): f for f in (latest, anchor, nxt, k8) if f}     # nxt can be latest (annual filer)
             items = [_filing_item(ctx, feed, f, assess_fresh=f is latest) for f in used.values()]
-            res.add(conclude(
+            if nxt is latest:      # annual filer: the filing after last year's counterpart is the latest one
+                pattern_text = (f"{t}: pattern, not a forecast: the latest {latest['form']} (period "
+                                f"{latest['report_date']}, filed {latest['filing_date']}) is itself the filing that "
+                                f"followed its counterpart one year earlier ({anchor['form']}, period "
+                                f"{anchor['report_date']}); one year after it is {anniv}, which falls "
+                                f"{'inside' if inside else 'outside'} the horizon ({lo}, {hi}]. Past filing dates "
+                                "do not set this year's date; no direction or impact is implied.")
+                res.add(conclude(t, Q, pattern_text, items, 'interpretation', reason_codes=['ESTIMATE'],
+                                 resolve='an issuer announcement of the date (8-K) or an official earnings calendar; '
+                                         'a pattern of past filing dates is never a schedule'))
+            else:
+              res.add(conclude(
                 t, Q, f"{t}: pattern, not a forecast: one year earlier, the periodic filing that followed the "
                       f"{anchor['form']} for the period ended {anchor['report_date']} (counterpart of the latest "
                       f"{latest['form']}, period {latest['report_date']}) was the {nxt['form']} for the period ended "

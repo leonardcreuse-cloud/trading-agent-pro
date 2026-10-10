@@ -197,6 +197,11 @@ def render_html(payload):
                     parts.append(_table(t))
         items = [c for s in payload['sections'] for c in s['conclusions'] if c['question'] == q]
         parts.append(_conclusions_table(items))
+        for s in payload['sections']:
+            if q in s['questions'] and q == s['questions'][0] and s['notes']:
+                parts.append(f"<details><summary class='small'>Method notes ({escape(s['name'])})</summary>"
+                             + ''.join(f"<p class='small'>{escape(str(n))}</p>" for n in s['notes'])
+                             + '</details>')
         un = [u for s in payload['sections'] for u in s['unavailable'] if u['question'] == q]
         if un:
             parts.append('<ul>' + ''.join(f"<li class='UNAVAILABLE'>{escape(u['scope'])}: {escape(u['item'])} — "

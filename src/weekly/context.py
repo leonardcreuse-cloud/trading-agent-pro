@@ -96,6 +96,20 @@ class Context:
         return [(d, r['value']) for d, r in self.db.series(series_id, 'value', known_at=instant,
                                                           source='FRED', start=start)]
 
+    def vintages(self, series_id, known_at):
+        """
+        Every stored FRED version known at `known_at`: [(obs_date, value, available_at)] ordered by
+        (obs_date, available_at); available_at = COALESCE(published_at, retrieved_at).
+        """
+        from ..common import to_utc_iso
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT as_of_date, value, COALESCE(published_at, retrieved_at) AS avail, retrieved_at "
+                "FROM observations WHERE source='FRED' AND entity=? AND metric='value' "
+                "AND COALESCE(published_at, retrieved_at) <= ? ORDER BY as_of_date, avail, retrieved_at",
+                (series_id, to_utc_iso(known_at))).fetchall()
+        return [(r['as_of_date'], r['value'], r['avail']) for r in rows]
+
     def first_release(self, series_id):
         """{obs_date: first publication instant} over all stored vintages."""
         return {e['as_of_date']: e['available_at']
@@ -133,6 +147,8 @@ class Context:
                 complete = fetch['retrieved_at'] > self.tm.cutoff
                 out = {'status': 'OK', 'filings': rows, 'fetch': fetch, 'reason': None,
                        'retrieved_after_cutoff': complete,
+                       # the 'recent' block holds ~1000 filings; older ones are in extra files
+                       'truncated': bool((data.get('filings') or {}).get('files')),
                        'sic': data.get('sic'), 'sic_description': data.get('sicDescription'),
                        'name': data.get('name')}
         self._filings[ticker] = out
@@ -140,8 +156,9 @@ class Context:
 
     # ------------------------------------------------------------------ misc
 
-    def freshness(self, as_of, cadence):
-        return freshness(as_of, cadence, now=datetime.fromisoformat(self.tm.cutoff))
+    def freshness(self, as_of, cadence, at=None):
+        """Freshness evaluated at the cutoff (or at `at`, e.g. the previous cutoff)."""
+        return freshness(as_of, cadence, now=datetime.fromisoformat(at or self.tm.cutoff))
 
     def company(self, ticker):
         return (self.config.get('companies') or {}).get(ticker, ticker)

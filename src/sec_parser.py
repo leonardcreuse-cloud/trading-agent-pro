@@ -59,6 +59,7 @@ PERIODIC_FORMS = ('10-K', '10-Q')
 NEW_YORK = ZoneInfo('America/New_York')
 TICKER_FILE_MAX_AGE = timedelta(hours=24)
 COMPANY_FACTS_MAX_AGE = timedelta(hours=12)
+SUBMISSIONS_REUSE_MAX_AGE = timedelta(hours=12)  # facts ingestion only; run() always refreshes
 IMMUTABLE = 'immutable'
 MIN_REQUEST_INTERVAL = float(os.getenv('TRADING_AGENT_SEC_MIN_INTERVAL', '0.11'))  # all threads: <= 9 req/s;
 # raise it (e.g. 1.0) when another process is already using the SEC budget
@@ -248,8 +249,11 @@ class SECParser:
                             'published_at': published, 'published_at_basis': basis})
         return filings
 
-    def get_filings(self, ticker):
-        """Fetch the filing list (submissions endpoint) and store each filing as an observation."""
+    def get_filings(self, ticker, max_age=None):
+        """
+        Fetch the filing list (submissions endpoint) and store each filing as an observation.
+        max_age: reuse a stored feed retrieved less than max_age ago (None: always download).
+        """
         if ticker in self._filings_cache:
             return self._filings_cache[ticker]
         cik = self.get_cik(ticker)
@@ -258,7 +262,7 @@ class SECParser:
                 self.last_error = f'CIK not found for {ticker} in SEC ticker file'
             return None
         url = f"{self.SEC_API}/submissions/CIK{cik}.json"
-        data = self._get_json(url)
+        data = self._get_json(url, max_age=max_age)
         if data:
             filings = self._recent_filings(data)
             fetch = self.last_fetch[url]
@@ -309,14 +313,25 @@ class SECParser:
         data = self._get_json(url, max_age=COMPANY_FACTS_MAX_AGE)
         if not data:
             return None
-        filings = self.get_filings(ticker)
+        fetch = self.last_fetch[url]
+        filings = self.get_filings(ticker, max_age=SUBMISSIONS_REUSE_MAX_AGE)
+        if filings is None and self._has_facts(ticker):
+            # Without the submissions feed every fact would get the conservative end-of-filed-date
+            # time: storing them again would add later-published duplicates of facts already stored
+            # with their acceptance time. Keep the stored versions (they are point-in-time correct).
+            self._facts_fetch[ticker] = fetch
+            return fetch
         acceptance = {f['accession_number']: (f['published_at'], f['published_at_basis'])
                       for f in (filings or {}).get('filings', [])
                       if f['accession_number'] and f['published_at']}
-        fetch = self.last_fetch[url]
         self.db.upsert_observations(fetch, facts_to_observations(ticker, data, acceptance))
         self._facts_fetch[ticker] = fetch
         return fetch
+
+    def _has_facts(self, ticker):
+        with self.db.connect() as conn:
+            return conn.execute("SELECT 1 FROM observations WHERE source=? AND entity=? AND metric "
+                                "LIKE 'xbrl:%' LIMIT 1", (SEC_SOURCE, ticker)).fetchone() is not None
 
     def _instants(self, ticker, tags, known_at):
         return {tag: dict(self.db.series(ticker, f'xbrl:{tag}', known_at=known_at,

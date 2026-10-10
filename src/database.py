@@ -55,6 +55,7 @@ CADENCE_MAX_AGE_DAYS = {
     'daily_market': 5,     # trading sessions: weekend + holiday
     'daily': 7,            # daily official series (published with a lag)
     'weekly': 14,          # weekly official series (jobless claims, NFCI, mortgage rates)
+    'event': 14,           # event filings (8-K, Form 4, 144, 13D/G, S-3 / 424B, NT 10-x)
     'monthly': 80,         # monthly series: period start + ~6 weeks publication lag
     'quarterly_filing': 120,  # 10-Q / 10-K publication date
     'news': 7,
@@ -313,11 +314,16 @@ class Database:
         return {'raw_path': str(target.relative_to(data_dir())), 'raw_sha256': sha,
                 'raw_bytes': len(data)}
 
-    def record_fetch(self, source, endpoint, *, requested_at, status, params=None,
+    def record_fetch(self, source, endpoint, *, requested_at=None, status, params=None,
                      http_status=None, error=None, raw=None, raw_ext='json', n_records=None):
-        """Log one call to a source (success or failure) and store its raw payload."""
+        """
+        Log one call to a source (success or failure) and store its raw payload.
+        requested_at None: the call started now (callers that may not read the clock, e.g. weekly
+        report sections, let the database layer timestamp it).
+        """
         source_rank(source)
         completed_at = utc_now_iso()
+        requested_at = requested_at or completed_at
         stored = self.store_raw(source, raw, raw_ext) if raw is not None else None
         with self.connect() as conn:
             cur = conn.execute(

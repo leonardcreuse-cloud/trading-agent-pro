@@ -47,7 +47,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from .common import (DATA_UNAVAILABLE, load_config, redact, reports_dir, to_utc_iso,
+from .common import (DATA_UNAVAILABLE, history_dir, load_config, redact, reports_dir, stamp, to_utc_iso,
                      utc_now_iso, validation_universe)
 from .database import Database
 from .features import feature_vector
@@ -315,7 +315,9 @@ class WalkForward:
         }
         self._print(result)
         path = reports_dir() / RESULTS_FILE
-        path.write_text(redact(json.dumps(result, indent=1, default=str)), encoding='utf-8')
+        text = redact(json.dumps(result, indent=1, default=str))
+        path.write_text(text, encoding='utf-8')
+        (history_dir() / f"walk_forward_{stamp(result['computed_at'])}.json").write_text(text, encoding='utf-8')
         print(f"\n  Results: {path}")
         return result
 
@@ -362,6 +364,13 @@ def latest_summary(path=None, now=None):
     wall clock) is the instant the summary is evaluated at; a run computed after `now` is
     not visible at that instant (weekly reports pass their cutoff).
     """
+    if path is None and now is not None:
+        # latest archived run computed at or before `now` (reports/history), else the main file
+        archived = sorted(history_dir().glob('walk_forward_*.json'))
+        cutoff_stamp = stamp(now)
+        eligible = [a for a in archived if a.stem.split('_', 2)[-1] <= cutoff_stamp]
+        if eligible:
+            path = eligible[-1]
     path = path or reports_dir() / RESULTS_FILE
     if not path.exists():
         return {'status': DATA_UNAVAILABLE,

@@ -34,7 +34,7 @@ model_prediction / prediction_confidence / risk_score. It is not a trade recomme
 import json
 
 from .backtester import Backtester
-from .common import (DATA_UNAVAILABLE, redact, reports_dir, tickers,
+from .common import (DATA_UNAVAILABLE, history_dir, redact, stamp, reports_dir, tickers,
                      unavailable, utc_now_iso)
 from .dashboard import Dashboard
 from .database import Database
@@ -173,8 +173,9 @@ class Integration:
         html_path.write_text(redact(self.report.generate_html(all_results, run_started,
                                                               macro_provenance)),
                              encoding='utf-8')
-        json_path.write_text(redact(json.dumps(all_results, indent=2, ensure_ascii=False,
-                                               default=str)), encoding='utf-8')
+        report_json = redact(json.dumps(all_results, indent=2, ensure_ascii=False, default=str))
+        json_path.write_text(report_json, encoding='utf-8')
+        (history_dir() / f'analysis_{stamp(run_started)}.json').write_text(report_json, encoding='utf-8')
         print(f"  HTML report: {html_path}")
         print(f"  JSON report: {json_path}")
         dashboard_path = self.dashboard.save_dashboard_html(

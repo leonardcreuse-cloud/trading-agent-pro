@@ -125,6 +125,18 @@ def reports_dir():
     return path
 
 
+def history_dir():
+    """Immutable per-run copies of reports (weekly reports need 'the latest run before T')."""
+    path = reports_dir() / 'history'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def stamp(instant):
+    """Filesystem-safe UTC stamp of an ISO instant: 2026-10-07T09:15:12+00:00 -> 20261007T091512Z."""
+    return to_utc_iso(instant).replace('-', '').replace(':', '').replace('+0000', 'Z')
+
+
 def load_config():
     """Load the universe/scheduling configuration."""
     with open(CONFIG_PATH, encoding='utf-8-sig') as f:

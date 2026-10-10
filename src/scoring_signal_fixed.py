@@ -24,7 +24,7 @@ P1.4 relabel: the output is a QUANTITATIVE SIGNAL, not a trade recommendation.
 
 import math
 
-from .common import NOT_IMPLEMENTED, utc_now_iso
+from .common import NOT_IMPLEMENTED, to_utc_iso, utc_now_iso
 
 INSUFFICIENT_DATA = 'INSUFFICIENT DATA'
 
@@ -40,14 +40,19 @@ def two_sided_p(t_stat):
     return math.erfc(abs(t_stat) / math.sqrt(2))
 
 
-def research_summary(stage, path=None):
-    """One-line summary of a research stage from its results file (None if not run)."""
+def research_summary(stage, path=None, as_of=None):
+    """
+    One-line summary of a research stage from its results file (None if not run, or if it was
+    computed after `as_of`: a later result was not known at that instant).
+    """
     import json
     from .common import reports_dir
     path = path or reports_dir() / f'research_stage{stage}.json'
     if not path.exists():
         return None
     data = json.loads(path.read_text(encoding='utf-8'))
+    if as_of is not None and (data.get('computed_at') or '') > to_utc_iso(as_of):
+        return None
     tests = data.get('feature_tests', []) + data.get('group_tests', []) + data.get('model_tests', [])
     conf = data.get('confirmatory') or []
     return {'stage': stage, 'computed_at': data.get('computed_at'),
@@ -75,6 +80,15 @@ def _research_sentence(research):
     return ('; '.join(parts) + '.') if parts else ''
 
 
+def _sentence(text):
+    """Capitalised sentence ending with a full stop ('' for empty text)."""
+    text = (text or '').strip()
+    if not text:
+        return ''
+    text = text[0].upper() + text[1:]
+    return text if text.endswith('.') else text + '.'
+
+
 def validation_status(walk_forward, research=None):
     """
     Has the combined signal demonstrated out-of-sample predictive power?
@@ -89,8 +103,8 @@ def validation_status(walk_forward, research=None):
         return {'status': 'NOT VALIDATED', 'demonstrated': False,
                 'statement': ('No walk-forward validation is available: this signal has NOT '
                               'demonstrated any predictive power. ' + news_note
-                              + (wf.get('reason') or '') + (' Separately: ' + research_text
-                                                             if research_text else ''))}
+                              + _sentence(wf.get('reason')) + (' Separately: ' + research_text
+                                                               if research_text else ''))}
     horizons = wf['horizons']
     k = len(horizons)
     threshold = VALIDATION_ALPHA / k

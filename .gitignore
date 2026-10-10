@@ -6,6 +6,9 @@ __pycache__/
 data/*.db
 reports/*.html
 reports/*.json
+# generated, archived run outputs (weekly reports, analysis / walk-forward history)
+reports/weekly/
+reports/history/
 .pytest_cache/
 data/
 

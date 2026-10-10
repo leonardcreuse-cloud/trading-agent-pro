@@ -15,19 +15,35 @@ Vintage rules
   revision noise   largest |value as known at T_c - value at its first print| over the periods first
                    printed inside the stored vintages (periods whose first stored version is the start
                    of the stored vintage window are excluded: that version is not a first print). For a
-                   change vs the prior period, the same is computed on the change. A difference is
-                   "beyond revision noise" only when |difference| > that largest revision; otherwise the
-                   statement carries FIRST_PRINT_WITHIN_REVISION_NOISE (also when the noise cannot be
-                   measured). For weekly means of daily series the noise is the largest revision of a
-                   single daily value (an upper bound for the revision of a mean).
-  freshness        ctx.freshness(obs date, cadence) at T_c, once per series on its latest observation known at
-                   T_c (the rule: the series must be FRESH at T_c). The 'as known at T_p' item is a historical
-                   vintage fact and carries that same flag (its own age at T_c is not a staleness).
+                   change vs the prior period (Q5) BOTH the largest revision of the change and the largest
+                   revision of the level are measured (for percent changes: the level revision in % of its
+                   first print) and the change must exceed the larger of the two (the stricter reading,
+                   until DATA_POLICY documents a single rule). A difference is "beyond revision noise" only
+                   when |difference| > that largest revision; otherwise the statement carries
+                   FIRST_PRINT_WITHIN_REVISION_NOISE (also when the noise cannot be measured). For weekly
+                   means of daily series the noise is the largest revision of a single daily value (an
+                   upper bound for the revision of a mean).
+  prior period     monthly: the previous month; weekly: the latest stored observation dated 4 to 10 days
+                   earlier (Freddie Mac dates MORTGAGE30US on a Wednesday in holiday weeks), else obs - 7 d.
+  end-of-day data  daily series that record an end-of-day value (all daily series except the target range):
+                   a version whose FRED vintage date is earlier than its own observation date cannot be
+                   true (a value is not public before the end of the day it describes); such versions are not
+                   used and are listed in the notes. Values as known at T_c are capped at observations dated
+                   <= s_0 and values as known at T_p at observations dated <= s_-5.
+  freshness        ctx.freshness(obs date, cadence) at T_c for every item as known at T_c; an item 'as known
+                   at T_p' (historical vintage) is evaluated at T_p with ctx.freshness(..., at=T_p) and says
+                   so; a revision is a publication event, dated by its FRED vintage date ('event' cadence).
   coverage         a negative or "latest" statement needs a fetch retrieved after T_c; otherwise
-                   PARTIAL_COVERAGE.
-  thresholds       ctx.weekly['thresholds'] has no macro materiality threshold in v1: differences are
-                   reported as facts. If an optional mapping 'macro_abs_change' {series: abs threshold}
-                   is added, |difference| below it adds BELOW_THRESHOLD.
+                   PARTIAL_COVERAGE. The target range: FRED dates DFEDTARU / DFEDTARL by the effective date
+                   (the day after an FOMC announcement) and publishes that observation with the same vintage
+                   date, so a decision announced on the last day(s) of the window is not visible at T_c: a
+                   "no change" statement then carries PARTIAL_COVERAGE.
+  thresholds       ctx.weekly['thresholds']['macro_abs_change'] {series: abs threshold} (v2-2026-10-10 declares
+                   12 series; heuristic, never validated). A difference compared with a threshold carries
+                   HEURISTIC_THRESHOLD, plus BELOW_THRESHOLD when |difference| < threshold - 1e-9 x max(1,
+                   threshold) (the tolerance absorbs float rounding: a decimal difference equal to the threshold
+                   is "at or above"). A series without a threshold is never treated as threshold 0: its
+                   differences are reported as facts and the statement says materiality is not assessed.
 
 Q3  DGS10, DGS2, T10Y2Y, DFF, DFEDTARU / DFEDTARL (target range: a change published in the window is
     an official_fact), VIXCLS, DTWEXBGS, BAMLH0A0HYM2, BAA10Y, NFCI, CPIAUCSL / CPILFESL / PCEPI (YoY).
@@ -36,7 +52,7 @@ Q3  DGS10, DGS2, T10Y2Y, DFF, DFEDTARU / DFEDTARL (target range: a change publis
 Q4  USEPUINDXD (daily, heavily revised: weekly means only) and GEPUCURRENT (monthly, long lag). Both
     measure policy uncertainty from newspaper coverage, NOT geopolitical events. GPR, GDELT, official
     primary documents: DATA UNAVAILABLE (hosts blocked by the proxy).
-Q5  UNRATE, PAYEMS, ICSA / CCSA (4-week averages from one vintage), UMCSENT (FRED delays it ~1 month),
+Q5  UNRATE, PAYEMS, ICSA / CCSA (4-week averages from one vintage), UMCSENT (one reading per month in FRED),
     RSAFS, JTSJOL, MORTGAGE30US, HOUST, CES0500000003 (+ derived real earnings with the CPI of the
     same month known at T_c: an ESTIMATE). Directional readings of a block ("labour indicators
     softer") are ALWAYS interpretations and need >= 2 indicators with a new release beyond revision
@@ -48,33 +64,51 @@ is not the source's publication date); judgements are interpretation. Timing wor
 """
 
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
 
-from ...common import to_utc_iso
+from ...common import end_of_us_trading_day_utc, to_utc_iso
 from ...macro_fred import VINTAGE_BASIS
-from ..core import UNAVAILABLE, SectionResult, conclude, evidence, unavailable
+from ..core import (
+    UNAVAILABLE,
+    UNCERTAIN,
+    WEEK_SESSIONS,
+    SectionResult,
+    _default_resolution,
+    conclude,
+    evidence,
+    unavailable,
+)
 
 NAME = 'macro'
 QUESTIONS = [3, 4, 5]
 SOURCE, RANK = 'FRED', 1
 NOT_EVALUATED = 'NOT EVALUATED'
 EPS = 1e-9
+THRESHOLD_REL_TOL = 1e-9          # below a threshold: |d| < thr - THRESHOLD_REL_TOL x max(1, thr) (float rounding)
+WEEKLY_PRIOR_DAYS = (4, 10)       # weekly series: prior period = latest observation dated 4-10 days earlier
+REVISION_CADENCE = 'event'        # a revision is a publication event, dated by its FRED vintage date
 DIRECTION_CONVENTION = 'macro-direction-v1'
 MAX_REVISIONS_CITED = 3
+T_P_BASIS = VINTAGE_BASIS + '; historical vintage as known at T_p, freshness evaluated at T_p'
+REVISION_BASIS = (VINTAGE_BASIS + '; revision dated by its FRED vintage date, freshness of that publication event '
+                  f"('{REVISION_CADENCE}' cadence)")
 
 
 def _spec(q, label, unit, short, cadence, diff_unit, transform='level', change='diff', digits=2,
-          block=None, sign=0, note=None):
+          block=None, sign=0, note=None, eod=None):
+    """eod: the series records an end-of-day value (default: every daily series)."""
     return {'q': q, 'label': label, 'unit': unit, 'short': short, 'cadence': cadence,
             'diff_unit': diff_unit, 'transform': transform, 'change': change, 'digits': digits,
-            'block': block, 'sign': sign, 'note': note}
+            'block': block, 'sign': sign, 'note': note, 'eod': cadence == 'daily' if eod is None else eod}
 
 
-UMCSENT_NOTE = ('FRED serves this series with a delay of about one month at the request of the source: the '
-                'latest FRED value is not the current University of Michigan print, and the FRED vintage date '
-                'is not the date the source first published it')
+UMCSENT_NOTE = ('the FRED vintage date is not established as the date the University of Michigan first published '
+                'this value; FRED carries one reading per month (in the stored vintages each month first appears late '
+                'in that month or early in the next, i.e. not the mid-month preliminary reading), and whether the '
+                'source has published a later reading is not established here')
+UMCSENT_RESOLVE = 'the University of Michigan Surveys of Consumers release with its own publication date'
 
 # Pre-declared series (order = table order). sign: +1 when an increase is the "firmer / stronger /
 # higher" direction of its block under DIRECTION_CONVENTION, -1 when it is the opposite.
@@ -83,8 +117,9 @@ SERIES = {
     'DGS2': _spec(3, '2-year Treasury constant-maturity yield', '%', '%', 'daily', 'pp'),
     'T10Y2Y': _spec(3, '10-year minus 2-year Treasury yield spread', 'percentage points', ' pp', 'daily', 'pp'),
     'DFF': _spec(3, 'Effective federal funds rate (daily)', '%', '%', 'daily', 'pp'),
-    'DFEDTARU': _spec(3, 'Federal funds target range, upper limit', '%', '%', 'daily', 'pp'),
-    'DFEDTARL': _spec(3, 'Federal funds target range, lower limit', '%', '%', 'daily', 'pp'),
+    # the target range is a setting in effect on its date (announced the day before), not an end-of-day value
+    'DFEDTARU': _spec(3, 'Federal funds target range, upper limit', '%', '%', 'daily', 'pp', eod=False),
+    'DFEDTARL': _spec(3, 'Federal funds target range, lower limit', '%', '%', 'daily', 'pp', eod=False),
     'VIXCLS': _spec(3, 'CBOE Volatility Index (VIX), close', 'index', '', 'daily', 'points'),
     'DTWEXBGS': _spec(3, 'Nominal broad U.S. dollar index (goods and services)', 'index Jan 2006 = 100', '',
                       'daily', 'points', digits=4),
@@ -153,9 +188,11 @@ STATIC_UNAVAILABLE = [
         'controls, USTR)',
      'these hosts are blocked by the proxy (CONNECT 403), tested 2026-10-07: no rank-1 document for any '
      'geopolitical event is available, so no geopolitical event can be strongly supported'),
-    (5, 'current University of Michigan consumer sentiment print (preliminary / final)',
-     'FRED delays UMCSENT by about one month at the request of the source; no other source of the survey is '
-     'configured'),
+    (5, 'current University of Michigan consumer sentiment preliminary reading and the source\'s own publication '
+        'dates',
+     'FRED carries one UMCSENT reading per month, first dated late in that month or early in the next in the stored '
+     'vintages (not the mid-month preliminary reading), and its vintage date is not the source\'s publication date; '
+     'no other source of the survey is configured'),
     (5, 'official sampling-error bands for labour and consumer statistics',
      'BLS and BEA technical notes are not reachable (bls.gov and bea.gov blocked by the proxy)'),
 ]
@@ -233,11 +270,31 @@ def _add_months(obs, k):
     return date(d.year + m // 12, m % 12 + 1, 1).isoformat()
 
 
-def _prior(spec, obs):
+def _vintage_date(instant):
+    """FRED vintage date of a publication instant stored with the end-of-day convention, else its date."""
+    if not instant:
+        return None
+    if instant.endswith('T05:00:00+00:00'):
+        return (date.fromisoformat(instant[:10]) - timedelta(days=1)).isoformat()
+    return instant[:10]
+
+
+def _prior(spec, obs, keys=None):
+    """
+    Prior period of `obs`. Monthly: the previous month. Weekly: the latest stored observation date in `keys`
+    (sorted) dated WEEKLY_PRIOR_DAYS before obs (holiday weeks move a release by a day), else obs - 7 days.
+    """
     if spec['cadence'] == 'monthly':
         return _add_months(obs, -1)
     if spec['cadence'] == 'weekly':
-        return (date.fromisoformat(obs) - timedelta(days=7)).isoformat()
+        d = date.fromisoformat(obs)
+        if keys:
+            i = bisect_left(keys, obs)
+            if i > 0:
+                gap = (d - date.fromisoformat(keys[i - 1])).days
+                if WEEKLY_PRIOR_DAYS[0] <= gap <= WEEKLY_PRIOR_DAYS[1]:
+                    return keys[i - 1]
+        return (d - timedelta(days=7)).isoformat()
     return None
 
 
@@ -254,9 +311,9 @@ def _qty(spec, get, obs):
     return v
 
 
-def _chg(spec, get, obs):
+def _chg(spec, get, obs, keys=None):
     """(change of the quantity vs the prior period, prior obs) in one vintage."""
-    prior = _prior(spec, obs) if obs else None
+    prior = _prior(spec, obs, keys) if obs else None
     if prior is None:
         return None, prior
     a, b = _qty(spec, get, prior), _qty(spec, get, obs)
@@ -271,17 +328,46 @@ def _mean(values):
     return sum(values) / len(values) if values else None
 
 
-def _fresh(ctx, as_of, cadence):
-    """True / False from ctx.freshness at the cutoff, None when unknown."""
+def _fresh(ctx, as_of, cadence, at=None):
+    """True / False from ctx.freshness at the cutoff (or at the instant `at`, e.g. T_p), None when unknown."""
     if as_of is None:
         return None
-    status = (ctx.freshness(str(as_of)[:10], cadence) or {}).get('status')
+    if at is None or at == ctx.tm.cutoff:
+        info = ctx.freshness(str(as_of)[:10], cadence)
+    else:
+        info = ctx.freshness(str(as_of)[:10], cadence, at=at)
+    status = (info or {}).get('status')
     return True if status == 'FRESH' else False if status == 'STALE' else None
 
 
 def _thresholds(ctx):
     weekly = getattr(ctx, 'weekly', None) or {}
     return dict(weekly.get('thresholds') or {}), weekly.get('thresholds_version')
+
+
+def _below(delta, thr):
+    """|delta| below the threshold beyond float rounding (tolerance THRESHOLD_REL_TOL x max(1, |thr|))."""
+    return abs(delta) < thr - THRESHOLD_REL_TOL * max(1.0, abs(thr))
+
+
+def _thr_cell(thr, sid):
+    return _num(thr[sid]) if sid in thr else 'none (materiality not assessed)'
+
+
+def _series_codes(sid):
+    """(reason codes, {code: resolution}) that a series carries on every statement dated by its FRED vintages."""
+    if sid == 'UMCSENT':
+        return ['TIMESTAMP_AMBIGUOUS'], {'TIMESTAMP_AMBIGUOUS': UMCSENT_RESOLVE}
+    return [], {}
+
+
+def _official(q, statement, items, codes, resolve=None):
+    """official_fact conclusion (level decided by conclude); `resolve` {code: text} completes the default hints."""
+    record = conclude('overall', q, statement, items, 'official_fact', reason_codes=codes)
+    if resolve and record['level'] == UNCERTAIN:
+        record['what_would_resolve_it'] = '; '.join(resolve.get(c) or _default_resolution([c])
+                                                    for c in record['reason_codes'])
+    return record
 
 
 # ---------------------------------------------------------------- vintages
@@ -344,10 +430,11 @@ def _versions(ctx, sid):
     return out
 
 
-def _noise(d, fn):
+def _noise(d, fn, relative=False):
     """
     Largest |fn(vintage at T_c) - fn(vintage at first print)| over periods first printed inside the
-    stored vintages; fn(get, obs) computes a quantity from one vintage (get: obs -> value).
+    stored vintages; fn(get, obs) computes a quantity from one vintage (get: obs -> value). relative: the
+    revision in % of the first print.
     """
     vers, snap_c = d['vers'], d['snap_c']
     best, n, at, first_obs, last_obs = 0.0, 0, None, None, None
@@ -357,50 +444,83 @@ def _noise(d, fn):
             continue                       # start of the stored vintage window, not a first print
         at_first = fn(lambda o, t=first_pub: vers.value(o, t), obs)
         now = fn(snap_c.get, obs)
-        if at_first is None or now is None:
+        if at_first is None or now is None or (relative and at_first == 0):
             continue
         n += 1
         first_obs = first_obs or obs
         last_obs = obs
-        r = abs(now - at_first)
+        r = abs(now - at_first) / abs(at_first) * 100 if relative else abs(now - at_first)
         if r > best:
             best, at = r, obs
-    return {'max': best if n else None, 'n': n, 'obs': at, 'from': first_obs, 'to': last_obs}
+    return {'max': best if n else None, 'n': n, 'obs': at, 'from': first_obs, 'to': last_obs, 'relative': relative}
 
 
 def _noise_text(spec, noise, what):
     if noise['max'] is None:
         return f'largest revision of {what} not measurable (no first print inside the stored vintages)'
     where = f", {_period(spec, noise['obs'])}" if noise['obs'] and noise['max'] > EPS else ''
-    return (f"largest revision of {what} in stored vintages {_fmt(noise['max'], max(_ddigits(spec), 2))}"
+    unit = '% of the first print' if noise.get('relative') else ''
+    value = _fmt(noise['max'], max(_ddigits(spec), 2)) + (f' {unit}' if unit else '')
+    return (f"largest revision of {what} in stored vintages {value}"
             f" over {noise['n']} periods {_period(spec, noise['from'])}..{_period(spec, noise['to'])}{where}")
 
 
-def _assess(spec, delta, noise, thr):
-    """(beyond: bool | None, reason codes, phrase) for a difference against revision noise / threshold."""
+def _assess(spec, delta, bound, thr, version):
+    """
+    (beyond: bool | None, reason codes, phrase) for a difference against the revision-noise bound (None: not
+    measurable) and the pre-declared materiality threshold (None: no threshold, materiality not assessed).
+    """
     codes, parts = [], []
     if delta is None:
         return None, codes, ''
-    if noise['max'] is None:
+    if bound is None:
         beyond = None
         codes.append('FIRST_PRINT_WITHIN_REVISION_NOISE')
         parts.append('revision noise cannot be measured, so the difference is not shown to exceed it')
     else:
-        beyond = abs(delta) > noise['max'] + EPS
+        beyond = abs(delta) > bound + EPS
         if beyond:
             parts.append('beyond revision noise')
-        elif abs(delta) <= EPS and noise['max'] <= EPS:
+        elif abs(delta) <= EPS and bound <= EPS:
             parts.append('no revision of this quantity was ever observed in the stored vintages')
         else:
             codes.append('FIRST_PRINT_WITHIN_REVISION_NOISE')
             parts.append('within revision noise')
-    if thr is not None:
-        if abs(delta) < thr:
+    if thr is None:
+        parts.append(f'no pre-declared materiality threshold for this series in thresholds {version}: the difference '
+                     'is reported as a fact, materiality not assessed')
+    else:
+        below = _below(delta, thr)
+        codes.append('HEURISTIC_THRESHOLD')
+        if below:
             codes.append('BELOW_THRESHOLD')
-            parts.append(f'below the pre-declared materiality threshold {_fmt(thr, 4)}')
-        else:
-            parts.append(f'at or above the pre-declared materiality threshold {_fmt(thr, 4)}')
+        parts.append(f"|difference| {_fmt(abs(delta), 4)} {'below' if below else 'at or above'} the pre-declared "
+                     f"materiality threshold {_fmt(thr, 4)} (thresholds {version}, heuristic, not validated; compared "
+                     f"with tolerance {THRESHOLD_REL_TOL:g} x max(1, threshold))")
     return beyond, codes, '; '.join(parts)
+
+
+def _threshold_resolve(version):
+    return {'HEURISTIC_THRESHOLD': f'a validated materiality threshold (the one in thresholds {version} is heuristic)',
+            'BELOW_THRESHOLD': 'none for this difference: it is below the pre-declared materiality threshold, so no '
+                               'material change is claimed'}
+
+
+def _threshold_note(thr, version, sids):
+    """Table note on materiality, built from the thresholds actually configured for the listed series."""
+    have = [s for s in sids if s in thr]
+    lack = [s for s in sids if s not in thr]
+    if not have:
+        return (f'No pre-declared macro materiality threshold for these series in thresholds {version}: differences are '
+                'facts, materiality not assessed (never "material changes").')
+    text = (f'Pre-declared materiality thresholds (thresholds {version}, weekly.thresholds.macro_abs_change; heuristic, '
+            'not validated: HEURISTIC_THRESHOLD): ' + ', '.join(f'{s} {_fmt(thr[s], 4)}' for s in have)
+            + f'; |difference| < threshold - {THRESHOLD_REL_TOL:g} x max(1, threshold) adds BELOW_THRESHOLD (the '
+              'tolerance absorbs float rounding).')
+    if lack:
+        text += (f' No pre-declared threshold (differences are facts, materiality not assessed): '
+                 f'{", ".join(lack)}.')
+    return text
 
 
 # ---------------------------------------------------------------- loading
@@ -417,22 +537,50 @@ def _load(ctx, sid):
     retrieved = to_utc_iso(fetch.get('retrieved_at'))
     d['fetch'] = fetch
     d['covered'] = bool(retrieved) and retrieved > tm.cutoff
-    d['latest_c'] = ctx.value_at(sid, tm.cutoff)
-    d['latest_p'] = ctx.value_at(sid, tm.previous_cutoff)
-    d['snap_c'] = {str(o)[:10]: float(v) for o, v in ctx.series_at(sid, tm.cutoff) if v is not None}
-    d['snap_p'] = {str(o)[:10]: float(v) for o, v in ctx.series_at(sid, tm.previous_cutoff) if v is not None}
+    rows = _versions(ctx, sid)
+    # an end-of-day value cannot be public before the end of its own day: such stored timestamps are not credible
+    credible = [not spec['eod'] or r[2] >= end_of_us_trading_day_utc(r[0]) for r in rows]
+    d['impossible'] = [r for r, ok in zip(rows, credible) if not ok]
+    bad = {o for o, _, _ in d['impossible']}
+    d['vers'] = vers = _Vintages([r for r, ok in zip(rows, credible) if ok])
+    # end-of-day data as known at T_c / T_p: observations dated up to s_0 / s_-5 only
+    caps = {'c': tm.s0, 'p': tm.sessions[-WEEK_SESSIONS - 1]} if spec['eod'] else {}
+    for which, instant in (('c', tm.cutoff), ('p', tm.previous_cutoff)):
+        snap = {str(o)[:10]: float(v) for o, v in ctx.series_at(sid, instant) if v is not None}
+        for o in bad:                                  # the latest credible version, if any
+            v = vers.value(o, instant)
+            if v is None:
+                snap.pop(o, None)
+            else:
+                snap[o] = v
+        if which in caps:
+            snap = {o: v for o, v in snap.items() if o <= caps[which]}
+        d['snap_' + which] = snap
+        d['latest_' + which] = _latest(snap, vers, instant, ctx.value_at(sid, instant), bad)
     first = {str(o)[:10]: to_utc_iso(p) for o, p in (ctx.first_release(sid) or {}).items() if p}
-    d['first'] = {o: p for o, p in first.items() if p <= tm.cutoff}     # later first prints are unknown at T_c
+    for o in bad:
+        p = vers.first(o)[0]
+        if p is None:
+            first.pop(o, None)
+        else:
+            first[o] = p
+    # later first prints are unknown at T_c; end-of-day data dated after s_0 are not known at T_c
+    d['first'] = {o: p for o, p in first.items() if p <= tm.cutoff and ('c' not in caps or o <= caps['c'])}
     d['new'] = sorted(o for o, p in d['first'].items() if p > tm.previous_cutoff)
-    d['vers'] = _Vintages(_versions(ctx, sid))
     if not d['latest_c'] or not d['snap_c']:
         d.update(status=UNAVAILABLE, reason=f'FRED {sid}: no observation known at the cutoff {tm.cutoff} in the '
                                             'stored vintages')
-        return d
-    d['latest_c'] = (str(d['latest_c'][0])[:10], float(d['latest_c'][1]), to_utc_iso(d['latest_c'][2]))
-    if d['latest_p']:
-        d['latest_p'] = (str(d['latest_p'][0])[:10], float(d['latest_p'][1]), to_utc_iso(d['latest_p'][2]))
     return d
+
+
+def _latest(snap, vers, instant, accessor_latest, bad):
+    """(obs, value, published_at) of the latest observation of a snapshot (accessor's version when it agrees)."""
+    if not snap:
+        return None
+    obs = max(snap)
+    if accessor_latest and str(accessor_latest[0])[:10] == obs and obs not in bad:
+        return obs, float(accessor_latest[1]), to_utc_iso(accessor_latest[2])
+    return obs, snap[obs], vers.pub(obs, instant)
 
 
 def _ok(d):
@@ -448,11 +596,17 @@ def _pub_at(d, obs, which):
     return d['vers'].pub(obs, instant) if obs else None
 
 
-def _ev(ctx, d, fact, as_of, published_at, fresh):
+def _ev(ctx, d, fact, as_of, published_at, fresh, basis=VINTAGE_BASIS):
     fetch = d.get('fetch') or {}
     return evidence(ctx.tm, SOURCE, RANK, f"{d['sid']}: {fact}", as_of=as_of, published_at=published_at,
                     retrieved_at=fetch.get('retrieved_at'), fetch_id=fetch.get('fetch_id'), fresh=fresh,
-                    basis=VINTAGE_BASIS)
+                    basis=basis)
+
+
+def _ev_p(ctx, d, fact, as_of, published_at, cadence):
+    """Evidence item as known at T_p (historical vintage): freshness evaluated at T_p."""
+    return _ev(ctx, d, fact, as_of, published_at, _fresh(ctx, as_of, cadence, at=ctx.tm.previous_cutoff),
+               basis=T_P_BASIS)
 
 
 def _qty_pub(d, obs, which):
@@ -503,10 +657,10 @@ def _revision_text(spec, revs):
 
 # ---------------------------------------------------------------- statements
 
-def _asknown(ctx, res, d, q, thr):
+def _asknown(ctx, res, d, q, thr, version):
     """
     Q3-style statement for one series (also GEPUCURRENT in Q4): displayed quantity as known at T_p and
-    at T_c, difference, new release, revisions, revision noise. Returns the table row facts.
+    at T_c, difference, new release, revisions, revision noise, materiality. Returns the table row facts.
     """
     tm, spec, sid = ctx.tm, d['spec'], d['sid']
     dc = d['latest_c'][0]
@@ -524,11 +678,11 @@ def _asknown(ctx, res, d, q, thr):
                             f'no observation for {_period(spec, _add_months(dc, -12))} in that vintage'))
         return out
     head = f"{sid} ({spec['label']})"
-    fresh = _fresh(ctx, dc, spec['cadence'])          # the series at T_c (also carried by the T_p item)
     item_c = _ev(ctx, d, f'{_val(spec, qc)} for {_period(spec, dc)} as known at T_c {tm.cutoff}', dc,
-                 _qty_pub(d, dc, 'c') or d['latest_c'][2], fresh)
+                 _qty_pub(d, dc, 'c') or d['latest_c'][2], _fresh(ctx, dc, spec['cadence']))
     items = [item_c]
-    codes = _coverage(d)
+    series_codes, resolve = _series_codes(sid)
+    codes = _coverage(d) + series_codes
     yoy_note = (' (YoY computed within one vintage from the seasonally adjusted index)'
                 if spec['transform'] == 'yoy' else '')
     new_note = (f"; new release in the window: {_period(spec, d['new'][-1])} first published "
@@ -544,52 +698,56 @@ def _asknown(ctx, res, d, q, thr):
     else:
         delta = qc - qp
         out['delta'] = delta
-        items.insert(0, _ev(ctx, d, f'{_val(spec, qp)} for {_period(spec, dp)} as known at T_p '
-                                    f'{tm.previous_cutoff} (historical vintage)', dp,
-                            _qty_pub(d, dp, 'p') or d['latest_p'][2], fresh))
+        items.insert(0, _ev_p(ctx, d, f'{_val(spec, qp)} for {_period(spec, dp)} as known at T_p '
+                                      f'{tm.previous_cutoff} (historical vintage; freshness evaluated at T_p)', dp,
+                              _qty_pub(d, dp, 'p') or d['latest_p'][2], spec['cadence']))
         if dc == dp:
             statement = (f'{head}: the latest observation ({_period(spec, dc)}) was revised from {_val(spec, qp)} '
                          f'(as known at T_p) to {_val(spec, qc)} (as known at T_c){yoy_note}; difference '
                          f'{_diff(spec, delta)}; no new observation first published in the window.')
         else:
-            beyond, extra, phrase = _assess(spec, delta, noise, thr)
+            beyond, extra, phrase = _assess(spec, delta, noise['max'], thr, version)
             out['beyond'] = beyond
             codes += extra
+            resolve = dict(resolve, **_threshold_resolve(version))
             statement = (f'{head}: {_val(spec, qp)} for {_period(spec, dp)} as known at T_p and {_val(spec, qc)} for '
                          f'{_period(spec, dc)} as known at T_c{yoy_note}; difference {_diff(spec, delta)} '
                          f'({phrase}; {_noise_text(spec, noise, what)}){new_note}.')
     if spec['note']:
         statement = statement[:-1] + f' ({spec["note"]}).'
     statement += _coverage_text(d)
-    record = conclude('overall', q, statement, items, 'official_fact', reason_codes=codes)
+    record = _official(q, statement, items, codes, resolve)
     res.add(record)
     out.update(record=record, items=items)
     return out
 
 
-def _release(ctx, res, d, q, thr):
+def _release(ctx, res, d, q, thr, version):
     """Q5-style statement: new release in the window (first print, change vs prior period) or latest."""
     spec, sid = d['spec'], d['sid']
     vers = d['vers']
-    noise = _noise(d, lambda get, obs: _chg(spec, get, obs)[0])
+    keys = sorted(set(vers.by_obs) | set(d['snap_c']))          # stored observation dates (weekly prior period)
+    noise = _noise(d, lambda get, obs: _chg(spec, get, obs, keys)[0])
+    level_noise = _noise(d, lambda get, obs: _qty(spec, get, obs), relative=spec['change'] == 'pct')
+    # the change must exceed both the largest revision of the change and that of the level (stricter reading)
+    bound = None if noise['max'] is None else max(noise['max'], level_noise['max'] or 0.0)
     revs = _revisions(d)
-    out = {'noise': noise, 'revs': revs, 'm': None, 'first_val': None, 'first_pub': None, 'prior': None,
-           'prior_val': None, 'chg': None, 'beyond': None, 'record': None, 'items': []}
+    out = {'noise': noise, 'level_noise': level_noise, 'revs': revs, 'm': None, 'first_val': None,
+           'first_pub': None, 'prior': None, 'prior_val': None, 'chg': None, 'beyond': None, 'record': None,
+           'items': []}
     head = f"{sid} ({spec['label']})"
-    codes = _coverage(d)
-    if sid == 'UMCSENT':
-        codes.append('TIMESTAMP_AMBIGUOUS')
-    resolve = ('the University of Michigan Surveys of Consumers release with its own publication date'
-               if sid == 'UMCSENT' else None)
+    series_codes, resolve = _series_codes(sid)
+    codes = _coverage(d) + series_codes
     chg_what = ('the change vs the prior period' if spec['change'] == 'diff'
                 else 'the percent change vs the prior period')
+    level_what = 'the level' if spec['change'] == 'diff' else 'the level (relative)'
     if d['new']:
         m = d['new'][-1]
         first_pub, first_val = vers.first(m)
         if first_pub is None:                          # accessor without the version: use the release instant
             first_pub, first_val = d['first'][m], d['snap_c'].get(m)
         val_c = d['snap_c'].get(m)
-        chg, prior = _chg(spec, d['snap_c'].get, m)
+        chg, prior = _chg(spec, d['snap_c'].get, m, keys)
         prior_val = d['snap_c'].get(prior) if prior else None
         out.update(m=m, first_val=first_val, first_pub=first_pub, prior=prior, prior_val=prior_val, chg=chg)
         fresh = _fresh(ctx, m, spec['cadence'])
@@ -603,20 +761,25 @@ def _release(ctx, res, d, q, thr):
             parts.append(f"{len(d['new'])} periods first published in the window "
                          f"({', '.join(_period(spec, o) for o in d['new'])})")
         if chg is not None:
-            beyond, extra, phrase = _assess(spec, chg, noise, thr)
+            beyond, extra, phrase = _assess(spec, chg, bound, thr, version)
             out['beyond'] = beyond
             codes += extra
+            resolve = dict(resolve, **_threshold_resolve(version))
             pubs = [p for p in (_pub_at(d, m, 'c'), _pub_at(d, prior, 'c')) if p]
             items.append(_ev(ctx, d, f'{_period(spec, prior)} = {_val(spec, prior_val)} -> {_period(spec, m)} = '
                                      f'{_val(spec, val_c)} in the vintage known at T_c ({_diff(spec, chg)})', m,
                              max(pubs) if pubs else first_pub, fresh))
             parts.append(f'change vs {_period(spec, prior)} (both from the T_c vintage) {_diff(spec, chg)} '
-                         f'({phrase}; {_noise_text(spec, noise, chg_what)})')
+                         f'({phrase}; {_noise_text(spec, noise, chg_what)}; {_noise_text(spec, level_noise, level_what)}'
+                         '; "beyond revision noise" requires |change| > the larger of the two)')
         else:
+            gap = (f' (no stored observation dated {WEEKLY_PRIOR_DAYS[0]} to {WEEKLY_PRIOR_DAYS[1]} days before '
+                   f'{m})' if spec['cadence'] == 'weekly' else '')
             parts.append(f'change vs the prior period not computable: no observation for {_period(spec, prior)} '
-                         'in the vintage known at T_c')
+                         f'in the vintage known at T_c{gap}')
             res.add(unavailable('overall', q, f'{sid}: change vs the prior period',
-                                f'no observation for {_period(spec, prior)} in the FRED vintage known at the cutoff'))
+                                f'no observation for {_period(spec, prior)} in the FRED vintage known at the '
+                                f'cutoff{gap}'))
         statement = '; '.join(parts) + '.'
     else:
         dc, vc = d['latest_c'][0], d['latest_c'][1]
@@ -628,7 +791,7 @@ def _release(ctx, res, d, q, thr):
     if spec['note']:
         statement = statement[:-1] + f' ({spec["note"]}).'
     statement += _coverage_text(d)
-    record = conclude('overall', q, statement, items, 'official_fact', reason_codes=codes, resolve=resolve)
+    record = _official(q, statement, items, codes, resolve)
     res.add(record)
     out.update(record=record, items=items)
     if revs:
@@ -637,19 +800,24 @@ def _release(ctx, res, d, q, thr):
 
 
 def _revision_record(ctx, res, d, q, revs):
+    """Revisions between the T_p and T_c vintages: publication events dated by their FRED vintage date."""
     spec, sid = d['spec'], d['sid']
     cited = sorted(revs, key=lambda r: -abs(r[2] - r[1]))[:MAX_REVISIONS_CITED]
     items = []
     for obs, old, new in cited:
         pub = _pub_at(d, obs, 'c')
-        # a revision is dated by its publication (like a filing), not by the period it revises
-        fresh = _fresh(ctx, pub[:10], spec['cadence']) if pub else None
+        vintage = _vintage_date(pub)
         items.append(_ev(ctx, d, f'{_period(spec, obs)} revised from {_val(spec, old)} (T_p vintage) to '
-                                 f'{_val(spec, new)} (T_c vintage), published {_when(pub)}', obs, pub, fresh))
+                                 f'{_val(spec, new)} (T_c vintage), published {_when(pub)}', vintage, pub,
+                         _fresh(ctx, vintage, REVISION_CADENCE), basis=REVISION_BASIS))
     listed = '; '.join(f'{_period(spec, o)}: {_val(spec, a)} -> {_val(spec, b)}' for o, a, b in cited)
     statement = (f"{sid}: {len(revs)} previously published value(s) were revised between the T_p and T_c vintages "
-                 f"(largest: {listed}).") + _coverage_text(d)
-    res.add(conclude('overall', q, statement, items, 'official_fact', reason_codes=_coverage(d)))
+                 f"(largest: {listed})")
+    series_codes, resolve = _series_codes(sid)
+    if spec['note']:
+        statement += f' ({spec["note"]})'
+    statement += '.' + _coverage_text(d)
+    res.add(_official(q, statement, items, _coverage(d) + series_codes, resolve))
 
 
 def _week_ranges(tm):
@@ -668,7 +836,7 @@ def _weekly_means(ctx, d):
             'diff': None if m_c is None or m_p is None else m_c - m_p, 'w': (w_lo, w_hi), 'pw': (p_lo, p_hi)}
 
 
-def _weekly_mean_record(ctx, res, d, q, wm, noise, thr):
+def _weekly_mean_record(ctx, res, d, q, wm, noise, thr, version):
     """Statement on the weekly mean of a daily series (USEPUINDXD): T_c week vs T_p previous week."""
     spec, sid = d['spec'], d['sid']
     (w_lo, w_hi), (p_lo, p_hi) = wm['w'], wm['pw']
@@ -680,13 +848,13 @@ def _weekly_mean_record(ctx, res, d, q, wm, noise, thr):
     last_c, last_p = wm['cur'][-1][0], wm['prev_p'][-1][0]
     pubs_c = [p for p in (_pub_at(d, o, 'c') for o, _ in wm['cur']) if p]
     pubs_p = [p for p in (_pub_at(d, o, 'p') for o, _ in wm['prev_p']) if p]
-    fresh = _fresh(ctx, d['latest_c'][0], spec['cadence'])
-    items = [_ev(ctx, d, f"mean of {len(wm['prev_p'])} obs dated {p_lo} < d <= {p_hi} as known at T_p = "
-                         f"{_fmt(wm['mean_p'], 2)} (historical vintage)", last_p,
-                 max(pubs_p) if pubs_p else None, fresh),
+    items = [_ev_p(ctx, d, f"mean of {len(wm['prev_p'])} obs dated {p_lo} < d <= {p_hi} as known at T_p = "
+                           f"{_fmt(wm['mean_p'], 2)} (historical vintage; freshness evaluated at T_p)", last_p,
+                   max(pubs_p) if pubs_p else None, spec['cadence']),
              _ev(ctx, d, f"mean of {len(wm['cur'])} obs dated {w_lo} < d <= {w_hi} as known at T_c = "
-                         f"{_fmt(wm['mean_c'], 2)}", last_c, max(pubs_c) if pubs_c else None, fresh)]
-    beyond, codes, phrase = _assess(spec, wm['diff'], noise, thr)
+                         f"{_fmt(wm['mean_c'], 2)}", last_c, max(pubs_c) if pubs_c else None,
+                 _fresh(ctx, last_c, spec['cadence']))]
+    beyond, codes, phrase = _assess(spec, wm['diff'], noise['max'], thr, version)
     statement = (f"{sid} ({spec['label']}): mean of the {len(wm['cur'])} daily values dated in the week "
                  f"({w_lo} < d <= {w_hi}) as known at T_c {_fmt(wm['mean_c'], 2)}, against "
                  f"{_fmt(wm['mean_p'], 2)} for the {len(wm['prev_p'])} values dated in the previous week "
@@ -694,7 +862,7 @@ def _weekly_mean_record(ctx, res, d, q, wm, noise, thr):
                  f"{_fmt(wm['mean_pc'], 2)}); difference {_diff(spec, wm['diff'])} ({phrase}; "
                  f"{_noise_text(spec, noise, 'a single daily value')}). It measures newspaper coverage of "
                  f"economic-policy uncertainty, not geopolitical events.") + _coverage_text(d)
-    record = conclude('overall', q, statement, items, 'official_fact', reason_codes=codes + _coverage(d))
+    record = _official(q, statement, items, codes + _coverage(d), _threshold_resolve(version))
     res.add(record)
     return {'record': record, 'beyond': beyond}
 
@@ -724,12 +892,20 @@ def _target_range(ctx, res, data):
     d_c, d_p = u['latest_c'][0], u['latest_p'][0]
     items = []
     for x in (u, l):
-        fresh = _fresh(ctx, x['latest_c'][0], 'daily')
-        items.append(_ev(ctx, x, f"{x['latest_p'][1]:.2f}% for {x['latest_p'][0]} as known at T_p (historical "
-                                 'vintage)', x['latest_p'][0], _pub_at(x, x['latest_p'][0], 'p'), fresh))
+        items.append(_ev_p(ctx, x, f"{x['latest_p'][1]:.2f}% for {x['latest_p'][0]} as known at T_p (historical "
+                                   'vintage; freshness evaluated at T_p)', x['latest_p'][0],
+                           _pub_at(x, x['latest_p'][0], 'p'), 'daily'))
         items.append(_ev(ctx, x, f"{x['latest_c'][1]:.2f}% for {x['latest_c'][0]} as known at T_c",
-                         x['latest_c'][0], _pub_at(x, x['latest_c'][0], 'c'), fresh))
+                         x['latest_c'][0], _pub_at(x, x['latest_c'][0], 'c'), _fresh(ctx, x['latest_c'][0], 'daily')))
     rng_c, rng_p = f'{lo_c:.2f}-{up_c:.2f}%', f'{lo_p:.2f}-{up_p:.2f}%'
+    # An FOMC decision announced on day X takes effect on X + 1; FRED dates the range by its effective date and
+    # publishes that observation with the same vintage date (end of day X + 1, after T_c when X = s_0). A decision
+    # announced on a day >= the latest effective date known at T_c is therefore not visible at T_c.
+    d_cov = min(u['latest_c'][0], l['latest_c'][0])
+    window_first_day = (date.fromisoformat(tm.sessions[-WEEK_SESSIONS - 1]) + timedelta(days=1)).isoformat()
+    blind_lo = max(d_cov, window_first_day)
+    blind = blind_lo <= tm.s0
+    resolve = None
     if changes or abs(up_c - up_p) > EPS or abs(lo_c - lo_p) > EPS:
         detail = ''.join(f'; {sid} {a:.2f} -> {b:.2f} from obs {obs}, first published {_when(pub)}'
                          for sid, obs, a, b, pub in changes)
@@ -737,13 +913,25 @@ def _target_range(ctx, res, data):
                      f'as known at T_c{detail}. Source: FRED DFEDTARU / DFEDTARL.')
         changed = True
     else:
-        statement = (f'No change of the federal funds target range was first published in the window: {rng_p} for '
-                     f'{d_p} as known at T_p and {rng_c} for {d_c} as known at T_c. Source: FRED DFEDTARU / '
-                     'DFEDTARL. Whether an FOMC meeting took place is not established here (calendar unavailable).')
+        days = blind_lo if blind_lo == tm.s0 else f'{blind_lo}..{tm.s0}'
+        statement = (f'No change of the federal funds target range was first published by FRED in the window: '
+                     f'{rng_p} for {d_p} as known at T_p and {rng_c} for {d_c} as known at T_c, i.e. no change '
+                     f'effective on any date from {d_p} to {d_cov}. Source: FRED DFEDTARU / DFEDTARL. '
+                     + (f'FRED dates the target range by its effective date (the day after an FOMC announcement) and '
+                        f'publishes that observation with the same vintage date, so a decision announced on {days} '
+                        '(inside the window) would appear only after T_c: such a decision is not ruled out here. '
+                        if blind else
+                        f'Observations up to {d_cov} (after s_0 = {tm.s0}) are known at T_c, so a decision announced '
+                        'on any day of the window would be visible. ')
+                     + 'Whether an FOMC meeting took place is not established here (calendar unavailable).')
         changed = False
+        if blind:
+            resolve = {'PARTIAL_COVERAGE': f'the DFEDTARU / DFEDTARL observations for effective dates after {d_cov} '
+                                           '(published by FRED after T_c) or the FOMC statement (federalreserve.gov '
+                                           'blocked by the proxy)'}
     statement += _coverage_text(u if not u['covered'] else l)
-    codes = _coverage(u) + _coverage(l)
-    record = conclude('overall', 3, statement, items, 'official_fact', reason_codes=codes)
+    codes = _coverage(u) + _coverage(l) + (['PARTIAL_COVERAGE'] if not changed and blind else [])
+    record = _official(3, statement, items, codes, resolve)
     res.add(record)
     return {'record': record, 'changed': changed}
 
@@ -755,11 +943,12 @@ def _q3(ctx, res, data, thr, version):
         if spec['q'] != 3:
             continue
         d = data.get(sid)
+        thr_cell = 'not applicable (target-range statement)' if sid in TARGET else _thr_cell(thr, sid)
         if not _ok(d):
             reason = _missing_reason(d)
             res.add(unavailable('overall', 3, f'{sid} ({spec["label"]})', reason))
             rows.append([sid, spec['label'], spec['unit'], spec['cadence']] + [None] * 9
-                        + [NOT_EVALUATED if d is None else UNAVAILABLE, reason])
+                        + [thr_cell, NOT_EVALUATED if d is None else UNAVAILABLE, reason])
             if spec['cadence'] == 'daily':
                 mean_rows.append([sid] + [None] * 10)
             if spec['block']:
@@ -773,16 +962,16 @@ def _q3(ctx, res, data, thr, version):
                  'record': target['record'] if target else None}
             a['delta'] = None if a['qp'] is None else a['qc'] - a['qp']
         else:
-            a = _asknown(ctx, res, d, 3, t)
+            a = _asknown(ctx, res, d, 3, t, version)
         level = a['record']['level'] if a.get('record') else UNAVAILABLE
         rows.append([sid, spec['label'], spec['unit'], spec['cadence'], _num(a['qp']), a['dp'] and _period(spec, a['dp']),
                      _num(a['qc']), _period(spec, a['dc']), _num(a['delta']), _new_text(spec, d),
                      _revision_text(spec, a['revs']), _num(a['noise']['max']),
-                     None if a['beyond'] is None else ('yes' if a['beyond'] else 'no'), level,
+                     None if a['beyond'] is None else ('yes' if a['beyond'] else 'no'), thr_cell, level,
                      ('see the target-range statement' if sid in TARGET else spec['note'])])
         if spec['cadence'] == 'daily':
             wm = _weekly_means(ctx, d)
-            b, _, _ = _assess(spec, wm['diff'], a['noise'], t)
+            b, _, _ = _assess(spec, wm['diff'], a['noise']['max'], t, version)
             mean_rows.append([sid, _num(wm['mean_c']), len(wm['cur']), _num(wm['mean_p']), len(wm['prev_p']),
                               _num(wm['mean_pc']), len(wm['prev_c']), _num(wm['diff']), _num(a['noise']['max']),
                               None if b is None else ('yes' if b else 'no'),
@@ -790,23 +979,26 @@ def _q3(ctx, res, data, thr, version):
         if spec['block']:
             moves.append({'sid': sid, 'status': 'ok', 'new': bool(d['new']), 'change': a.get('delta'),
                           'beyond': a.get('beyond'), 'items': a.get('items') or [],
-                          'below_threshold': t is not None and a.get('delta') is not None and abs(a['delta']) < t,
+                          'below_threshold': t is not None and a.get('delta') is not None and _below(a['delta'], t),
                           'unit': spec['diff_unit'], 'spec': spec})
     tm = ctx.tm
     (w_lo, w_hi), (p_lo, p_hi) = _week_ranges(tm)
+    q3_sids = [s for s, sp in SERIES.items() if sp['q'] == 3 and s not in TARGET]
     res.table('Macro indicators as known at T_p and at T_c (FRED vintages)',
               ['series', 'description', 'unit', 'cadence', 'value as known at T_p', 'obs (T_p)',
                'value as known at T_c', 'obs (T_c)', 'delta (T_c - T_p)', 'new release in window (first publication)',
                'revision of a previously published value', 'largest revision in stored vintages',
-               'beyond revision noise', 'level', 'note'],
+               'beyond revision noise', 'materiality threshold (macro_abs_change)', 'level', 'note'],
               rows, question=3,
               note=(f'FRED (rank 1). T_p = {tm.previous_cutoff}, T_c = {tm.cutoff}. Values as known at T are the FRED '
                     'vintage in effect at T (publication instant = end of the vintage date, New York, conservative; '
-                    'shown as 05:00 UTC the next day). CPI / PCE rows show YoY % computed within one vintage from the '
+                    'shown as 05:00 UTC the next day); end-of-day daily series are limited to observations dated up '
+                    'to s_0 (T_c) and s_-5 (T_p). Freshness: items as known at T_c are evaluated at T_c, items as '
+                    'known at T_p at T_p. CPI / PCE rows show YoY % computed within one vintage from the '
                     'seasonally adjusted index (the BLS headline 12-month change uses the unadjusted index and can '
                     'differ slightly). Revision noise is the largest |value at T_c - first print| over periods first '
-                    'printed inside the stored vintages. No pre-declared macro materiality threshold in thresholds '
-                    f'{version}: differences are facts, not "material changes". Full pre-declared list, moved or not.'))
+                    'printed inside the stored vintages. ' + _threshold_note(thr, version, q3_sids)
+                    + ' Full pre-declared list, moved or not.'))
     res.table('Daily macro series: mean of observations dated in the week vs the previous week',
               ['series', f'week mean ({w_lo} < d <= {w_hi}, known at T_c)', 'n (week, T_c)',
                f'previous-week mean ({p_lo} < d <= {p_hi}, known at T_p)', 'n (previous week, T_p)',
@@ -815,8 +1007,8 @@ def _q3(ctx, res, data, thr, version):
               mean_rows, question=3,
               note=('Daily values are published with a lag of one day or more, so the latest dates of each week are '
                     'usually not known at its cutoff: compare the n columns. The revision noise of a mean is bounded '
-                    'by the largest revision of a single daily value.'))
-    _blocks(ctx, res, moves, 'inflation')
+                    'by the largest revision of a single daily value. No materiality is assessed on these means.'))
+    _blocks(ctx, res, moves, 'inflation', thr)
 
 
 # ---------------------------------------------------------------- Q4
@@ -828,7 +1020,7 @@ def _q4(ctx, res, data, thr, version):
     if _ok(d):
         wm = _weekly_means(ctx, d)
         noise = _noise(d, lambda get, obs: _qty(spec, get, obs))
-        out = _weekly_mean_record(ctx, res, d, 4, wm, noise, thr.get('USEPUINDXD'))
+        out = _weekly_mean_record(ctx, res, d, 4, wm, noise, thr.get('USEPUINDXD'), version)
         rows.append(['USEPUINDXD', spec['label'], 'mean of daily values dated in the week',
                      None if wm['mean_p'] is None else f"{_fmt(wm['mean_p'], 2)} (n {len(wm['prev_p'])}, "
                                                        f"{wm['pw'][0]} < d <= {wm['pw'][1]})",
@@ -836,38 +1028,38 @@ def _q4(ctx, res, data, thr, version):
                                                        f"{wm['w'][0]} < d <= {wm['w'][1]})",
                      _num(wm['diff']), _new_text(spec, d), _num(noise['max']),
                      None if not out or out['beyond'] is None else ('yes' if out['beyond'] else 'no'),
-                     out['record']['level'] if out else UNAVAILABLE,
+                     _thr_cell(thr, 'USEPUINDXD'), out['record']['level'] if out else UNAVAILABLE,
                      f"previous week as known at T_c: {_fmt(wm['mean_pc'], 2)} (n {len(wm['prev_c'])}); "
                      f"revisions vs T_p vintage: {_revision_text(spec, _revisions(d))}"])
     else:
         res.add(unavailable('overall', 4, f'USEPUINDXD ({spec["label"]})', _missing_reason(d)))
         rows.append(['USEPUINDXD', spec['label'], 'mean of daily values dated in the week'] + [None] * 6
-                    + [NOT_EVALUATED if d is None else UNAVAILABLE, _missing_reason(d)])
+                    + [_thr_cell(thr, 'USEPUINDXD'), NOT_EVALUATED if d is None else UNAVAILABLE, _missing_reason(d)])
     d = data.get('GEPUCURRENT')
     spec = SERIES['GEPUCURRENT']
     if _ok(d):
-        a = _asknown(ctx, res, d, 4, thr.get('GEPUCURRENT'))
+        a = _asknown(ctx, res, d, 4, thr.get('GEPUCURRENT'), version)
         rows.append(['GEPUCURRENT', spec['label'], 'latest monthly value',
                      None if a['qp'] is None else f"{_fmt(a['qp'], 2)} ({_period(spec, a['dp'])})",
                      None if a['qc'] is None else f"{_fmt(a['qc'], 2)} ({_period(spec, a['dc'])})",
                      _num(a['delta']), _new_text(spec, d), _num(a['noise']['max']),
                      None if a['beyond'] is None else ('yes' if a['beyond'] else 'no'),
-                     a['record']['level'] if a.get('record') else UNAVAILABLE,
+                     _thr_cell(thr, 'GEPUCURRENT'), a['record']['level'] if a.get('record') else UNAVAILABLE,
                      f"revisions vs T_p vintage: {_revision_text(spec, a['revs'])}"])
     else:
         res.add(unavailable('overall', 4, f'GEPUCURRENT ({spec["label"]})', _missing_reason(d)))
         rows.append(['GEPUCURRENT', spec['label'], 'latest monthly value'] + [None] * 6
-                    + [NOT_EVALUATED if d is None else UNAVAILABLE, _missing_reason(d)])
+                    + [_thr_cell(thr, 'GEPUCURRENT'), NOT_EVALUATED if d is None else UNAVAILABLE, _missing_reason(d)])
     res.table('Policy-uncertainty indices (FRED; newspaper-based, NOT records of geopolitical events)',
               ['series', 'description', 'measure', 'as known at T_p', 'as known at T_c', 'difference',
                'new release in window (first publication)', 'largest revision in stored vintages',
-               'beyond revision noise', 'level', 'note'],
+               'beyond revision noise', 'materiality threshold (macro_abs_change)', 'level', 'note'],
               rows, question=4,
               note=('USEPUINDXD and GEPUCURRENT count newspaper articles about economic-policy uncertainty; they do not '
                     'identify any geopolitical event and are heavily revised (USEPUINDXD: weekly means only, never a '
                     'single day). Geopolitical event sources (GPR, GDELT, official primary documents) are DATA '
                     'UNAVAILABLE in this environment; news stories are handled by the news section (aggregator, '
-                    f'UNCERTAIN at most). Thresholds {version}.'))
+                    'UNCERTAIN at most). ' + _threshold_note(thr, version, ['USEPUINDXD', 'GEPUCURRENT'])))
 
 
 # ---------------------------------------------------------------- Q5
@@ -882,7 +1074,7 @@ def _q5(ctx, res, data, thr, version):
         if not _ok(d):
             reason = _missing_reason(d)
             res.add(unavailable('overall', 5, f'{sid} ({spec["label"]})', reason))
-            rows.append([sid, spec['label'], spec['unit']] + [None] * 10
+            rows.append([sid, spec['label'], spec['unit']] + [None] * 10 + [_thr_cell(thr, sid), None, None]
                         + [NOT_EVALUATED if d is None else UNAVAILABLE, reason])
             if sid in ('ICSA', 'CCSA'):
                 claims.append([sid] + [None] * 4 + [reason])
@@ -890,12 +1082,13 @@ def _q5(ctx, res, data, thr, version):
                 moves.append({'sid': sid, 'status': 'not evaluated' if d is None else 'unavailable'})
             continue
         t = thr.get(sid)
-        a = _release(ctx, res, d, 5, t)
+        a = _release(ctx, res, d, 5, t, version)
         dc, vc = d['latest_c'][0], d['latest_c'][1]
         rows.append([sid, spec['label'], spec['unit'], 'yes' if d['new'] else 'no',
                      a['m'] and _period(spec, a['m']), _num(a['first_val']), _when(a['first_pub']) if a['m'] else None,
-                     _num(a['prior_val']), _num(a['chg']), _num(a['noise']['max']),
-                     None if a['beyond'] is None else ('yes' if a['beyond'] else 'no'),
+                     a['m'] and _period(spec, a['prior']), _num(a['prior_val']), _num(a['chg']),
+                     _num(a['noise']['max']), _num(a['level_noise']['max']),
+                     None if a['beyond'] is None else ('yes' if a['beyond'] else 'no'), _thr_cell(thr, sid),
                      _revision_text(spec, a['revs']),
                      f"{_val(spec, vc)} ({_period(spec, dc)}; first published {_when(d['first'].get(dc))})",
                      a['record']['level'], spec['note']])
@@ -904,28 +1097,33 @@ def _q5(ctx, res, data, thr, version):
         if spec['block']:
             moves.append({'sid': sid, 'status': 'ok', 'new': bool(d['new']), 'change': a['chg'],
                           'beyond': a['beyond'], 'items': a['items'],
-                          'below_threshold': t is not None and a['chg'] is not None and abs(a['chg']) < t,
+                          'below_threshold': t is not None and a['chg'] is not None and _below(a['chg'], t),
                           'unit': spec['diff_unit'], 'spec': spec})
+    q5_sids = [s for s, sp in SERIES.items() if sp['q'] == 5]
     res.table('Socio-economic indicators: releases in the window (FRED vintages)',
               ['series', 'description', 'unit', 'new release in window', 'period', 'first print',
-               'first published', 'prior period (T_c vintage)', 'change vs prior period (T_c vintage)',
-               'largest revision of that change in stored vintages', 'beyond revision noise',
-               'revisions vs T_p vintage', 'latest as known at T_c', 'level', 'note'],
+               'first published', 'prior period', 'prior period (T_c vintage)', 'change vs prior period (T_c vintage)',
+               'largest revision of that change in stored vintages', 'largest revision of the level in stored vintages',
+               'beyond revision noise', 'materiality threshold (macro_abs_change)', 'revisions vs T_p vintage',
+               'latest as known at T_c', 'level', 'note'],
               rows, question=5,
               note=(f'FRED (rank 1). Window (T_p, T_c] = ({tm.previous_cutoff}, {tm.cutoff}]. A release date is the '
                     'FRED vintage date; the reference period is not the release date. Changes: absolute for levels, '
-                    'percent for RSAFS, HOUST and CES0500000003; PAYEMS change = monthly payroll change. "Beyond '
-                    'revision noise" only when |change| > the largest revision of that change between first print '
-                    'and the T_c vintage over the stored vintages. No pre-declared macro materiality threshold in '
-                    f'thresholds {version}. Official sampling errors are not available.'))
+                    'percent for RSAFS, HOUST and CES0500000003; PAYEMS change = monthly payroll change. Prior period: '
+                    f'previous month; weekly series: the latest observation dated {WEEKLY_PRIOR_DAYS[0]} to '
+                    f'{WEEKLY_PRIOR_DAYS[1]} days earlier (holiday weeks move a release by a day). "Beyond revision '
+                    'noise" only when |change| > both the largest revision of that change and the largest revision of '
+                    'the level (percent-change series: in % of the first print) between first print and the T_c '
+                    'vintage over the stored vintages. ' + _threshold_note(thr, version, q5_sids)
+                    + ' Official sampling errors are not available.'))
     res.table('Weekly unemployment claims: 4-week averages (each from one vintage)',
               ['series', 'weeks (T_c vintage)', '4-week average, T_c vintage', 'weeks (T_p vintage)',
                '4-week average, T_p vintage', 'note'],
               claims, question=5,
               note='Average of the 4 latest consecutive weekly observations of one vintage; N/A when a week is missing.')
     _real_earnings(ctx, res, data)
-    _blocks(ctx, res, moves, 'labour')
-    _blocks(ctx, res, moves, 'consumer')
+    _blocks(ctx, res, moves, 'labour', thr)
+    _blocks(ctx, res, moves, 'consumer', thr)
 
 
 def _four_week(snap):
@@ -988,7 +1186,7 @@ def _real_earnings(ctx, res, data):
 
 # ---------------------------------------------------------------- direction by block (interpretation)
 
-def _blocks(ctx, res, moves, block):
+def _blocks(ctx, res, moves, block, thr):
     info = BLOCKS[block]
     q = info['q']
     rows, counted = [], []
@@ -997,7 +1195,8 @@ def _blocks(ctx, res, moves, block):
         if spec['block'] != block:
             continue
         if mv['status'] != 'ok':
-            rows.append([info['name'], mv['sid'], None, None, None, None, f"no ({mv['status']})"])
+            rows.append([info['name'], mv['sid'], None, None, None, _thr_cell(thr, mv['sid']), None,
+                         f"no ({mv['status']})"])
             continue
         direction = None
         if mv['change'] is not None and abs(mv['change']) > EPS:
@@ -1009,17 +1208,20 @@ def _blocks(ctx, res, moves, block):
                else 'no: not beyond revision noise' if not mv['beyond'] else 'no: unchanged')
         rows.append([info['name'], mv['sid'], 'yes' if mv['new'] else 'no',
                      None if mv['change'] is None else _diff(spec, mv['change']),
-                     None if mv['beyond'] is None else ('yes' if mv['beyond'] else 'no'), direction, why])
+                     None if mv['beyond'] is None else ('yes' if mv['beyond'] else 'no'), _thr_cell(thr, mv['sid']),
+                     direction, why])
         if ok:
             counted.append((mv, direction))
     res.table(f'{info["name"]}: direction of changes beyond revision noise (sign convention {DIRECTION_CONVENTION})',
               ['block', 'series', 'new release in window', 'change', 'beyond revision noise',
-               'direction under the convention', 'counted'], rows, question=q,
+               'materiality threshold (macro_abs_change)', 'direction under the convention', 'counted'], rows,
+              question=q,
               note=('Pre-declared sign convention: ' + ', '.join(
                   f"{sid} {'+' if s['sign'] > 0 else '-'}" for sid, s in SERIES.items() if s['block'] == block)
                     + f" (+ = an increase is '{info['up']}'). A directional reading needs >= 2 indicators with a new "
-                      'release in the window and a change beyond revision noise, all pointing the same way; it is '
-                      'always an interpretation (UNCERTAIN by rule).'))
+                      'release in the window and a change beyond revision noise (and not below its pre-declared '
+                      'materiality threshold when one exists), all pointing the same way; it is always an '
+                      'interpretation (UNCERTAIN by rule).'))
     directions = {d for _, d in counted}
     if len(counted) >= 2 and len(directions) == 1:
         word = directions.pop()
@@ -1047,8 +1249,10 @@ def build(ctx, series=None):
         raise ValueError(f'series not pre-declared in the macro section: {", ".join(unknown)}')
     data = {sid: (_load(ctx, sid) if sid in selected else None) for sid in SERIES}
     thresholds, version = _thresholds(ctx)
-    macro_thr = {k: float(v) for k, v in (thresholds.get('macro_abs_change') or {}).items()
-                 if isinstance(v, (int, float))}
+    declared = thresholds.get('macro_abs_change') or {}
+    macro_thr = {k: float(v) for k, v in declared.items()
+                 if k in SERIES and isinstance(v, (int, float)) and not isinstance(v, bool)}
+    ignored = sorted(k for k in declared if k not in macro_thr)
     _q3(ctx, res, data, macro_thr, version)
     _q4(ctx, res, data, macro_thr, version)
     _q5(ctx, res, data, macro_thr, version)
@@ -1058,10 +1262,26 @@ def build(ctx, series=None):
     res.notes.append(f'Window (T_p, T_c] = ({tm.previous_cutoff}, {tm.cutoff}]; week observations {w_lo} < d <= {w_hi}, '
                      f'previous week {p_lo} < d <= {p_hi}. Values as known at T are FRED vintages (publication = end '
                      'of the vintage date, New York, conservative); FRED gives dates only, no time of day.')
+    without = [s for s in SERIES if s not in macro_thr and s not in TARGET]
     res.notes.append(f'Thresholds {version}: ' + (
-        'macro materiality thresholds applied from weekly.thresholds.macro_abs_change.' if macro_thr else
+        'macro materiality thresholds applied from weekly.thresholds.macro_abs_change ('
+        + ', '.join(f'{s} {_fmt(v, 4)}' for s, v in macro_thr.items()) + '; heuristic, not validated): a difference '
+        'compared with its threshold carries HEURISTIC_THRESHOLD, and BELOW_THRESHOLD when |difference| < threshold - '
+        f'{THRESHOLD_REL_TOL:g} x max(1, threshold) (tolerance for float rounding). Series without a threshold ('
+        + ', '.join(without) + '): differences are reported as facts, materiality not assessed (never treated as '
+        'a threshold of 0).' if macro_thr else
         'no pre-declared macro materiality threshold (weekly.thresholds has no macro_abs_change): differences are '
-        'reported as facts and tested only against revision noise; no "material change" is claimed.'))
+        'reported as facts and tested only against revision noise; no "material change" is claimed.')
+        + (f' Ignored macro_abs_change keys (not a pre-declared series or not a number): {", ".join(ignored)}.'
+           if ignored else ''))
+    for sid in SERIES:
+        d = data[sid]
+        if d and d.get('impossible'):
+            obs, _, avail = d['impossible'][-1]
+            res.notes.append(f"{sid}: {len(d['impossible'])} stored FRED version(s) available at T_c carry a vintage "
+                             f'date earlier than their own observation date (latest: {obs}, published {_when(avail)}). '
+                             'An end-of-day value cannot be public before the end of the day it describes, so these '
+                             'timestamps are not credible and the versions are not used.')
     res.notes.append('USEPUINDXD and GEPUCURRENT measure economic-policy uncertainty from newspaper coverage; they '
                      'are not records of geopolitical events. Geopolitical events have no rank-1 source here.')
     res.notes.append('Macro and socio-economic data are economy-wide: no company-level attribution is made; any link '

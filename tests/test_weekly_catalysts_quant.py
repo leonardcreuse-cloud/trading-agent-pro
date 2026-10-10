@@ -6,7 +6,9 @@ never reach a report.
 """
 
 import json
+import os
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -35,9 +37,9 @@ CAUSAL = ('because', 'due to', 'drove', 'driven by', 'on the back of', 'caused')
 # ---------------------------------------------------------------- fakes
 
 class FakeDB:
-    def __init__(self, events=None, stored_urls=()):
+    def __init__(self, events=None, docs=None):
         self._events = events or {}
-        self.stored_urls = set(stored_urls)
+        self.docs = dict(docs or {})                 # stored raw documents: url -> payload
 
     def events(self, entity, metric, published_from=None, published_to=None, source=None):
         lo, hi = to_utc_iso(published_from), to_utc_iso(published_to)
@@ -46,7 +48,10 @@ class FakeDB:
         return sorted(rows, key=lambda r: r['available_at'])
 
     def latest_fetch(self, source, endpoint, since=None):
-        return {'fetch_id': 99, 'retrieved_at': RETRIEVED} if endpoint in self.stored_urls else None
+        return {'fetch_id': endpoint, 'retrieved_at': RETRIEVED} if endpoint in self.docs else None
+
+    def read_raw(self, fetch_id):
+        return self.docs[fetch_id]
 
 
 class FakeSEC:
@@ -85,8 +90,8 @@ class FakeCtx:
         return self._filings.get(ticker) or {'status': UNAVAILABLE, 'filings': [], 'fetch': None,
                                              'reason': 'CIK not found for test'}
 
-    def freshness(self, as_of, cadence):
-        return freshness(as_of, cadence, now=datetime.fromisoformat(self.tm.cutoff))
+    def freshness(self, as_of, cadence, at=None):
+        return freshness(as_of, cadence, now=datetime.fromisoformat(at or self.tm.cutoff))
 
 
 def price_frame(seed=1, after=1e6):
@@ -111,9 +116,12 @@ def filing(form, filing_date, report_date=None, accession=None, items=(), publis
             'published_at_basis': 'test acceptance time', 'acceptance_utc': None}
 
 
-def feed(rows, retrieved=RETRIEVED):
-    return {'status': 'OK', 'filings': rows, 'fetch': {'fetch_id': 5, 'retrieved_at': retrieved}, 'reason': None,
-            'retrieved_after_cutoff': retrieved > T_C}
+def feed(rows, retrieved=RETRIEVED, truncated=None):
+    out = {'status': 'OK', 'filings': rows, 'fetch': {'fetch_id': 5, 'retrieved_at': retrieved}, 'reason': None,
+           'retrieved_after_cutoff': retrieved > T_C}
+    if truncated is not None:                    # ctx.filings: whole history listed (False) or not (True)
+        out['truncated'] = truncated
+    return out
 
 
 PERIODIC = [filing('10-K', '2025-03-10', '2025-01-31'), filing('10-Q', '2025-06-03', '2025-04-30'),
@@ -123,14 +131,34 @@ PERIODIC = [filing('10-K', '2025-03-10', '2025-01-31'), filing('10-Q', '2025-06-
             filing('10-Q', '2026-08-27', '2026-07-31')]
 
 
+F4_DOC = 'xslF345X05/form4.xml'
+# (day, accession, code, owner) of the synthetic Form 4 filings of AAA; f4-late is accepted after T_c
+F4 = [('2026-09-02', 'f4-a', 'S', 'Alice'), ('2026-09-25', 'f4-b', 'S', 'Bob'),
+      ('2026-10-02', 'f4-c', 'P', 'Carol'), ('2026-10-08', 'f4-late', 'P', 'Dan')]
+
+
 def form4(day, accession):
-    return filing('4', day, day, accession=accession, doc='xslF345X05/form4.xml')
+    return filing('4', day, day, accession=accession, doc=F4_DOC)
 
 
-def txn_event(day, code, owner, published, plan=False):
+def f4_url(accession):
+    return form4_xml_url(CIK, accession, F4_DOC)
+
+
+def form4_xml(txns):
+    """Minimal Form 4 XML with one non-derivative transaction per (date, code)."""
+    body = ''.join(f'<nonDerivativeTransaction><transactionDate><value>{d}</value></transactionDate>'
+                   f'<transactionCoding><transactionCode>{c}</transactionCode></transactionCoding>'
+                   '<transactionAmounts><transactionShares><value>10</value></transactionShares>'
+                   '<transactionPricePerShare><value>100</value></transactionPricePerShare>'
+                   '</transactionAmounts></nonDerivativeTransaction>' for d, c in txns)
+    return f'<ownershipDocument><nonDerivativeTable>{body}</nonDerivativeTable></ownershipDocument>'
+
+
+def txn_event(day, code, owner, published, plan=False, accession=None):
     return {'as_of_date': day, 'available_at': published,
-            'value_text': json.dumps({'accession': f'acc-{day}-{owner}', 'code': code, 'owners': [owner],
-                                      'rule_10b5_1': plan, 'value_usd': 1000.0, 'date': day})}
+            'value_text': json.dumps({'accession': accession or f'acc-{day}-{owner}', 'code': code, 'index': 0,
+                                      'owners': [owner], 'rule_10b5_1': plan, 'value_usd': 1000.0, 'date': day})}
 
 
 def fund_version(rev, growth, de, pub):
@@ -138,25 +166,30 @@ def fund_version(rev, growth, de, pub):
             'balance_sheet_date': '2026-07-31', 'revenue_published_at': pub, 'reason': None}
 
 
-def quant_ctx(news_entry=None, extra_filings=(), missing_doc=False, versions=None, prices=True, **kw):
-    """One ticker AAA with all inputs available; a buy at T_c window only, sales in both windows."""
-    f4 = [form4('2026-09-02', 'f4-a'), form4('2026-09-25', 'f4-b'), form4('2026-10-02', 'f4-c'),
-          form4('2026-10-08', 'f4-late')]                          # f4-late: accepted after T_c
-    rows = PERIODIC + f4 + list(extra_filings)
-    stored = {form4_xml_url(CIK, f['accession_number'], f['primary_document']) for f in f4}
+def quant_ctx(news_entry=None, extra_filings=(), missing_doc=False, versions=None, prices=True, drop_events=(),
+              docs=None, base_filings=None, feed_kw=None, **kw):
+    """
+    One ticker AAA with all inputs available; a buy at T_c window only, sales in both windows.
+    prices: True (full frame), False (none) or a frame; drop_events: accessions whose stored transaction rows
+    are removed (document still stored); docs: {accession: raw} overriding stored documents; base_filings:
+    feed rows replacing PERIODIC; feed_kw: feed() options (retrieved, truncated).
+    """
+    f4 = [form4(day, acc) for day, acc, _, _ in F4]
+    rows = (PERIODIC if base_filings is None else list(base_filings)) + f4 + list(extra_filings)
+    stored = {f4_url(acc): form4_xml([(day, code)]) for day, acc, code, _ in F4}
+    stored.update({f4_url(acc): raw for acc, raw in (docs or {}).items()})
     if missing_doc:
-        stored.discard(form4_xml_url(CIK, 'f4-c', 'xslF345X05/form4.xml'))
-    ev = [txn_event('2026-09-02', 'S', 'Alice', '2026-09-02T21:00:00+00:00'),
-          txn_event('2026-09-25', 'S', 'Bob', '2026-09-25T21:00:00+00:00'),
-          txn_event('2026-10-02', 'P', 'Carol', '2026-10-02T21:00:00+00:00'),
-          txn_event('2026-10-08', 'P', 'Dan', '2026-10-08T21:00:00+00:00')]   # after T_c: never counted
-    db = FakeDB(events={('AAA', FORM4_METRIC): ev}, stored_urls=stored)
+        stored.pop(f4_url('f4-c'))
+    ev = [txn_event(day, code, owner, f'{day}T21:00:00+00:00', accession=acc)   # f4-late after T_c: never counted
+          for day, acc, code, owner in F4 if acc not in drop_events]
+    db = FakeDB(events={('AAA', FORM4_METRIC): ev}, docs=stored)
     sec = FakeSEC(db, versions if versions is not None else {'AAA': [
         ('2026-06-02T21:00:00+00:00', fund_version(9e8, 12.0, 0.8, '2026-06-02T21:00:00+00:00')),
         ('2026-10-01T21:00:00+00:00', fund_version(1.2e9, 35.0, 0.4, '2026-10-01T21:00:00+00:00')),   # in the week
         ('2026-10-08T21:00:00+00:00', fund_version(1e8, -50.0, 5.0, '2026-10-08T21:00:00+00:00'))]})
-    ctx = FakeCtx(prices={'AAA': ok_prices(price_frame())} if prices else {}, filings={'AAA': feed(rows)},
-                  sec=sec, db=db, **kw)
+    frame = prices if isinstance(prices, pd.DataFrame) else price_frame() if prices else None
+    ctx = FakeCtx(prices={'AAA': ok_prices(frame)} if frame is not None else {},
+                  filings={'AAA': feed(rows, **(feed_kw or {}))}, sec=sec, db=db, **kw)
     return ctx
 
 
@@ -342,6 +375,128 @@ def test_quant_look_ahead_input_is_an_audit_failure(tmp_path):
         run_quant(quant_ctx(versions=bad), tmp_path)
 
 
+def comps_of(out):
+    return rows_by_first(table(out, 'AAA — components and contributions (renormalized weights)'))
+
+
+def universe_q10(out):
+    return next(c for c in out['conclusions'] if c['scope'] == 'overall' and c['question'] == 10)
+
+
+def ticker_ex_news(out):
+    return next(c for c in out['conclusions'] if c['scope'] == 'AAA' and c['kind'] == 'system_output'
+                and 'ex-news variant' in c['statement'])
+
+
+def test_quant_universe_conclusion_is_capped_by_its_premises(tmp_path):
+    # all inputs complete and fresh, run fresh: the universe summary may be STRONG, and it cites its evidence
+    out = run_quant(quant_ctx(), tmp_path)
+    u = universe_q10(out)
+    assert u['level'] == STRONG and u['reason_codes'] == [] and u['evidence']
+    assert {e['source'] for e in u['evidence']} == {'yfinance', 'SEC EDGAR', 'this system'}
+    # (a) prices end 2026-09-28: the T_c technical input is stale -> per ticker and universe UNCERTAIN
+    frame = price_frame()
+    frame = frame[frame.index <= '2026-09-28']
+    out = run_quant(quant_ctx(prices=frame), tmp_path)
+    assert ticker_ex_news(out)['level'] == UNCERTAIN and 'STALE_AT_CUTOFF' in ticker_ex_news(out)['reason_codes']
+    u = universe_q10(out)
+    assert u['level'] == UNCERTAIN and 'STALE_AT_CUTOFF' in u['reason_codes']
+    # (b) fundamentals missing: ex-news 2/3 (a label exists, no INSUFFICIENT DATA) -> PARTIAL_COVERAGE
+    out = run_quant(quant_ctx(versions={}), tmp_path)
+    assert ticker_ex_news(out)['level'] == UNCERTAIN
+    u = universe_q10(out)
+    assert '0 INSUFFICIENT DATA' in u['statement'] and 'ex-news components missing at T_c for AAA' in u['statement']
+    assert u['level'] == UNCERTAIN and 'PARTIAL_COVERAGE' in u['reason_codes']
+    # (c) walk-forward run stale at T_c: the run it cites carries STALE_AT_CUTOFF
+    out = run_quant(quant_ctx(), tmp_path, wf_at='2026-09-20T09:00:00+00:00')
+    u = universe_q10(out)
+    assert u['level'] == UNCERTAIN and 'STALE_AT_CUTOFF' in u['reason_codes']
+    assert 'computed 2026-09-20T09:00:00+00:00' in u['statement'] and 'stale at the cutoff' in u['statement']
+
+
+def test_quant_borderline_band_from_config_with_stated_tolerance(tmp_path):
+    assert quant.is_borderline(2.0 + 1e-12, 2.0) is True                       # float noise at the edge
+    assert quant.is_borderline(-2.01, 2.0) is False and quant.is_borderline(0.5, None) is None
+    weekly = dict(WEEKLY, thresholds={'signal_borderline_points': 2.0})
+    out = run_quant(quant_ctx(weekly=weekly), tmp_path)
+    t = table(out, 'AAA — heuristic signal at T_p and T_c (ex-news variant first)')
+    ex = dict(zip(t['columns'], t['rows'][0]))
+    flag = ex['borderline (+/- 2.0)']
+    assert flag == ('yes' if abs(ex['distance to it (points)']) <= 2.0 else 'no')
+    assert 'tolerance 1e-09' in table(out, UNIVERSE_TABLE)['note']
+
+
+def test_quant_no_weights_or_contributions_without_a_combined_score(tmp_path):
+    out = run_quant(quant_ctx(prices=False, versions={}), tmp_path)        # insider only: INSUFFICIENT DATA
+    ins = comps_of(out)['insider']
+    assert ins['score T_c'] == 60 and ins['score T_p'] == 45                  # the component score itself is shown
+    for col in ('ex-news weight T_p', 'ex-news weight T_c', 'ex-news contribution T_p', 'ex-news contribution T_c',
+                'live weight T_c', 'live contribution T_c'):
+        assert ins[col] is None, col
+    sig = ScoringSignalFixed()
+    c = quant.combine(sig, {'technical': {'score': None}, 'fundamentals': {'score': None},
+                            'insider': {'score': 60.0}}, quant.EX_NEWS)
+    assert c['score'] is None and c['weights'] == {} and c['contrib'] == {} and c['raw'] is None
+
+
+def test_quant_insider_requires_ingested_transactions_of_stored_documents(tmp_path):
+    # f4-c document stored but its transaction never ingested (e.g. a prefetch): not "no transaction"
+    out = run_quant(quant_ctx(drop_events=('f4-c',)), tmp_path)
+    ins = comps_of(out)['insider']
+    assert ins['score T_c'] is None                                          # not 45 (sales only), not 50
+    assert 'do not match the stored form4:transaction rows' in ins['T_c inputs']
+    assert 'f4-c: 0 stored vs 1 in the document' in ins['T_c inputs']
+    assert ins['score T_p'] == 45                                             # f4-c is outside the T_p window
+    # a stored document that cannot be parsed
+    out = run_quant(quant_ctx(docs={'f4-c': '<ownershipDocument><broken'}), tmp_path)
+    ins = comps_of(out)['insider']
+    assert ins['score T_c'] is None and 'cannot be re-read or parsed (f4-c (ParseError))' in ins['T_c inputs']
+    # a document with no dated non-derivative transaction and no stored row is consistent: scored
+    out = run_quant(quant_ctx(drop_events=('f4-c',), docs={'f4-c': form4_xml([])}), tmp_path)
+    ins = comps_of(out)['insider']
+    assert ins['score T_c'] == 45 and '2 dated non-derivative transactions ingested' in ins['T_c inputs']
+    # the default fixture: every stored document matches its rows
+    assert comps_of(run_quant(quant_ctx(), tmp_path))['insider']['score T_c'] == 60
+
+
+def test_quant_insider_feed_gates(tmp_path):
+    # (a) feed retrieved before T_c: Form 4 accepted after that retrieval would be missing -> unavailable at T_c
+    out = run_quant(quant_ctx(feed_kw={'retrieved': '2026-10-06T00:00:00+00:00'}), tmp_path)
+    ins = comps_of(out)['insider']
+    assert ins['score T_c'] is None
+    assert 'retrieved at 2026-10-06T00:00:00+00:00, before 2026-10-07T05:00:00+00:00' in ins['T_c inputs']
+    assert ins['score T_p'] == 45                                             # retrieved after T_p
+    # (b) the recent block does not reach back to the window start -> unavailable at both cutoffs
+    young = [filing('10-Q', '2026-08-27', '2026-07-31')]
+    ins = comps_of(run_quant(quant_ctx(base_filings=young), tmp_path))['insider']
+    assert ins['score T_c'] is None and ins['score T_p'] is None
+    assert 'may not be fully listed' in ins['T_c inputs'] and 'may not be fully listed' in ins['T_p inputs']
+    ins = comps_of(run_quant(quant_ctx(base_filings=young, feed_kw={'truncated': True}), tmp_path))['insider']
+    assert ins['score T_c'] is None
+    # ... unless ctx.filings says the feed is the whole filing history (not truncated)
+    ins = comps_of(run_quant(quant_ctx(base_filings=young, feed_kw={'truncated': False}), tmp_path))['insider']
+    assert (ins['score T_c'], ins['score T_p']) == (60, 45)
+
+
+def test_quant_fundamentals_publication_fallback_and_uncited_inputs(tmp_path):
+    versions = {'AAA': [('2026-10-01T21:00:00+00:00', fund_version(1.2e9, 35.0, 0.4, None))]}
+    out = run_quant(quant_ctx(versions=versions), tmp_path)
+    ev = [e for c in out['conclusions'] for e in c['evidence'] if e['source'] == 'SEC EDGAR'
+          and 'fundamentals score' in e['fact']]
+    assert ev and all(e['published_at'] == '2026-08-27T21:00:00+00:00' for e in ev)   # latest 10-Q known at T_c
+    assert all(e['published_at_basis'].startswith('acceptance time of the latest 10-Q / 10-K') for e in ev)
+    # no XBRL publication instant and no submissions feed: the score is computed but cited by nothing
+    ctx = quant_ctx(versions=versions)
+    ctx._filings = {}
+    out = run_quant(ctx, tmp_path)
+    assert 'publication instant of the inputs not established' in comps_of(out)['fundamentals']['T_c inputs']
+    ex = ticker_ex_news(out)
+    assert ex['level'] == UNCERTAIN and 'TIMESTAMP_AMBIGUOUS' in ex['reason_codes']
+    assert 'publication instant of the inputs not established for fundamentals' in ex['statement']
+    u = universe_q10(out)
+    assert 'TIMESTAMP_AMBIGUOUS' in u['reason_codes'] and u['level'] == UNCERTAIN
+
+
 # ---------------------------------------------------------------- quant (Q11)
 
 def test_validation_banner_strong_when_admissible_and_not_demonstrated(tmp_path):
@@ -356,7 +511,8 @@ def test_validation_banner_strong_when_admissible_and_not_demonstrated(tmp_path)
     assert 'research stage 1 (148 stocks' in b['statement'] and 'Stage 2 holdout results: DATA UNAVAILABLE' in b['statement']
     t = table(out, 'Walk-forward validation of the ex-news combined score (cross-sectional IC)')
     r5 = dict(zip(t['columns'], t['rows'][0]))
-    assert r5['horizon'] == '5d' and r5['significant after correction'] == 'no'
+    assert r5['horizon'] == '5d' and r5['criterion met (IC > 0 and p < required p)'] == 'no'
+    assert r5['p < required p'] == 'no'
     assert r5['required p (0.05 / k)'] == 0.025
     lo, hi = 0.0115 - 1.96 * 0.0115 / 0.79, 0.0115 + 1.96 * 0.0115 / 0.79
     assert r5['approx. 95% interval (IC +/- 1.96 IC/t)'] == f'[{lo:+.4f}, {hi:+.4f}]'
@@ -393,6 +549,84 @@ def test_validation_stale_run_is_uncertain(tmp_path):
     assert 'stale' in b['statement'].lower()
 
 
+def wf_rows(out):
+    t = table(out, 'Walk-forward validation of the ex-news combined score (cross-sectional IC)')
+    return {r[2]: dict(zip(t['columns'], r)) for r in t['rows']}
+
+
+def model_output(out):
+    return next(c for c in out['conclusions'] if c['scope'] == 'AAA' and c['kind'] == 'model_output')
+
+
+UNIVERSE_TABLE = 'Universe — heuristic signal at T_c (ex-news first)'
+MET = 'criterion met (IC > 0 and p < required p)'
+
+
+def test_validation_wording_stale_run_with_significant_ic(tmp_path):
+    out = run_quant(quant_ctx(), tmp_path, wf_at='2026-09-20T09:00:00+00:00', ic5=0.05, t5=3.5)
+    r5 = wf_rows(out)['5d']
+    assert r5['two-sided p'] == 0.0005 and r5['p < required p'] == 'yes' and r5[MET] == 'yes'
+    u = universe_q10(out)
+    assert 'not significant' not in u['statement'].split('20d')[0]           # 5d IS significant
+    assert '5d IC +0.0500, p 0.0005 < 0.0250: positive and significant after correction' in u['statement']
+    assert '20d IC +0.0198' in u['statement'] and 'not significant after correction' in u['statement']
+    assert 'the run is stale at the cutoff' in u['statement'] and 'validation status NOT DEMONSTRATED' in u['statement']
+    assert u['level'] == UNCERTAIN and 'STALE_AT_CUTOFF' in u['reason_codes']
+    note = table(out, UNIVERSE_TABLE)['note']
+    assert 'found no significant' not in note and 'positive and significant after correction' in note
+    m = model_output(out)
+    assert 'has no demonstrated predictive value' in m['statement'] and 'stale at the cutoff' in m['statement']
+    assert 'computed 2026-09-20T09:00:00+00:00' in m['statement']
+    assert {'MODEL_NOT_VALIDATED', 'HEURISTIC_THRESHOLD', 'STALE_AT_CUTOFF'} <= set(m['reason_codes'])
+    assert any(e['source'] == 'this system' for e in m['evidence'])           # the run it cites
+
+
+def test_validation_wording_significantly_negative_ic(tmp_path):
+    out = run_quant(quant_ctx(), tmp_path, ic5=-0.05, t5=-4.0)                 # fresh run, adverse 5d IC
+    r5 = wf_rows(out)['5d']
+    assert r5['two-sided p'] == 0.0001 and r5['p < required p'] == 'yes' and r5[MET] == 'no'
+    assert 'adverse' in r5['note']
+    u = universe_q10(out)
+    assert '5d IC -0.0500, p 0.0001 < 0.0250: significantly NEGATIVE after correction' in u['statement']
+    assert 'positive and significant' not in u['statement']
+    assert 'significantly NEGATIVE' in model_output(out)['statement']
+    assert 'significantly NEGATIVE' in table(out, UNIVERSE_TABLE)['note']
+
+
+def test_validation_wording_demonstrated(tmp_path):
+    out = run_quant(quant_ctx(), tmp_path, ic5=0.05, t5=3.5)                   # fresh run, positive significant
+    b = next(c for c in out['conclusions'] if c.get('banner'))
+    assert b['level'] == STRONG and 'showed statistically significant' in b['statement']
+    m = model_output(out)
+    assert 'has no demonstrated predictive value' not in m['statement']
+    assert 'rests only on past cross-sectional ranking skill' in m['statement']
+    assert 'not a per-company validation' in m['statement'] and 'not a validation of this label threshold' in m['statement']
+    assert 'validation status DEMONSTRATED' in m['statement'] and 'computed 2026-10-06T09:00:00+00:00' in m['statement']
+    assert m['level'] == UNCERTAIN and 'HEURISTIC_THRESHOLD' in m['reason_codes']
+    assert 'MODEL_NOT_VALIDATED' not in m['reason_codes']
+    u = universe_q10(out)
+    assert 'not significant' not in u['statement'].split('20d')[0] and 'validation status DEMONSTRATED' in u['statement']
+
+
+def test_validation_wording_not_significant_and_not_validated(tmp_path):
+    out = run_quant(quant_ctx(), tmp_path)                                    # defaults: t 0.79 / 0.8
+    u = universe_q10(out)
+    assert '5d IC +0.0115, p 0.4295 >= 0.0250: not significant after correction' in u['statement']
+    assert 'validation status NOT DEMONSTRATED' in u['statement'] and 'stale' not in u['statement']
+    # no admissible run: the status is stated as is, never "not significant"
+    out = run_quant(quant_ctx(), tmp_path, wf_at=None)
+    for s in (universe_q10(out)['statement'], model_output(out)['statement'], table(out, UNIVERSE_TABLE)['note']):
+        assert 'no walk-forward validation run is admissible at the cutoff' in s and 'NOT VALIDATED' in s
+        assert 'significant' not in s
+    # an admissible run without any tested horizon
+    payload = dict(wf_payload('2026-10-06T09:00:00+00:00'), metrics={})
+    wf = write_json(tmp_path, 'wf_empty.json', payload)
+    out = quant.build(quant_ctx(), analysis_path=tmp_path / 'none.json', walk_forward_path=wf,
+                      research_paths={1: tmp_path / 'n1.json', 2: tmp_path / 'n2.json'}).as_dict()
+    s = universe_q10(out)['statement']
+    assert 'reports no tested horizon: validation status NOT VALIDATED' in s and 'significant' not in s
+
+
 # ---------------------------------------------------------------- catalysts (Q9)
 
 def fred_payload(dates):
@@ -416,7 +650,21 @@ class FredHTTP:
         return FakeResponse(fred_payload(self.calendars[params['release_id']]))
 
 
+def isolated_database(path=None):
+    """
+    A Database only inside the test isolation (tests/conftest.py sets TRADING_AGENT_DATA_DIR per test):
+    importing these helpers elsewhere must never write synthetic fetches into the project database.
+    """
+    from src.common import PROJECT_ROOT, db_path
+    real = (PROJECT_ROOT / 'data').resolve()
+    target = Path(path or db_path()).resolve()
+    if not os.environ.get('TRADING_AGENT_DATA_DIR') or target.is_relative_to(real):
+        raise RuntimeError(f'synthetic test data must not be written to {target}: run under tests/conftest.py')
+    return Database(path=path)
+
+
 def store_calendar(db, release_id, start, dates, completed_at):
+    isolated_database(db.db_path)                                              # refuses the project database
     endpoint = catalysts.calendar_endpoint(release_id, start)
     fetch = db.record_fetch('FRED', endpoint, params={'release_id': release_id}, requested_at=completed_at,
                             status='OK', raw=fred_payload(dates), n_records=len(dates))
@@ -427,7 +675,7 @@ def store_calendar(db, release_id, start, dates, completed_at):
 
 
 def cat_ctx(filings=None, db=None):
-    db = db or Database()
+    db = db or isolated_database()
     return FakeCtx(db=db, filings={'AAA': feed(filings if filings is not None else PERIODIC)})
 
 
@@ -446,7 +694,7 @@ def macro_rows(out):
 
 def test_catalysts_calendar_retrieved_after_cutoff_is_logged_but_not_admissible(monkeypatch):
     monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
-    db = Database()
+    db = isolated_database()
     http = FredHTTP()
     out = run_cat(cat_ctx(db=db), http)
     assert out['name'] == 'catalysts' and out['questions'] == [9]
@@ -456,6 +704,8 @@ def test_catalysts_calendar_retrieved_after_cutoff_is_logged_but_not_admissible(
     with db.connect() as conn:
         rows = [dict(r) for r in conn.execute("SELECT * FROM source_fetches WHERE source='FRED'")]
     assert len(rows) == 7 and all(r['status'] == 'OK' and r['raw_path'] for r in rows)
+    # the database timestamps the calls (the section never records G or a clock reading of its own)
+    assert all(r['requested_at'] == r['completed_at'] != GENERATED for r in rows)
     assert all('testkey-abcdef123' not in json.dumps(r) for r in rows)        # key never stored
     assert 'testkey-abcdef123' not in json.dumps(out)
     m = macro_rows(out)
@@ -478,7 +728,7 @@ def test_catalysts_calendar_retrieved_after_cutoff_is_logged_but_not_admissible(
 
 def test_catalysts_scheduled_from_calendar_stored_before_cutoff(monkeypatch):
     monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
-    db = Database()
+    db = isolated_database()
     pit = dict(CALENDARS)
     pit[9] = ['2026-11-17']                                                    # retail 10-15 added after T_c
     for rid, dates in pit.items():
@@ -510,9 +760,52 @@ def test_catalysts_scheduled_from_calendar_stored_before_cutoff(monkeypatch):
         assert not any(w in s.lower() for w in CAUSAL), s
 
 
+def test_catalysts_empty_stored_schedule_is_unavailable_not_none(monkeypatch):
+    monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
+    db = isolated_database()
+    for rid, dates in CALENDARS.items():
+        store_calendar(db, rid, '2026-10-06', [] if rid == 50 else dates, '2026-10-06T12:00:00+00:00')
+    store_calendar(db, 50, '2026-09-29', ['2026-10-09'], '2026-09-29T12:00:00+00:00')   # T_p calendar of 50
+    calendars = {**CALENDARS, 50: []}
+    out = run_cat(cat_ctx(db=db), FredHTTP(calendars=calendars))
+    m = macro_rows(out)[50]
+    assert m['dates in horizon (as known at T_c)'] is None and m['status at T_c'] == UNAVAILABLE
+    assert m['next date after the horizon (as known at T_c)'] is None
+    assert m['change T_p -> T_c'] is None and m['change T_c -> G'] is None       # never "removed 2026-10-09"
+    assert m['dates in horizon as retrieved at G (after the cutoff, information only)'].startswith('empty schedule')
+    reasons = {u['item']: u['reason'] for u in out['unavailable']}
+    assert 'not read as "no release"' in reasons['Employment Situation (FRED release 50): next scheduled date']
+    assert not [c for c in out['conclusions'] if '(FRED release 50)' in c['statement']]
+    assert macro_rows(out)[10]['status at T_c'] == 'SCHEDULED'                     # the others are unaffected
+
+
+def test_catalysts_missing_tp_calendar_is_unavailable_per_release(monkeypatch):
+    monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
+    db = isolated_database()
+    for rid, dates in CALENDARS.items():
+        store_calendar(db, rid, '2026-10-06', dates, '2026-10-06T12:00:00+00:00')
+    store_calendar(db, 10, '2026-09-29', ['2026-10-13', '2026-11-10'], '2026-09-29T12:00:00+00:00')
+    out = run_cat(cat_ctx(db=db))
+    m = macro_rows(out)
+    assert m[10]['change T_p -> T_c'] == 'added 2026-10-14; removed 2026-10-13'
+    items = {u['item'] for u in out['unavailable']}
+    for rid, name, _ in catalysts.RELEASES:
+        key = f'{name} (FRED release {rid}): change of the schedule since T_p'
+        assert (key in items) == (rid != 10), key
+        assert rid == 10 or m[rid]['change T_p -> T_c'] is None
+    assert 'changes of the macro calendar since T_p (added / moved / removed)' not in items
+    # no T_p calendar at all: one overall item, no per-release duplicate
+    db2 = isolated_database(db.db_path + '.2')
+    for rid, dates in CALENDARS.items():
+        store_calendar(db2, rid, '2026-10-06', dates, '2026-10-06T12:00:00+00:00')
+    items = {u['item'] for u in run_cat(cat_ctx(db=db2))['unavailable']}
+    assert 'changes of the macro calendar since T_p (added / moved / removed)' in items
+    assert not [i for i in items if i.endswith('change of the schedule since T_p')]
+
+
 def test_catalysts_stale_stored_calendar_is_uncertain(monkeypatch):
     monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
-    db = Database()
+    db = isolated_database()
     store_calendar(db, 10, '2026-09-10', ['2026-10-14'], '2026-09-10T12:00:00+00:00')   # 27 days before T_c
     out = run_cat(cat_ctx(db=db))
     cpi = next(c for c in out['conclusions'] if c['statement'].startswith('Consumer Price Index'))
@@ -526,7 +819,7 @@ def test_catalysts_without_key_or_with_http_error(monkeypatch):
     m = macro_rows(out)
     assert 'FRED_API_KEY not set' in m[10]['fetch at G']
     monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
-    db = Database()
+    db = isolated_database()
     out = run_cat(cat_ctx(db=db), FredHTTP(status=400))
     assert 'FRED HTTP 400: Bad Request.' in macro_rows(out)[10]['fetch at G']
     with db.connect() as conn:
@@ -559,13 +852,25 @@ def test_catalysts_pattern_row_is_an_interpretation_not_a_forecast():
     out = run_cat(cat_ctx(filings=PERIODIC + [late]))
     p = next(c for c in out['conclusions'] if c['scope'] == 'AAA')
     assert p['kind'] == 'interpretation' and p['level'] == UNCERTAIN
-    assert {'ESTIMATE', 'INTERPRETIVE'} <= set(p['reason_codes'])
+    # the year-earlier filings are historical on purpose: no STALE_AT_CUTOFF from them
+    assert set(p['reason_codes']) == {'ESTIMATE', 'INTERPRETIVE'}
+    latest = next(e for e in p['evidence'] if 'period 2026-07-31' in e['fact'])
+    assert latest['fresh_at_cutoff'] is True
+    hist = [e for e in p['evidence'] if e is not latest]
+    assert len(hist) == 3 and all(e['fresh_at_cutoff'] is None and 'historical reference' in e['published_at_basis']
+                                  for e in hist)
     assert p['statement'].startswith('AAA: pattern, not a forecast')
     assert 'latest 10-Q, period 2026-07-31' in p['statement']                 # the post-cutoff 10-Q is ignored
     assert 'the 10-Q for the period ended 2025-10-31, filed on 2025-12-02' in p['statement']
     assert '8-K item 2.02 (results of operations) filed on 2025-12-02' in p['statement']
     assert 'fall outside the horizon (2026-10-06, 2026-10-21]' in p['statement']
     assert all(e['source'] == 'SEC EDGAR' and e['rank'] == 1 for e in p['evidence'])
+
+    # the latest periodic filing is still judged at the cutoff: a 10-K filed 211 days before T_c is stale
+    old = [f for f in PERIODIC if f['filing_date'] < '2026-04-01']
+    p = next(c for c in run_cat(cat_ctx(filings=old))['conclusions'] if c['scope'] == 'AAA')
+    assert 'latest 10-K, period 2026-01-31' in p['statement']
+    assert set(p['reason_codes']) == {'ESTIMATE', 'INTERPRETIVE', 'STALE_AT_CUTOFF'}
 
     inside = [f for f in PERIODIC if f['report_date'] != '2025-10-31'] + [filing('10-Q', '2025-10-15', '2025-09-30')]
     out = run_cat(cat_ctx(filings=inside))
@@ -578,9 +883,25 @@ def test_catalysts_pattern_unavailable_without_year_earlier_filing():
     out = run_cat(cat_ctx(filings=[filing('10-Q', '2026-08-27', '2026-07-31')]))
     r = {u['item']: u['reason'] for u in out['unavailable'] if u['scope'] == 'AAA'}
     assert 'one year before 2026-07-31' in r['periodic filing pattern (same filing one year earlier)']
-    out = run_cat(FakeCtx(db=Database()))                                       # no submissions feed
+    assert 'may not reach back one year' in r['periodic filing pattern (same filing one year earlier)']
+    # ctx.filings(t)['truncated'] False: the feed is the whole history, so the gap is not a feed limit
+    ctx = FakeCtx(db=isolated_database(),
+                  filings={'AAA': feed([filing('10-Q', '2026-08-27', '2026-07-31')], truncated=False)})
+    r = {u['item']: u['reason'] for u in run_cat(ctx)['unavailable'] if u['scope'] == 'AAA'}
+    assert 'whole filing history (not truncated)' in r['periodic filing pattern (same filing one year earlier)']
+    assert 'may not reach back' not in r['periodic filing pattern (same filing one year earlier)']
+    out = run_cat(FakeCtx(db=isolated_database()))                           # no submissions feed
     r = {u['item']: u['reason'] for u in out['unavailable'] if u['scope'] == 'AAA'}
     assert 'SEC submissions feed unavailable' in r['periodic filing pattern']
+
+
+def test_synthetic_helpers_refuse_the_project_database(monkeypatch):
+    from src.common import PROJECT_ROOT
+    with pytest.raises(RuntimeError, match='must not be written'):
+        isolated_database(str(PROJECT_ROOT / 'data' / 'trading_pro.db'))          # raises before opening it
+    monkeypatch.delenv('TRADING_AGENT_DATA_DIR')
+    with pytest.raises(RuntimeError, match='must not be written'):
+        isolated_database()
 
 
 def test_catalysts_horizon_uses_calendar_dates():

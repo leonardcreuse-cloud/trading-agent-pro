@@ -9,8 +9,10 @@ Q10 - the live heuristic signal recomputed POINT-IN-TIME with the production cod
   insider       insider_score(InsiderTracker(sec_parser=ctx.sec).summarize(t, known_at=T)): stored
                 Form 4 transactions only (ingest / run are never called: they would contact SEC). The
                 score is computed only when every Form 4 listed in the submissions feed for (T - 90 d, T]
-                has its document stored (else the stored rows would read as "no transaction" = a neutral
-                50) and the feed was retrieved after T and reaches back to the window start.
+                has its document stored AND its stored form4:transaction rows match the dated
+                transactions of that document re-parsed locally (else the stored rows would read as "no
+                transaction" = a neutral 50), and the feed was retrieved after T and reaches back to the
+                window start (or ctx.filings says it is the whole, untruncated history).
   news          only at T_c, and only from the latest daily run file reports/analysis.json when its
                 timestamp is <= T_c (nothing is fetched). The file is overwritten by each daily run,
                 so news is normally DATA UNAVAILABLE for a report generated later; never at T_p.
@@ -23,7 +25,13 @@ Q10 - the live heuristic signal recomputed POINT-IN-TIME with the production cod
   (the rest, from components present at one cutoff only); the distance to the nearest threshold.
   "Borderline" is flagged only when config weekly.thresholds declares signal_borderline_points.
   Kinds: "the heuristic outputs X" is a statement about this system (system_output); any reading of
-  the signal as information about future returns is model_output (MODEL_NOT_VALIDATED).
+  the signal as information about future returns is model_output (MODEL_NOT_VALIDATED unless the
+  validation is DEMONSTRATED; HEURISTIC_THRESHOLD always). The universe summary carries every ticker's
+  T_c ex-news evidence and the walk-forward run it cites, so it is never stronger than its premises.
+  Every statement about what the walk-forward found cites the run (computed_at, IC, p per horizon) and
+  reads significance from the corrected p-value and the IC sign (validation_text): "not significant"
+  only when p >= 0.05 / k, "significantly NEGATIVE" when p < 0.05 / k with IC < 0, and a stale run is
+  said to be stale; without an admissible run the status (NOT VALIDATED) is stated as is.
 Q11 - validation_status(walk_forward.latest_summary(now=T_c), research summaries computed <= T_c)
   as the banner conclusion (system_output); validation figures per horizon with an approximate 95 %
   interval for the IC; runs computed after the cutoff are listed as such and never used; data
@@ -34,18 +42,19 @@ No score is ever converted into a probability. Sections never call the wall cloc
 
 import json
 import math
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from ...common import DATA_UNAVAILABLE, reports_dir, to_utc_iso
-from ...database import freshness as freshness_at
-from ...insider_tracker import FORM4_METRIC, LOOKBACK_DAYS, InsiderTracker, form4_xml_url, insider_score
+from ...insider_tracker import (FORM4_METRIC, LOOKBACK_DAYS, InsiderTracker, form4_xml_url, insider_score,
+                                parse_form4)
 from ...market_data import session_close_utc
 from ...price_technical import PriceTechnical
 from ...scoring_fundamentals import ScoringFundamentals
-from ...scoring_signal_fixed import (NOT_A_RECOMMENDATION, ScoringSignalFixed, not_implemented_fields,
-                                     research_summary, validation_status)
-from ...walk_forward import latest_summary
+from ...scoring_signal_fixed import (NOT_A_RECOMMENDATION, VALIDATION_ALPHA, ScoringSignalFixed,
+                                     not_implemented_fields, research_summary, two_sided_p, validation_status)
+from ...walk_forward import STALE_AFTER_DAYS, latest_summary
 from ..core import LookAheadError, SectionResult, conclude, evidence, unavailable
 
 NAME = 'quant'
@@ -61,6 +70,7 @@ CADENCES = {'technical': 'daily_market', 'fundamentals': 'quarterly_filing', 'in
 SYSTEM_SOURCE = 'this system'
 RESEARCH_STAGES = (1, 2)
 CI_Z = 1.96
+BORDERLINE_TOL = 1e-9               # stated tolerance of the borderline-band comparison (float noise only)
 
 
 def _num(v):
@@ -76,13 +86,10 @@ def _r(v, digits=2):
 
 
 def _fresh(ctx, as_of, cadence, at=None):
-    """Freshness flag at the cutoff (ctx.freshness) or at another instant `at` (T_p inputs)."""
+    """Freshness flag at the cutoff, or at another instant `at` (T_p inputs), via ctx.freshness."""
     if as_of is None:
         return None
-    if at is None or at == ctx.tm.cutoff:
-        status = (ctx.freshness(str(as_of)[:10], cadence) or {}).get('status')
-    else:
-        status = freshness_at(str(as_of)[:10], cadence, now=datetime.fromisoformat(at)).get('status')
+    status = (ctx.freshness(str(as_of)[:10], cadence, at=at) or {}).get('status')
     return True if status == 'FRESH' else False if status == 'STALE' else None
 
 
@@ -177,56 +184,106 @@ def fundamentals(ctx, t, at):
                  fresh=fresh)
 
 
+def _stored_transactions(db, t, start, at):
+    """{accession: number of stored form4:transaction rows} available in (start, at] (what summarize reads)."""
+    counts = {}
+    for e in db.events(t, FORM4_METRIC, published_from=start, published_to=at, source=SEC_SOURCE):
+        try:
+            acc = (json.loads(e.get('value_text') or '{}') or {}).get('accession')
+        except (TypeError, ValueError, AttributeError):
+            acc = None
+        counts[acc] = counts.get(acc, 0) + 1
+    return counts
+
+
+def _list(values, n=5):
+    values = [str(v) for v in values]
+    return ', '.join(values[:n]) + (f' (+{len(values) - n} more)' if len(values) > n else '')
+
+
 def insider_coverage(ctx, t, at):
-    """(ok, problem, n_filings) - every Form 4 of (at - 90 d, at] in the feed has its document stored."""
+    """
+    (ok, problem, n_filings, n_transactions). ok only when every Form 4 of (at - 90 d, at] listed in the
+    feed has its document stored AND the stored form4:transaction rows of that accession match the dated
+    non-derivative transactions of the stored document, re-parsed locally (no network): a document stored
+    without its transactions (prefetch, parse failure) would otherwise read as "no transaction".
+    """
     try:
         feed = ctx.filings(t)
     except LookAheadError:
         raise
     except Exception as e:  # noqa: BLE001
-        return False, f'SEC submissions feed unavailable: {type(e).__name__}: {e}', None
+        return False, f'SEC submissions feed unavailable: {type(e).__name__}: {e}', None, None
     if feed.get('status') != 'OK':
-        return False, f"SEC submissions feed unavailable: {feed.get('reason')}", None
+        return False, f"SEC submissions feed unavailable: {feed.get('reason')}", None, None
     retrieved = to_utc_iso((feed.get('fetch') or {}).get('retrieved_at'))
     if not retrieved or retrieved < to_utc_iso(at):
         return False, (f'submissions feed retrieved at {retrieved}, before {at}: Form 4 filings accepted after '
-                       'that retrieval are not listed'), None
+                       'that retrieval are not listed'), None, None
     start = to_utc_iso(datetime.fromisoformat(to_utc_iso(at)) - timedelta(days=LOOKBACK_DAYS))
     rows = feed.get('filings') or []
-    if not any(f.get('published_at') and to_utc_iso(f['published_at']) <= start for f in rows):
+    # 'truncated' False: the feed holds the company's whole filing history, so the window is fully
+    # listed even when nothing older exists (recent registrant); unknown / True: the recent block must
+    # reach back past the window start.
+    if feed.get('truncated') is not False and not any(
+            f.get('published_at') and to_utc_iso(f['published_at']) <= start for f in rows):
         return False, ('the submissions feed (recent block) lists no filing older than the window start '
-                       f'{start}: the {LOOKBACK_DAYS}-day Form 4 window may not be fully listed'), None
+                       f'{start}: the {LOOKBACK_DAYS}-day Form 4 window may not be fully listed'), None, None
     window = [f for f in rows if f.get('form') == '4' and f.get('published_at')
               and start < to_utc_iso(f['published_at']) <= to_utc_iso(at)]
     if not window:
-        return True, None, 0
+        return True, None, 0, 0
     cik = ctx.sec.get_cik(t)
     if not cik:
-        return False, f'CIK of {t} not resolved: Form 4 documents cannot be checked', None
+        return False, f'CIK of {t} not resolved: Form 4 documents cannot be checked', None, None
     db = ctx.db
-    missing = []
+    if not hasattr(db, 'read_raw') or not hasattr(db, 'events'):
+        return False, 'stored Form 4 documents cannot be re-read from this database', len(window), None
+    stored = _stored_transactions(db, t, start, at)
+    missing, unreadable, mismatch, n_txn = [], [], [], 0
     for f in window:
-        if not f.get('accession_number') or not f.get('primary_document'):
-            missing.append(f.get('accession_number'))
+        acc = f.get('accession_number')
+        if not acc or not f.get('primary_document'):
+            missing.append(acc)
             continue
-        url = form4_xml_url(cik, f['accession_number'], f['primary_document'])
-        if not db.latest_fetch(SEC_SOURCE, url):
-            missing.append(f['accession_number'])
+        fetch = db.latest_fetch(SEC_SOURCE, form4_xml_url(cik, acc, f['primary_document']))
+        if not fetch:
+            missing.append(acc)
+            continue
+        try:
+            doc = parse_form4(db.read_raw(fetch['fetch_id']))
+        except (ET.ParseError, RuntimeError, OSError, ValueError, TypeError, AttributeError) as e:
+            unreadable.append(f'{acc} ({type(e).__name__})')
+            continue
+        expected = sum(1 for x in doc['transactions'] if x.get('date'))      # what ingest stores
+        n_txn += expected
+        if stored.get(acc, 0) != expected:
+            mismatch.append(f'{acc}: {stored.get(acc, 0)} stored vs {expected} in the document')
+    problems = []
     if missing:
-        return False, (f'{len(missing)} of {len(window)} Form 4 filings accepted in ({start}, {at}] have no stored '
-                       'document (never ingested or unreadable): the stored transactions would read them as "no '
-                       'transaction" (this report does not call InsiderTracker.ingest, which would contact SEC)'), \
-            len(window)
-    return True, None, len(window)
+        problems.append(f'{len(missing)} of {len(window)} Form 4 filings accepted in ({start}, {at}] have no stored '
+                        f'document ({_list(missing)}; never ingested or unreadable)')
+    if unreadable:
+        problems.append(f'{len(unreadable)} stored Form 4 documents cannot be re-read or parsed '
+                        f'({_list(unreadable)}): their transactions cannot be confirmed')
+    if mismatch:
+        problems.append(f'{len(mismatch)} stored Form 4 documents do not match the stored {FORM4_METRIC} rows '
+                        f'({_list(mismatch)}): stored without ingesting their transactions (e.g. a prefetch or a '
+                        'parse failure)')
+    if problems:
+        return False, ('; '.join(problems) + ': the stored transactions would read them as "no transaction" '
+                       '(this report does not call InsiderTracker.ingest, which would contact SEC)'), len(window), None
+    return True, None, len(window), n_txn
 
 
 def insider(ctx, t, at):
-    ok, problem, n = insider_coverage(ctx, t, at)
+    ok, problem, n, n_txn = insider_coverage(ctx, t, at)
     if not ok:
         return _comp('insider', reason=problem)
     summary = InsiderTracker(sec_parser=ctx.sec).summarize(t, known_at=at)
     score = insider_score(summary)
-    detail = (f"{n} Form 4 filings accepted in the {LOOKBACK_DAYS}-day window, all documents stored; "
+    detail = (f"{n} Form 4 filings accepted in the {LOOKBACK_DAYS}-day window, all documents stored and their "
+              f"{n_txn} dated non-derivative transactions ingested (re-checked against the stored documents); "
               f"{summary['insider_buys']} open-market purchases by {summary['distinct_buyers']} insider(s), "
               f"{summary['insider_sells']} open-market sales ({summary['discretionary_sellers']} discretionary "
               f"seller(s)); other codes {summary['other_transaction_codes']}")
@@ -302,9 +359,10 @@ def combine(signal, comps, names):
     missing = [k for k in names if scores[k] is None]
     score = signal.combine_scores(scores) if len(available) >= signal.MIN_COMPONENTS else None
     label = signal.generate_final_signal(score)
-    total = sum(signal.WEIGHTS[k] for k in available)
+    # no S (INSUFFICIENT DATA): no renormalized weight and no contribution to a score that does not exist
+    total = sum(signal.WEIGHTS[k] for k in available) if score is not None else 0
     weights = {k: signal.WEIGHTS[k] / total for k in available} if total else {}
-    contrib = {k: weights[k] * scores[k] for k in available}
+    contrib = {k: weights[k] * scores[k] for k in weights}
     raw = sum(contrib.values()) if score is not None else None
     return {'score': score, 'label': label, 'available': available, 'missing': missing, 'weights': weights,
             'contrib': contrib, 'raw': raw, 'n': len(names), 'scores': scores}
@@ -335,6 +393,13 @@ def _borderline(ctx):
     return _num(v)
 
 
+def is_borderline(dist, band):
+    """|distance to the nearest threshold| <= band, with tolerance BORDERLINE_TOL (float noise); None if not assessed."""
+    if band is None or dist is None:
+        return None
+    return abs(dist) <= band + BORDERLINE_TOL
+
+
 def _items(*comp_sets):
     return [c['evidence'] for comps in comp_sets for c in comps.values() if c.get('evidence')]
 
@@ -355,6 +420,44 @@ def _admissible_research(tm, paths=None):
     return ok, late, missing
 
 
+def _horizon_reading(x, threshold):
+    """Wording of one horizon from validation_status()['tests'] (the production criterion decides)."""
+    ic, p = _num(x.get('cross_sectional_ic')), _num(x.get('p_value'))
+    if ic is None or p is None:
+        return f'IC {ic}, p not available: not assessed'
+    head = f'IC {ic:+.4f}, p {p}'
+    if x.get('significant_after_correction'):
+        return f'{head} < {threshold:.4f}: positive and significant after correction'
+    if p < threshold and ic < 0:
+        return f'{head} < {threshold:.4f}: significantly NEGATIVE after correction (adverse ranking)'
+    if p < threshold:
+        return f'{head} < {threshold:.4f} but IC not positive: criterion not met'
+    return f'{head} >= {threshold:.4f}: not significant after correction'
+
+
+def validation_text(validation, wf):
+    """
+    What the walk-forward run admissible at the cutoff found, citing it (computed_at, numbers), or what
+    is missing. Never "not significant" unless the corrected p-value says so; the status is stated as is.
+    """
+    status = validation['status']
+    if wf.get('status') != 'OK':
+        return (f"no walk-forward validation run is admissible at the cutoff ({wf.get('reason') or 'no results'}): "
+                f'validation status {status}')
+    tests = validation.get('tests') or {}
+    if not tests:
+        return (f"the walk-forward run computed {wf.get('computed_at')} reports no tested horizon: validation status "
+                f'{status}')
+    threshold = VALIDATION_ALPHA / len(tests)
+    text = (f"the walk-forward run computed {wf.get('computed_at')} (ex-news combined score, cross-sectional IC over "
+            f"the validation universe; required p < {threshold:.4f} = {VALIDATION_ALPHA} / {len(tests)} horizons, IC > 0) "
+            'found ' + '; '.join(f'{h} {_horizon_reading(x, threshold)}' for h, x in tests.items()))
+    if wf.get('stale'):
+        text += (f'; the run is stale at the cutoff (computed more than {STALE_AFTER_DAYS} days before it), so it '
+                 'cannot demonstrate validity whatever its p-values')
+    return text + f': validation status {status}'
+
+
 def _validation(ctx, res, wf_path, research_paths):
     tm = ctx.tm
     path = Path(wf_path) if wf_path else None
@@ -368,7 +471,7 @@ def _validation(ctx, res, wf_path, research_paths):
         items.append(evidence(tm, SYSTEM_SOURCE, None,
                               f"walk-forward run (reports/walk_forward.json) computed {wf_c['computed_at']}: "
                               f"{wf_c['n_tickers']} tickers, components {', '.join(wf_c['validated_components'])}, "
-                              f"validation {v['status']}",
+                              f"validation {v['status']}; {validation_text(v, wf_c)}",
                               as_of=wf_c['computed_at'][:10], published_at=wf_c['computed_at'],
                               fresh=not wf_c.get('stale'), basis='computed_at of the run'))
     for r in research:
@@ -403,24 +506,32 @@ def _validation(ctx, res, wf_path, research_paths):
         for h, d in hs.items():
             ic = _num((d.get('ic_cross_sectional') or {}).get('combined'))
             t_stat = _num((d.get('ic_cross_sectional_t') or {}).get('combined'))
-            p = None if t_stat is None else round(math.erfc(abs(t_stat) / math.sqrt(2)), 4)
+            p = None if t_stat is None else round(two_sided_p(t_stat), 4)     # as validation_status
             ci = None
             if ic is not None and t_stat:
                 se = abs(ic / t_stat)
                 ci = f'[{ic - CI_Z * se:+.4f}, {ic + CI_Z * se:+.4f}]'
-            req = round(0.05 / len(hs), 4) if hs else None
-            sig = p is not None and req is not None and p < req and ic is not None and ic > 0
-            rows.append([tag, wf.get('computed_at'), h, ic, t_stat, p, req, 'yes' if sig else 'no', ci,
+            threshold = VALIDATION_ALPHA / len(hs)
+            below = None if p is None else p < threshold
+            met = bool(below) and ic is not None and ic > 0
+            rows.append([tag, wf.get('computed_at'), h, ic, t_stat, p, round(threshold, 4),
+                         None if below is None else 'yes' if below else 'no', 'yes' if met else 'no', ci,
                          d.get('folds_with_positive_ic'),
-                         f"fitted model out-of-sample IC {d.get('model_oos_ic')}; stale: {wf.get('stale')}"])
+                         f"fitted model out-of-sample IC {d.get('model_oos_ic')}; stale at that instant: "
+                         f"{wf.get('stale')}" + ('; significantly NEGATIVE IC (adverse)' if below and ic is not None
+                                                 and ic < 0 else '')])
     res.table('Walk-forward validation of the ex-news combined score (cross-sectional IC)',
               ['run', 'computed_at', 'horizon', 'cross-sectional IC', 't', 'two-sided p', 'required p (0.05 / k)',
-               'significant after correction', 'approx. 95% interval (IC +/- 1.96 IC/t)',
-               'folds with positive IC (pooled)', 'note'], rows, question=11,
+               'p < required p', 'criterion met (IC > 0 and p < required p)',
+               'approx. 95% interval (IC +/- 1.96 IC/t)', 'folds with positive IC (pooled)', 'note'], rows,
+              question=11,
               note=('Validation = cross-sectional rank IC of the combined score WITHOUT news over the validation '
-                    'universe (not per company). The interval is a normal approximation from the reported t; '
-                    '"not significant" does not mean "zero". A run computed after the cutoff is not admissible '
-                    'at T_c.'))
+                    'universe (not per company). p is the production two-sided p rounded to 4 decimals and compared '
+                    'strictly with 0.05 / k, as in validation_status (no tolerance: the criterion is pre-declared). '
+                    'A significant NEGATIVE IC does not meet the criterion and is flagged as adverse. DEMONSTRATED '
+                    'also requires a run that is not stale at the cutoff. The interval is a normal approximation '
+                    'from the reported t; "not significant" does not mean "zero". A run computed after the cutoff '
+                    'is not admissible at T_c.'))
     rr = [[f"research stage {r['stage']}", r['computed_at'], 'admissible', r['n_stocks'], r['n_tests'],
            r['n_significant_bh'], r['n_significant_bonferroni']] for r in research]
     rr += [[f"research stage {r['stage']}", r['computed_at'], 'computed after the cutoff: not used', r['n_stocks'],
@@ -452,9 +563,10 @@ def _validation(ctx, res, wf_path, research_paths):
             reading = ('which includes zero as well as small positive and negative values: "not significant" is '
                        'not "no effect", and the test has limited power' if lo <= 0 <= hi
                        else 'which excludes zero (approximation; the pre-declared criterion is the corrected p-value)')
-            res.add(conclude('overall', 11, f'At {h} the approximate 95% interval of the ex-news cross-sectional IC '
-                                            f'(IC +/- 1.96 IC/t) is [{lo:+.4f}, {hi:+.4f}], {reading}.', items[:1],
-                             'interpretation'))
+            res.add(conclude('overall', 11, f"At {h}, in the walk-forward run computed {wf_c['computed_at']} (IC "
+                                            f'{ic:+.4f}, t {t_stat:+.2f}), the approximate 95% interval of the ex-news '
+                                            f'cross-sectional IC (IC +/- 1.96 IC/t) is [{lo:+.4f}, {hi:+.4f}], '
+                                            f'{reading}.', items[:1], 'interpretation'))
     res.add(unavailable('overall', 11, 'per-company signal reliability',
                         'the walk-forward validation is cross-sectional over the validation universe (ranking tickers '
                         'against each other); no per-company validation exists'))
@@ -464,20 +576,27 @@ def _validation(ctx, res, wf_path, research_paths):
                         'covers the configured universe only)'))
     for field, info in not_implemented_fields().items():
         res.add(unavailable('overall', 11, field, f"{info['status']}: {info['reason']}"))
-    return v, wf_c, k_tests
+    return v, wf_c, (items[0] if admissible else None)
 
 
 # ---------------------------------------------------------------- per company
 
 def _signal_rows(sig, label_name, now, before, thr_c, dist_c, band):
-    border = None if band is None or dist_c is None else ('yes' if abs(dist_c) <= band else 'no')
+    flag = is_borderline(dist_c, band)
+    border = None if flag is None else 'yes' if flag else 'no'
     delta = None if now['score'] is None or before['score'] is None else round(now['score'] - before['score'], 2)
     return [label_name, before['score'], before['label'], f"{len(before['available'])}/{before['n']}",
             now['score'], now['label'], f"{len(now['available'])}/{now['n']}", delta, thr_c, _r(dist_c), border]
 
 
-def _company(ctx, res, t, daily, daily_problem, validation, band):
+def _uncited(comps, comb):
+    """Components used by a combined score that carry no evidence item (publication instant not established)."""
+    return [k for k in comb['available'] if not comps[k].get('evidence')]
+
+
+def _company(ctx, res, t, daily, daily_problem, validation, band, wf_c=None, wf_item=None):
     tm = ctx.tm
+    wf_c = wf_c or {}
     sig = ScoringSignalFixed()
     s0, s_m5 = tm.s0, tm.sessions[-6]
     c = {'technical': _safe(technical, 'technical', ctx, t, s0, tm.cutoff),
@@ -530,8 +649,9 @@ def _company(ctx, res, t, daily, daily_problem, validation, band):
                'input as of (T_c)', 'source', 'T_c inputs', 'T_p inputs'],
               rows, scope=t, question=10,
               note='contribution = renormalized weight x component score; contributions sum to S (before the '
-                   'production rounding to 2 decimals). N/A = component unavailable (reason in the last columns), '
-                   'never a neutral 50.')
+                   'production rounding to 2 decimals). When S is not computed (INSUFFICIENT DATA: fewer than '
+                   f'{sig.MIN_COMPONENTS} components) no weight or contribution is shown. N/A = component unavailable '
+                   '(reason in the last columns), never a neutral 50.')
 
     drows = []
     for name, now, before in (('ex-news', ex_c, ex_p), ('live', live_c, live_p)):
@@ -579,17 +699,30 @@ def _company(ctx, res, t, daily, daily_problem, validation, band):
         if short == 'live' and 'news' in now['missing']:
             parts.append('identical to the ex-news variant (news unavailable at T_c)')
         parts.append(f'nearest threshold {thr} at {dist:+.2f} points')
-        partial = ['PARTIAL_COVERAGE'] if (now['missing'] or before['missing']) else []
+        codes = ['PARTIAL_COVERAGE'] if (now['missing'] or before['missing']) else []
+        uncited = _uncited(c, now) + ([f'{k} at T_p' for k in _uncited(p, before)] if before['score'] is not None
+                                      else [])
+        if uncited:
+            codes.append('TIMESTAMP_AMBIGUOUS')
+            parts.append(f"publication instant of the inputs not established for {', '.join(uncited)}")
         res.add(conclude(t, 10, '; '.join(parts) + '. This describes the system\'s output, not the stock.', items,
-                         'system_output', reason_codes=partial,
-                         resolve='all components available at both cutoffs' if partial else None))
+                         'system_output', reason_codes=codes,
+                         resolve='all components available at both cutoffs, with established publication '
+                                 'instants' if codes else None))
         if short == 'ex-news' and items:
-            border = '' if band is None or abs(dist) > band else f' (borderline: within +/- {band} points)'
-            res.add(conclude(t, 10, f"{t}: read as information about future returns, the ex-news label {now['label']} "
-                                    f"at T_c (S {now['score']:.2f}, {dist:+.2f} points from the {thr} threshold{border}) "
-                                    f'has no demonstrated predictive value: validation status at the cutoff is '
-                                    f'{status}. It is not a probability and not a recommendation.',
-                             items, 'model_output', reason_codes=['HEURISTIC_THRESHOLD'],
+            border = f' (borderline: within +/- {band} points)' if is_borderline(dist, band) else ''
+            head = (f"{t}: read as information about future returns, the ex-news label {now['label']} at T_c "
+                    f"(S {now['score']:.2f}, {dist:+.2f} points from the {thr} threshold{border})")
+            found = validation_text(validation, wf_c)
+            if status == 'DEMONSTRATED':
+                body = (f'rests only on past cross-sectional ranking skill: {found}. That skill is the ex-news score '
+                        'ranking the validation universe: it is not a per-company validation and not a validation '
+                        'of this label threshold, and past skill does not guarantee future skill')
+            else:
+                body = f'has no demonstrated predictive value: {found}'
+            res.add(conclude(t, 10, f'{head} {body}. It is not a probability and not a recommendation.',
+                             items + ([wf_item] if wf_item else []), 'model_output',
+                             reason_codes=['HEURISTIC_THRESHOLD'] + (['TIMESTAMP_AMBIGUOUS'] if uncited else []),
                              validation_demonstrated=status == 'DEMONSTRATED'))
     return {'ticker': t, 'ex_c': ex_c, 'ex_p': ex_p, 'live_c': live_c, 'c': c}
 
@@ -632,10 +765,11 @@ def build(ctx, analysis_path=None, walk_forward_path=None, research_paths=None, 
     tm = ctx.tm
     band = _borderline(ctx)
     version = (getattr(ctx, 'weekly', None) or {}).get('thresholds_version')
-    validation, wf_c, _ = _validation(ctx, res, walk_forward_path, research_paths)
+    validation, wf_c, wf_item = _validation(ctx, res, walk_forward_path, research_paths)
+    found = validation_text(validation, wf_c)
     daily, daily_problem = load_daily_run(analysis_path)
     universe = list(tickers or ctx.universe)
-    infos = [_company(ctx, res, t, daily, daily_problem, validation, band) for t in universe]
+    infos = [_company(ctx, res, t, daily, daily_problem, validation, band, wf_c, wf_item) for t in universe]
     for info in infos:
         _reliability(ctx, res, info)
 
@@ -649,27 +783,28 @@ def build(ctx, analysis_path=None, walk_forward_path=None, research_paths=None, 
               ['ticker', 'S ex-news (T_c)', 'label ex-news (T_c)', 'rank ex-news (1 = highest)', 'S ex-news (T_p)',
                'label ex-news (T_p)', 'S live (T_c)', 'label live (T_c)', 'coverage live (T_c)'], rows, question=10,
               note=(f'Thresholds {version}; borderline band '
-                    + (f'+/- {band} points' if band is not None else 'not pre-declared (config weekly.thresholds has no '
-                                                                      'signal_borderline_points): not assessed')
-                    + '. Ranks describe the heuristic only: '
-                    + ('the walk-forward run admissible at the cutoff found no significant cross-sectional IC for this '
-                       'ranking (see Q11).' if wf_c.get('status') == 'OK' and validation['status'] != 'DEMONSTRATED'
-                       else 'see Q11 for the validation status at the cutoff.')))
+                    + (f'+/- {band} points (|S - threshold| <= band, tolerance {BORDERLINE_TOL:g})'
+                       if band is not None else 'not pre-declared (config weekly.thresholds has no '
+                                                'signal_borderline_points): not assessed')
+                    + f'. Ranks describe the heuristic only; at the cutoff {found} (see Q11).'))
     labels = {}
     for i in infos:
         labels[i['ex_c']['label']] = labels.get(i['ex_c']['label'], 0) + 1
     dist = ', '.join(f'{labels.get(k, 0)} {k}' for k in ('POSITIVE', 'NEUTRAL', 'NEGATIVE', 'INSUFFICIENT DATA'))
-    ic_note = ''
-    if wf_c.get('status') == 'OK':
-        ics = {h: (d.get('ic_cross_sectional') or {}).get('combined') for h, d in (wf_c.get('horizons') or {}).items()}
-        ic_note = ('; the walk-forward cross-sectional IC of the ex-news ranking at the cutoff: '
-                   + ', '.join(f'{h} {v}' for h, v in ics.items()) + ' (not significant)'
-                   if validation['status'] != 'DEMONSTRATED' else '')
-    else:
-        ic_note = '; no walk-forward validation run is admissible at the cutoff'
+    # weakest premise: the universe summary carries every ticker's T_c ex-news evidence and the walk-forward
+    # run it cites, so a stale input, a partial coverage or a stale run caps it like the per-ticker conclusions
+    items = [e for i in infos for e in _items({k: i['c'][k] for k in i['ex_c']['available']})]
+    items += [wf_item] if wf_item else []
+    partial = [i['ticker'] for i in infos if i['ex_c']['missing']]
+    uncited = [f"{i['ticker']} {k}" for i in infos for k in _uncited(i['c'], i['ex_c'])]
+    codes = (['PARTIAL_COVERAGE'] if partial else []) + (['TIMESTAMP_AMBIGUOUS'] if uncited else [])
+    extra = ((f"; ex-news components missing at T_c for {', '.join(partial)}" if partial else '')
+             + (f"; publication instant not established for {', '.join(uncited)}" if uncited else ''))
     res.add(conclude('overall', 10, f'Ex-news heuristic labels at T_c over the {len(infos)}-ticker universe: {dist}'
-                                    f'{ic_note}. A statement about the system\'s outputs.', [], 'system_output',
-                     reason_codes=['PARTIAL_COVERAGE'] if labels.get('INSUFFICIENT DATA') else []))
+                                    f'{extra}; {found}. A statement about the system\'s outputs.', items,
+                     'system_output', reason_codes=codes,
+                     resolve='all ex-news components available for every ticker, fresh at the cutoff, and a '
+                             'walk-forward run that is not stale' if codes else None))
     res.notes.append(f"{validation['statement'].strip()} {NOT_A_RECOMMENDATION}")
     res.notes.append(f'T_c {tm.cutoff} (closes up to {tm.s0}); T_p {tm.previous_cutoff} (closes up to '
                      f'{tm.sessions[-6]}); thresholds {version}. News enters only at T_c and only from a daily run '

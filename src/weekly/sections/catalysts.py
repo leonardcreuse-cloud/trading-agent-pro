@@ -14,7 +14,10 @@ Macro (overall): FRED release calendar, rank 1, dates only (FRED gives no time o
   The key is read like src/macro_fred.py (secret_env('FRED_API_KEY')), sent as a query parameter,
   never stored or printed (record_fetch removes it from the logged parameters; errors carry the
   exception type only). Every call is logged with ctx.db.record_fetch(source='FRED') with its raw
-  payload; an identical request stored less than REUSE_HOURS before G is reused (budget).
+  payload, timestamped by the database (requested_at=None: the section never reads the clock and
+  never records G as a request time); an identical request stored less than REUSE_HOURS before G
+  is reused (budget). A schedule that lists no date after s_0 is never read as "no release": its
+  dates, its status and any change computed from it are DATA UNAVAILABLE.
   Point-in-time: FRED does not timestamp schedule entries and has no vintages for release dates, so
   a schedule is admissible at an instant T only from a calendar fetch RETRIEVED at or before T (a
   stored fetch from an earlier run). The calendar retrieved at G (after the cutoff) is listed in the
@@ -36,7 +39,8 @@ Company (each ticker of ctx.universe)
     periodic filing (10-Q / 10-K) that followed, one year earlier, the year-earlier counterpart of the
     latest periodic filing known at T_c, with the 8-K item 2.02 (results of operations) filed between
     that period end and that filing. Labelled "pattern, not a forecast": no date, direction or impact
-    is forecast.
+    is forecast. Only the latest periodic filing is judged for freshness at the cutoff; the year-earlier
+    filings are historical on purpose (fresh=None, no STALE_AT_CUTOFF from them).
 Catalysts are dates only: no expected direction, magnitude or price impact is ever stated.
 Sections never call the wall clock and never write files (fetch logging goes through ctx.db).
 """
@@ -47,7 +51,6 @@ from datetime import date, datetime, timedelta
 import requests
 
 from ...common import DATA_UNAVAILABLE, redact, secret_env, to_utc_iso
-from ...database import freshness as freshness_at
 from ..core import LookAheadError, SectionResult, conclude, evidence, unavailable
 
 NAME = 'catalysts'
@@ -115,14 +118,16 @@ def in_horizon(tm, day):
 
 
 def _fresh(ctx, as_of, cadence, at=None):
-    """Freshness flag at the cutoff (ctx.freshness), or at another instant `at` (the T_p calendar)."""
+    """Freshness flag at the cutoff, or at another instant `at` (the T_p calendar), via ctx.freshness."""
     if as_of is None:
         return None
-    if at is None or at == ctx.tm.cutoff:
-        status = (ctx.freshness(str(as_of)[:10], cadence) or {}).get('status')
-    else:
-        status = freshness_at(str(as_of)[:10], cadence, now=datetime.fromisoformat(at)).get('status')
+    status = (ctx.freshness(str(as_of)[:10], cadence, at=at) or {}).get('status')
     return True if status == 'FRESH' else False if status == 'STALE' else None
+
+
+def _listed_after(dates, lo):
+    """Dates of a schedule strictly after `lo` (an empty result is never read as "no release")."""
+    return [d for d in (dates or []) if _d(d) > lo]
 
 
 def _plus_year(day):
@@ -212,12 +217,12 @@ def fetch_calendar(ctx, release_id, http_get=None):
     try:
         if error:
             error = redact(error)
-            fetch = db.record_fetch(FRED_SOURCE, endpoint, params=params, requested_at=tm.generated_at,
+            fetch = db.record_fetch(FRED_SOURCE, endpoint, params=params, requested_at=None,
                                     status=DATA_UNAVAILABLE, error=error, http_status=http_status)
             return dict(out, fetch=fetch, reason=error)
         raw = getattr(response, 'content', None)
         dates = _parse_dates(payload)
-        fetch = db.record_fetch(FRED_SOURCE, endpoint, params=params, requested_at=tm.generated_at,
+        fetch = db.record_fetch(FRED_SOURCE, endpoint, params=params, requested_at=None,
                                 status='OK', http_status=http_status, n_records=len(dates),
                                 raw=raw if isinstance(raw, (bytes, str)) else payload)
     except Exception as e:  # noqa: BLE001 - an unlogged result is never used
@@ -283,7 +288,7 @@ def _earnings_calendar(ctx, ticker, calendar_fn):
     db = ctx.db
     if hasattr(db, 'record_fetch'):
         try:
-            fetch = db.record_fetch(YF_SOURCE, endpoint, requested_at=ctx.tm.generated_at,
+            fetch = db.record_fetch(YF_SOURCE, endpoint, requested_at=None,
                                     status=DATA_UNAVAILABLE if error else 'OK', error=error,
                                     raw=None if error else json.dumps(value, default=str, sort_keys=True))
         except Exception as e:  # noqa: BLE001 - an unlogged result is never used
@@ -309,11 +314,18 @@ def _calendar_dates(value):
 
 # ---------------------------------------------------------------- macro
 
+def _changes(new, old):
+    added, removed = sorted(set(new) - set(old)), sorted(set(old) - set(new))
+    return ('no change' if not added and not removed
+            else '; '.join(x for x in (f'added {", ".join(added)}' if added else '',
+                                       f'removed {", ".join(removed)}' if removed else '') if x))
+
+
 def _macro(ctx, res, http_get):
     tm = ctx.tm
     lo, hi = horizon(tm)
     cover_from = lo + timedelta(days=1)
-    rows, n_requests, pit_any, prev_any = [], 0, False, False
+    rows, n_requests, pit_any, prev_any, no_prev = [], 0, False, False, []
     for rid, name, kind in RELEASES:
         label = f'{name} (FRED release {rid})'
         current = fetch_calendar(ctx, rid, http_get)
@@ -321,34 +333,35 @@ def _macro(ctx, res, http_get):
         pit = stored_calendar(ctx, rid, tm.cutoff, cover_from)
         prev = stored_calendar(ctx, rid, tm.previous_cutoff, cover_from)
         pit_any, prev_any = pit_any or pit is not None, prev_any or prev is not None
-        cur_in = [d for d in (current['dates'] or []) if in_horizon(tm, d)] if current['status'] == 'OK' else None
-        cur_next = next((d for d in (current['dates'] or []) if _d(d) > hi), None)
-        pit_in = [d for d in pit['dates'] if in_horizon(tm, d)] if pit else None
-        pit_next = next((d for d in pit['dates'] if _d(d) > hi), None) if pit else None
-        prev_in = [d for d in prev['dates'] if in_horizon(tm, d)] if prev else None
-        after_cut = None
-        if pit_in is not None and cur_in is not None:
-            added, removed = sorted(set(cur_in) - set(pit_in)), sorted(set(pit_in) - set(cur_in))
-            after_cut = ('no change' if not added and not removed
-                         else '; '.join(x for x in (f'added {", ".join(added)}' if added else '',
-                                                    f'removed {", ".join(removed)}' if removed else '') if x))
-        since_tp = None
-        if pit_in is not None and prev_in is not None:
-            added, removed = sorted(set(pit_in) - set(prev_in)), sorted(set(prev_in) - set(pit_in))
-            since_tp = ('no change' if not added and not removed
-                        else '; '.join(x for x in (f'added {", ".join(added)}' if added else '',
-                                                   f'removed {", ".join(removed)}' if removed else '') if x))
-        status = (('SCHEDULED' if pit_in else 'no date in the horizon') if pit is not None
-                  else DATA_UNAVAILABLE)
+        # A schedule listing no date after s_0 is not read as "no release": it gives no date in the
+        # horizon, no "none" and no change against another calendar (DATA UNAVAILABLE instead).
+        cur_ok = current['status'] == 'OK' and bool(_listed_after(current['dates'], lo))
+        pit_ok = pit is not None and bool(_listed_after(pit['dates'], lo))
+        prev_ok = prev is not None and bool(_listed_after(prev['dates'], lo))
+        cur_in = [d for d in current['dates'] if in_horizon(tm, d)] if cur_ok else None
+        cur_next = next((d for d in current['dates'] if _d(d) > hi), None) if cur_ok else None
+        pit_in = [d for d in pit['dates'] if in_horizon(tm, d)] if pit_ok else None
+        pit_next = next((d for d in pit['dates'] if _d(d) > hi), None) if pit_ok else None
+        prev_in = [d for d in prev['dates'] if in_horizon(tm, d)] if prev_ok else None
+        after_cut = _changes(cur_in, pit_in) if pit_in is not None and cur_in is not None else None
+        since_tp = _changes(pit_in, prev_in) if pit_in is not None and prev_in is not None else None
+        status = ('SCHEDULED' if pit_in else 'no date in the horizon') if pit_ok else DATA_UNAVAILABLE
         cur_fetch = current.get('fetch') or {}
+        if current['status'] != 'OK':
+            g_dates = None
+        elif not cur_ok:
+            g_dates = 'empty schedule: no date listed after s_0 (not read as "no release")'
+        else:
+            g_dates = ((', '.join(f'{d} ({_weekday(d)})' for d in cur_in) or 'none')
+                       + (f'; next after the horizon {cur_next}' if cur_next else ''))
         rows.append([
             name, rid, kind,
             None if pit_in is None else (', '.join(f'{d} ({_weekday(d)})' for d in pit_in) or 'none'),
-            pit_next if pit else None,
-            (f"fetch {pit['fetch']['fetch_id']} retrieved {pit['fetch']['retrieved_at']}" if pit
+            pit_next,
+            (f"fetch {pit['fetch']['fetch_id']} retrieved {pit['fetch']['retrieved_at']}"
+             + ('' if pit_ok else ' (lists no date after s_0: not usable)') if pit
              else 'not established: no calendar stored at or before the cutoff'),
-            None if cur_in is None else ((', '.join(f'{d} ({_weekday(d)})' for d in cur_in) or 'none')
-                                         + (f'; next after the horizon {cur_next}' if cur_next else '')),
+            g_dates,
             (f"fetch {cur_fetch.get('fetch_id')} retrieved {cur_fetch.get('retrieved_at')}"
              + (' (reused)' if current['reused'] else '') if current['status'] == 'OK'
              else f"unavailable: {current['reason']}"),
@@ -389,7 +402,14 @@ def _macro(ctx, res, http_get):
         else:
             res.add(unavailable('overall', Q, f'{label}: next scheduled date',
                                 f'the FRED calendar stored at {fetch["retrieved_at"]} lists no date after '
-                                f'{lo}: an empty schedule is not read as "no release"'))
+                                f'{lo}: an empty schedule is not read as "no release", so no date in the horizon '
+                                'and no change against another calendar is derived from it'))
+        if pit_ok and prev is None:
+            no_prev.append(label)
+        elif pit_ok and not prev_ok:
+            res.add(unavailable('overall', Q, f'{label}: change of the schedule since T_p',
+                                f'the FRED calendar stored at {prev["fetch"]["retrieved_at"]} (the one known at T_p) '
+                                f'lists no date after {lo}: an empty schedule is not compared'))
         if since_tp not in (None, 'no change'):
             item_p = evidence(tm, FRED_SOURCE, FRED_RANK,
                               f'FRED release calendar, release {rid}, as stored at {prev["fetch"]["retrieved_at"]}',
@@ -417,30 +437,45 @@ def _macro(ctx, res, http_get):
         res.add(unavailable('overall', Q, 'changes of the macro calendar since T_p (added / moved / removed)',
                             f'no FRED release calendar stored at or before the previous cutoff {tm.previous_cutoff}: '
                             'the calendar as known at T_p cannot be reconstructed'))
+    else:
+        for label in no_prev:
+            res.add(unavailable('overall', Q, f'{label}: change of the schedule since T_p',
+                                'no FRED calendar of this release (covering the horizon) stored at or before the '
+                                f'previous cutoff {tm.previous_cutoff}: the schedule as known at T_p cannot be '
+                                'reconstructed'))
     res.add(unavailable('overall', Q, 'FOMC meetings without a Summary of Economic Projections', FOMC_OTHER))
     return pit_any
 
 
 # ---------------------------------------------------------------- company
 
-def _filing_item(ctx, feed, f):
+def _filing_item(ctx, feed, f, assess_fresh=True):
+    """
+    Evidence for one feed row. assess_fresh=False for the year-earlier reference filings of the pattern:
+    they are historical on purpose, so freshness at the cutoff does not apply (fresh=None, no
+    STALE_AT_CUTOFF); only the latest periodic filing is judged at the cutoff.
+    """
     fetch = feed.get('fetch') or {}
     items = f" items {','.join(f['items'])}" if f.get('items') else ''
-    cadence = PERIODIC_CADENCE if f['form'] in PERIODIC_FORMS else 'daily'
+    cadence = PERIODIC_CADENCE if f['form'] in PERIODIC_FORMS else 'event'
+    basis = f.get('published_at_basis')
+    if not assess_fresh:
+        basis = (f'{basis}; ' if basis else '') + 'historical reference filing: freshness at the cutoff not applicable'
     return evidence(ctx.tm, SEC_SOURCE, SEC_RANK,
                     f"{f['form']}{items} accession {f['accession_number']}, period {f.get('report_date')}, "
                     f"filed {f.get('filing_date')}",
                     as_of=f.get('report_date') or f.get('filing_date'), published_at=f['published_at'],
                     retrieved_at=fetch.get('retrieved_at'), fetch_id=fetch.get('fetch_id'),
-                    fresh=_fresh(ctx, f['published_at'], cadence), basis=f.get('published_at_basis'))
+                    fresh=_fresh(ctx, f['published_at'], cadence) if assess_fresh else None, basis=basis)
 
 
-def filing_pattern(tm, filings):
+def filing_pattern(tm, filings, truncated=None):
     """
     {'latest', 'anchor', 'next', 'earnings_8k', 'reason'} from submissions-feed rows known at T_c.
     latest: latest periodic filing known at T_c; anchor: its counterpart one year earlier (report
     date within +/- COUNTERPART_TOLERANCE_DAYS); next: the periodic filing that followed the anchor;
     earnings_8k: the first 8-K with item 2.02 filed between next's period end and its filing date + 3 d.
+    truncated: ctx.filings(t)['truncated'] (False: the feed lists the whole filing history).
     """
     known = [f for f in filings if f.get('published_at') and to_utc_iso(f['published_at']) <= tm.cutoff]
     periodic = sorted((f for f in known if f.get('form') in PERIODIC_FORMS and f.get('report_date')
@@ -455,10 +490,13 @@ def filing_pattern(tm, filings):
     cands = [f for f in periodic if abs((_d(f['report_date']) - target).days) <= COUNTERPART_TOLERANCE_DAYS]
     if not cands:
         oldest = min((f['filing_date'] for f in known if f.get('filing_date')), default=None)
+        older = ''
+        if oldest and _d(oldest) > target:
+            older = (f'; the feed lists the whole filing history (not truncated) and its oldest filing is {oldest}: '
+                     'no filing of that period exists' if truncated is False
+                     else f'; its oldest listed filing is {oldest}, so the recent block may not reach back one year')
         out['reason'] = (f'the feed lists no 10-Q / 10-K for a period ending near {target} (one year before '
-                         f"{latest['report_date']})" + (f'; its oldest listed filing is {oldest}, so the recent '
-                                                        'block may not reach back one year'
-                                                        if oldest and _d(oldest) > target else ''))
+                         f"{latest['report_date']})" + older)
         return out
     anchor = min(cands, key=lambda f: (abs((_d(f['report_date']) - target).days), f['published_at']))
     out['anchor'] = anchor
@@ -509,7 +547,7 @@ def _company(ctx, res, t, calendar_fn):
                      None, feed.get('reason')])
         res.add(unavailable(t, Q, 'periodic filing pattern', f"SEC submissions feed unavailable: {feed.get('reason')}"))
     else:
-        p = filing_pattern(tm, feed.get('filings') or [])
+        p = filing_pattern(tm, feed.get('filings') or [], feed.get('truncated'))
         latest, anchor, nxt, k8 = p['latest'], p['anchor'], p['next'], p['earnings_8k']
         if latest:
             rows.append(['latest periodic filing known at T_c', 'FILED', 'SEC EDGAR (rank 1)',
@@ -529,7 +567,8 @@ def _company(ctx, res, t, calendar_fn):
                                                     '; no 8-K item 2.02 found for that period'),
                          f"same calendar dates one year later: {anniv}" + (f' / {anniv_8k}' if anniv_8k else '')
                          + f" ({'inside' if inside else 'outside'} the horizon ({lo}, {hi}])"])
-            items = [_filing_item(ctx, feed, f) for f in (latest, anchor, nxt, k8) if f]
+            used = {id(f): f for f in (latest, anchor, nxt, k8) if f}     # nxt can be latest (annual filer)
+            items = [_filing_item(ctx, feed, f, assess_fresh=f is latest) for f in used.values()]
             res.add(conclude(
                 t, Q, f"{t}: pattern, not a forecast: one year earlier, the periodic filing that followed the "
                       f"{anchor['form']} for the period ended {anchor['report_date']} (counterpart of the latest "

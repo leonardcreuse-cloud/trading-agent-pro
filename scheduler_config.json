@@ -105,12 +105,36 @@
       "XLC",
       "XLRE"
     ],
-    "thresholds_version": "v1-2026-10-07",
+    "thresholds_version": "v2-2026-10-10",
     "thresholds": {
       "abs_excess_return_z": 2.0,
       "volume_ratio": 2.0,
       "sigma20_change_rel": 0.25,
-      "drawdown_new_low_pct": -20.0
-    }
+      "drawdown_new_low_pct": -20.0,
+      "debt_to_equity_change_abs": 0.5,
+      "debt_change_rel": 0.25,
+      "insider_sale_value_ratio": 2.0,
+      "insider_sale_min_usd": 1000000,
+      "discretionary_sellers_change_abs": 2,
+      "sector_wide_abs_etf_sigma": 1.0,
+      "sector_wide_min_peer_share": "2/3",
+      "signal_borderline_points": 2.0,
+      "cross_check_tolerance_pp": 0.3,
+      "macro_abs_change": {
+        "DGS10": 0.1,
+        "DGS2": 0.1,
+        "T10Y2Y": 0.1,
+        "DFF": 0.1,
+        "BAA10Y": 0.1,
+        "BAMLH0A0HYM2": 0.1,
+        "VIXCLS": 2.0,
+        "ICSA": 15000,
+        "UNRATE": 0.1,
+        "CPIAUCSL": 0.1,
+        "CPILFESL": 0.1,
+        "PCEPI": 0.1
+      }
+    },
+    "thresholds_note": "Pre-declared heuristics from the weekly-report design mapping (written before any weekly report was produced); not fitted and not validated. A crossing is reported with the HEURISTIC_THRESHOLD reason code, never as a validated signal."
   }
 }

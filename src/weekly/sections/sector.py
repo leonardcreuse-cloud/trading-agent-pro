@@ -13,10 +13,21 @@ Per company (ctx.universe, or the `tickers` subset passed to build)
     (1) sign(r_W(ETF)) = sign(m_W) and neither is zero;
     (2) |r_W(ETF)| > k x sd of the ETF's previous non-overlapping 5-session returns (up to 156 weeks,
         windows ending s_-5, s_-10, ...; sample sd; at least MIN_HISTORY_WEEKS), k = 1 by default;
-    (3) at least 2/3 of the peers with a return share that sign.
-  k and 2/3 come from config weekly.thresholds ('sector_wide_abs_etf_sigma',
-  'sector_wide_min_peer_share') when present, else the spec defaults below (labelled as such).
+    (3) at least 2/3 of the peers with a return share that sign, compared on counts
+        (same x den >= num x peers with a return), so exactly 2/3 passes.
+  k and the minimum share come from config weekly.thresholds ('sector_wide_abs_etf_sigma',
+  'sector_wide_min_peer_share') when present, else the spec defaults below (labelled as such). The
+  share should be declared as a fraction ("2/3" or [2, 3]: exact). A decimal (e.g. 0.6667) is
+  compared with an absolute tolerance DECIMAL_SHARE_TOL = 0.0005, so a rounding of a fraction
+  (0.667, 0.6667 for 2/3) never turns '>= 2/3' into '> 2/3'; distinct shares of up to 40 peers differ
+  by more than 0.0006, so no lower share is let through. An invalid declared value makes the flag
+  DATA UNAVAILABLE (never a silent default).
   SEC SIC code and description from ctx.filings(t) (submissions feed): the official industry label.
+  The feed shows the CURRENT code only (no SIC history) and the time that value became public is
+  unknown: it is evidence only when the feed was retrieved at or before the cutoff (published_at
+  NULL, retrieved_at <= T_c). A feed retrieved after the cutoff (the usual case) gives no SIC
+  conclusion: the code is shown in the table labelled 'current, not point-in-time' and the SIC at
+  the cutoff is DATA UNAVAILABLE.
 
 Overall
   every SPDR sector ETF of ctx.weekly['all_sector_etfs'] (full pre-declared list, never only the
@@ -24,8 +35,8 @@ Overall
 
 Evidence rules (docs/DATA_POLICY.md): yfinance prices are a single rank-2 source -> market_fact,
 UNCERTAIN (SINGLE_RANK2_SOURCE); the sector-wide flag is a heuristic label -> interpretation
-(HEURISTIC_THRESHOLD); the SIC code is rank 1 but the feed carries no SIC history, so its
-point-in-time validity at the cutoff is an assumption (freshness unknown). 'The sector move
+(HEURISTIC_THRESHOLD); the SIC code is rank 1 when the feed was retrieved before the cutoff
+(freshness unknown: the code may change between retrieval and the cutoff). 'The sector move
 explains the company move' is never stated: at most 'coincided with' as an interpretation.
 ETF holdings are unavailable (mechanical co-movement cannot be excluded) and the peer lists were
 chosen in 2026 (selection / survivorship bias). Sections never call the wall clock, never write
@@ -35,10 +46,12 @@ files and never download outside ctx.
 import math
 import statistics
 from datetime import date
+from fractions import Fraction
 
 import numpy as np
 import pandas as pd
 
+from ...common import to_utc_iso
 from ...database import source_rank
 from ...market_data import session_close_utc
 from ...sec_parser import SEC_SOURCE
@@ -59,8 +72,9 @@ MIN_PEERS = 2
 
 SECTOR_RULE_VERSION = 'sector-wide-v1-2026-10-07'
 DEFAULT_ETF_SIGMA = 1.0          # spec default: |ETF return| > 1 x its 156-week sd
-DEFAULT_PEER_SHARE = 2.0 / 3.0   # spec default: >= 2/3 of peers share the sign
+DEFAULT_PEER_SHARE = '2/3'       # spec default: >= 2/3 of peers share the sign (exact fraction)
 SIGMA_KEY, SHARE_KEY = 'sector_wide_abs_etf_sigma', 'sector_wide_min_peer_share'
+DECIMAL_SHARE_TOL = Fraction(5, 10000)   # decimal share thresholds: absolute tolerance (fractions are exact)
 
 PEER_BIAS = ('peer lists and sector ETFs were pre-declared in config weekly (chosen in 2026): '
              'survivorship and selection bias (delisted or since-reclassified names are absent)')
@@ -69,9 +83,7 @@ HOLDINGS_GAP = ('ETF holdings are not available to this system: whether the comp
                 'excluded')
 NO_CAUSALITY = ('timing only: a sector move that coincided with the company move is not stated to explain '
                 'it; no causal link is established')
-# filings made by insiders / holders about the issuer; the issuer's own filings are preferred as SIC anchor
-HOLDER_FORMS = ('3', '4', '5', '144', '3/A', '4/A', '5/A', '144/A')
-HOLDER_FORM_PREFIXES = ('SC 13', 'SCHEDULE 13')
+SIC_ITEM = 'SEC SIC code at the cutoff'
 
 
 # ---------------------------------------------------------------- helpers
@@ -117,25 +129,77 @@ def thresholds_version(ctx):
     return (getattr(ctx, 'weekly', None) or {}).get('thresholds_version')
 
 
+def parse_share(value):
+    """
+    Minimum peer share as {'min': Fraction, 'tol': Fraction, 'text': str}; raises ValueError.
+    "2/3" or [2, 3]: exact fraction (tol 0). A decimal (0.6667, "0.6667") is compared with the absolute
+    tolerance DECIMAL_SHARE_TOL, so 2/3 >= 0.6667 - 0.0005 passes and 0.7 still rejects 2/3.
+    """
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f'not a share: {value!r}')
+    try:
+        if isinstance(value, (list, tuple)):
+            if len(value) != 2 or not all(isinstance(x, int) and not isinstance(x, bool) for x in value):
+                raise ValueError('expected [numerator, denominator] integers')
+            num, den = value
+            frac, tol, text = Fraction(num, den), Fraction(0), f'{num}/{den}'
+        elif isinstance(value, str) and '/' in value:
+            num, den = (int(x.strip()) for x in value.split('/'))
+            frac, tol, text = Fraction(num, den), Fraction(0), f'{num}/{den}'
+        elif isinstance(value, (int, float, str)):
+            text = str(value).strip()
+            frac = Fraction(text)
+            tol = Fraction(0) if frac.denominator == 1 else DECIMAL_SHARE_TOL
+            if tol:
+                text += f' (decimal: compared with tolerance {float(tol):g}, i.e. share >= {float(frac - tol):.6g})'
+        else:
+            raise ValueError(f'unsupported type {type(value).__name__}')
+    except ZeroDivisionError as e:
+        raise ValueError('zero denominator') from e
+    if not 0 < frac <= 1:
+        raise ValueError(f'{value!r} is not in (0, 1]')
+    return {'min': frac, 'tol': tol, 'text': text}
+
+
+def share_met(same, n, share):
+    """True when same / n >= the declared minimum share (exact rational comparison)."""
+    return bool(n) and same is not None and Fraction(same, n) >= share['min'] - share['tol']
+
+
 def rule_params(ctx):
-    """(k, min share, provenance text) of the sector-wide rule."""
+    """{'k', 'share', 'source', 'error'} of the sector-wide rule (error: invalid declared value)."""
     thr = (getattr(ctx, 'weekly', None) or {}).get('thresholds') or {}
-    k, share = _num(thr.get(SIGMA_KEY)), _num(thr.get(SHARE_KEY))
-    src = []
-    src.append(f'k from config thresholds {thresholds_version(ctx)}' if k is not None
-               else f'k = {DEFAULT_ETF_SIGMA:g} (spec default; not in config weekly.thresholds)')
-    src.append(f'peer share from config thresholds {thresholds_version(ctx)}' if share is not None
-               else 'peer share 2/3 (spec default; not in config weekly.thresholds)')
-    return (DEFAULT_ETF_SIGMA if k is None else k, DEFAULT_PEER_SHARE if share is None else share,
-            '; '.join(src))
+    version = thresholds_version(ctx)
+    src, errors = [], []
+    k = DEFAULT_ETF_SIGMA
+    if SIGMA_KEY in thr:
+        k = _num(thr.get(SIGMA_KEY))
+        if k is None or k <= 0:
+            errors.append(f'config weekly.thresholds.{SIGMA_KEY} = {thr.get(SIGMA_KEY)!r} is not a positive number')
+            k = None
+        src.append(f'k from config thresholds {version}')
+    else:
+        src.append(f'k = {DEFAULT_ETF_SIGMA:g} (spec default; not in config weekly.thresholds)')
+    share = parse_share(DEFAULT_PEER_SHARE)
+    if SHARE_KEY in thr:
+        try:
+            share = parse_share(thr.get(SHARE_KEY))
+        except ValueError as e:
+            errors.append(f'config weekly.thresholds.{SHARE_KEY} = {thr.get(SHARE_KEY)!r} is invalid ({e})')
+            share = None
+        src.append(f'peer share from config thresholds {version}')
+    else:
+        src.append(f'peer share {DEFAULT_PEER_SHARE} (spec default; not in config weekly.thresholds)')
+    return {'k': k, 'share': share, 'source': '; '.join(src), 'error': '; '.join(errors) or None}
 
 
 def rule_text(k, share):
-    share_txt = '2/3' if abs(share - 2 / 3) < 1e-9 else f'{share:.2f}'
+    k_txt = 'k (invalid in config)' if k is None else f'{k:g}'
+    share_txt = 'a minimum share (invalid in config)' if share is None else share['text']
     return (f'rule {SECTOR_RULE_VERSION}: flag set only when sign(ETF r_W) = sign(peer median r_W) (both '
-            f'non-zero), |ETF r_W| > {k:g} x the sd of its previous non-overlapping 5-session returns (up to '
+            f'non-zero), |ETF r_W| > {k_txt} x the sd of its previous non-overlapping 5-session returns (up to '
             f'{HISTORY_WEEKS} weeks, minimum {MIN_HISTORY_WEEKS}), and at least {share_txt} of the peers with '
-            'a return share that sign')
+            'a return share that sign (compared on counts)')
 
 
 def series(ctx, ticker):
@@ -222,19 +286,22 @@ def price_evidence(ctx, ticker, px, fact):
 
 
 def peer_stats(returns):
-    """median, IQR, share of peers with the median's sign, count with that sign."""
+    """median, IQR, count of peers with the median's sign (None when the median is zero), peers with a return."""
     vals = [r for r in returns if r is not None]
     if len(vals) < MIN_PEERS:
-        return None, None, None, None
+        return None, None, None, len(vals)
     med = statistics.median(vals)
     q1, q3 = np.percentile(vals, [25, 75])
     s = _sign(med)
     same = sum(1 for v in vals if _sign(v) == s) if s else None
-    return med, float(q3 - q1), (None if same is None else same / len(vals)), same
+    return med, float(q3 - q1), same, len(vals)
 
 
-def sector_flag(r_etf, sd_etf, med, share, k, min_share):
-    """(flag True/False/None, list of failed conditions, list of missing inputs)."""
+def sector_flag(r_etf, sd_etf, med, same, n_peers, k, share):
+    """
+    (flag True/False/None, list of failed conditions, list of missing inputs). same / n_peers: peers with
+    the median's sign / peers with a return; share: parse_share() result (compared on counts).
+    """
     missing = [name for name, v in (('ETF weekly return', r_etf), ('ETF 156-week sd', sd_etf),
                                     ('peer median', med)) if v is None]
     if missing:
@@ -244,59 +311,66 @@ def sector_flag(r_etf, sd_etf, med, share, k, min_share):
         failed.append(f'sign(ETF {fmt_pct(r_etf)}) != sign(peer median {fmt_pct(med)}) or one is zero')
     if not abs(r_etf) > k * sd_etf:
         failed.append(f'|ETF r_W| {abs(r_etf) * 100:.2f}% <= {k:g} x sd {sd_etf * 100:.2f}%')
-    if share is None or share < min_share - 1e-12:
-        failed.append(f'peer share with the median sign {"N/A" if share is None else f"{share:.0%}"} '
-                      f'< {min_share:.0%}')
+    if not share_met(same, n_peers, share):
+        failed.append(f'peers with the median sign {"N/A" if same is None else same}/{n_peers} below the minimum '
+                      f'share {share["text"]}')
     return not failed, failed, []
 
 
 # ---------------------------------------------------------------- per company
 
 def _sic(ctx, res, ticker):
-    """Table row [sic, description, retrieved_at, fetch_id] (None when unavailable)."""
+    """
+    Table row [sic, description, status at the cutoff, retrieved_at, fetch_id]. The submissions feed
+    shows only the current SIC and the time that value became public is unknown (published_at NULL):
+    it is evidence only when the feed was retrieved at or before the cutoff.
+    """
     tm = ctx.tm
     try:
         feed = ctx.filings(ticker)
     except Exception as e:  # noqa: BLE001 - one source must not stop the section
-        res.add(unavailable(ticker, Q, 'SEC SIC industry code', f'SEC submissions feed: {type(e).__name__}: {e}'))
-        return [None, None, None, None]
+        res.add(unavailable(ticker, Q, SIC_ITEM, f'SEC submissions feed: {type(e).__name__}: {e}'))
+        return [None, None, None, None, None]
     if not feed or feed.get('status') != 'OK':
-        res.add(unavailable(ticker, Q, 'SEC SIC industry code',
+        res.add(unavailable(ticker, Q, SIC_ITEM,
                             f'SEC submissions feed unavailable: {(feed or {}).get("reason") or "no reason given"}'))
-        return [None, None, None, None]
+        return [None, None, None, None, None]
     fetch = feed.get('fetch') or {}
-    sic, desc = feed.get('sic'), feed.get('sic_description')
-    row = [sic or None, desc or None, fetch.get('retrieved_at'), fetch.get('fetch_id')]
+    retrieved = to_utc_iso(fetch.get('retrieved_at'))
+    sic, desc = feed.get('sic') or None, feed.get('sic_description') or None
+    row = [sic, desc, None, retrieved, fetch.get('fetch_id')]
     if not sic:
-        res.add(unavailable(ticker, Q, 'SEC SIC industry code', 'no SIC code in the SEC submissions feed'))
+        res.add(unavailable(ticker, Q, SIC_ITEM, 'no SIC code in the SEC submissions feed'))
         return row
-    anchors = [f for f in feed.get('filings') or [] if f.get('published_at') and f['published_at'] <= tm.cutoff]
-    if not anchors:
-        res.add(unavailable(ticker, Q, 'SEC SIC industry code',
-                            'no filing accepted before the cutoff in the submissions feed: the SIC label '
-                            'cannot be anchored to a document public at the cutoff'))
+    if retrieved is None or retrieved > tm.cutoff:
+        when = 'at an unknown time' if retrieved is None else f'at {retrieved}, after the cutoff {tm.cutoff}'
+        row[2] = (f'current SIC (retrieved {retrieved or "at an unknown time"}, after the cutoff); not '
+                  'point-in-time, not used in any conclusion')
+        res.add(unavailable(ticker, Q, SIC_ITEM,
+                            f'the submissions feed was retrieved {when} and shows only the current SIC (no SIC '
+                            'history; the time that value became public is unknown); no point-in-time SIC (filing '
+                            'header ASSIGNED-SIC) is parsed by this system; the current code is shown in the table '
+                            'for reference only'))
         return row
-    own = [f for f in anchors if (f.get('form') or '') not in HOLDER_FORMS
-           and not (f.get('form') or '').startswith(HOLDER_FORM_PREFIXES)]
-    last = max(own or anchors, key=lambda f: f['published_at'])
-    item = evidence(tm, SEC_SOURCE, SEC_RANK,
-                    f'{ticker}: SIC {sic} ({desc}) in the SEC submissions feed retrieved {fetch.get("retrieved_at")}',
-                    as_of=last.get('filing_date'), published_at=last['published_at'],
-                    retrieved_at=fetch.get('retrieved_at'), fetch_id=fetch.get('fetch_id'), fresh=None,
-                    basis=(f'the feed carries no SIC history: SIC assumed unchanged since the last filing accepted '
-                           f'before the cutoff ({last.get("form")} {last.get("accession_number")}, published '
-                           f'{last["published_at"]})'))
-    res.add(conclude(ticker, Q, f'{ticker}: official industry label (SEC EDGAR, rank 1): SIC {sic} — {desc}.',
+    row[2] = 'feed retrieved before the cutoff (SIC as of retrieval)'
+    item = evidence(tm, SEC_SOURCE, SEC_RANK, f'{ticker}: SIC {sic} ({desc}) in the SEC submissions feed retrieved {retrieved}',
+                    as_of=retrieved[:10], published_at=None, retrieved_at=retrieved, fetch_id=fetch.get('fetch_id'),
+                    fresh=None,
+                    basis=('time the SIC value became public unknown (the feed has no SIC history): published_at '
+                           'NULL, availability = retrieval time, before the cutoff'))
+    res.add(conclude(ticker, Q, f'{ticker}: official industry label (SEC EDGAR, rank 1) in the submissions feed '
+                                f'retrieved {retrieved}, before the cutoff: SIC {sic} — {desc}.',
                      [item], 'official_fact',
                      resolve='the SIC code in the header of a filing accepted before the cutoff (not parsed by '
-                             'this system); the submissions feed shows only the current code'))
+                             'this system); the code can change between retrieval and the cutoff'))
     return row
 
 
-def _company(ctx, res, ticker, k, min_share, cache):
+def _company(ctx, res, ticker, params, cache):
     tm = ctx.tm
     weekly_cfg = getattr(ctx, 'weekly', None) or {}
     s_m5, s0 = tm.sessions[-WEEK - 1], tm.s0
+    k, min_share = params['k'], params['share']
     rule = rule_text(k, min_share)
 
     def get(t):
@@ -341,8 +415,7 @@ def _company(ctx, res, ticker, k, min_share, cache):
             res.add(unavailable(ticker, Q, f'peer {p} weekly return',
                                 f'no adjusted close for {", ".join(g["missing"])} (not filled)'))
         peer_r[p] = g['r']
-    med, iqr, share, same = peer_stats(list(peer_r.values()))
-    n_avail = sum(1 for v in peer_r.values() if v is not None)
+    med, iqr, same, n_avail = peer_stats(list(peer_r.values()))
     if peers and med is None:
         res.add(unavailable(ticker, Q, 'peer median / IQR',
                             f'{n_avail} of {len(peers)} peers have a weekly return (minimum {MIN_PEERS})'))
@@ -360,17 +433,21 @@ def _company(ctx, res, ticker, k, min_share, cache):
 
     rel_e = None if r_c is None or r_e is None else r_c - r_e
     rel_m = None if r_c is None or med is None else r_c - med
-    flag, failed, flag_missing = sector_flag(r_e, sd_e, med, share, k, min_share)
+    if params['error']:
+        flag, failed, flag_missing = None, [], []
+        res.add(unavailable(ticker, Q, 'sector-wide move flag', f'rule parameters invalid: {params["error"]}; {rule}'))
+    else:
+        flag, failed, flag_missing = sector_flag(r_e, sd_e, med, same, n_avail, k, min_share)
     partial_peers = bool(peers) and n_avail < len(peers)
     partial_week = any(get(t)['missing'] for t in [ticker] + ([etf] if etf else []) + peers
                        if get(t)['r'] is not None)
-    if flag is None and etf and peers:
+    if flag is None and etf and peers and not params['error']:
         res.add(unavailable(ticker, Q, 'sector-wide move flag', f'inputs missing: {", ".join(flag_missing)}; {rule}'))
 
     summary = [ticker, pct(r_c), etf, pct(r_e), None if sd_e is None else round(100 * sd_e, 2),
                None if r_e is None or not sd_e else round(r_e / sd_e, 2), f'{n_avail}/{len(peers)}',
                pct(med), None if iqr is None else round(100 * iqr, 2),
-               None if share is None else f'{same}/{n_avail}', None if rel_e is None else round(100 * rel_e, 2),
+               None if med is None or not _sign(med) else f'{same}/{n_avail}', None if rel_e is None else round(100 * rel_e, 2),
                None if rel_m is None else round(100 * rel_m, 2),
                None if flag is None else ('yes' if flag else 'no'), '; '.join(failed) or None]
 
@@ -473,14 +550,15 @@ def build(ctx, tickers=None):
     """tickers: optional subset of ctx.universe (default: the whole universe)."""
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
-    k, min_share, param_src = rule_params(ctx)
+    params = rule_params(ctx)
+    k, min_share, param_src = params['k'], params['share'], params['source']
     universe = list(tickers) if tickers is not None else list(ctx.universe)
     cache = {}
 
     _overall_etfs(ctx, res, cache)
     summaries, sic_rows = [], []
     for t in universe:
-        summaries.append(_company(ctx, res, t, k, min_share, cache))
+        summaries.append(_company(ctx, res, t, params, cache))
         sic_rows.append([t] + _sic(ctx, res, t))
 
     res.table('Sector-relative performance by company', [
@@ -491,11 +569,13 @@ def build(ctx, tickers=None):
         note=(f'{rule_text(k, min_share)} ({param_src}). Thresholds {thresholds_version(ctx)}. The flag is a '
               f'heuristic label (UNCERTAIN). {NO_CAUSALITY[0].upper() + NO_CAUSALITY[1:]}. {HOLDINGS_GAP}. '
               f'{PEER_BIAS[0].upper() + PEER_BIAS[1:]}.'))
-    res.table('Official industry label (SEC SIC)', ['ticker', 'SIC code', 'SIC description',
+    res.table('Official industry label (SEC SIC)', ['ticker', 'SIC code', 'SIC description', 'status at the cutoff',
                                                     'submissions feed retrieved at', 'fetch id'], sic_rows,
               question=Q,
-              note=('SEC EDGAR submissions feed (rank 1). The feed shows the current SIC only (no history): its '
-                    'validity at the cutoff is assumed, so freshness is unknown. SIC is coarse: same-industry '
+              note=('SEC EDGAR submissions feed (rank 1). The feed shows the current SIC only (no history) and the '
+                    'time that value became public is unknown: a code is used as evidence only when the feed was '
+                    'retrieved before the cutoff (freshness unknown); a feed retrieved after the cutoff gives the '
+                    'current code, shown for reference only and not point-in-time. SIC is coarse: same-industry '
                     'companies can sit in different codes (e.g. software vs computer equipment).'))
     res.add(unavailable('overall', Q, 'sector ETF holdings', HOLDINGS_GAP))
     res.add(unavailable('overall', Q, 'peer SIC codes and peer SEC events in the window',

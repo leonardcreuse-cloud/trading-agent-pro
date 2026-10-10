@@ -5,13 +5,20 @@ Weekly report section 'market' - Q1 "What happened this week?" (phase P3.0)
 Overall
   benchmark (ctx.weekly['benchmark'], SPY) weekly return r_W = Cadj(s_0) / Cadj(s_-5) - 1, both
   adjusted closes from ONE yfinance fetch; equal-weight mean of r_W over ctx.universe; cross-check
-  of SPY against FRED SP500 (rank 1). The cross-check compares PRICE returns over the same two
-  observation dates: SPY close_raw ratio (split-adjusted only, no dividends) against the SP500 price
-  index as known at T_c. It counts as an independent agreeing source (cross_checked=True) only when
-  the FRED observations known at T_c are exactly s_-5 and s_0, the signs agree and the difference
-  is <= 0.3 percentage points. FRED publishes SP500 for day d on the next day, so the s_0 value is
-  normally NOT public at T_c: the comparison is then made over the latest FRED window known at T_c
-  (a data-consistency check of the price source) and the week's statement stays UNCERTAIN.
+  of SPY against FRED SP500 (rank 1). The cross-check compares, over the same two observation
+  dates, the SPY ADJUSTED close ratio (the very figure the week statement reports) with the SP500
+  price index change as known at T_c. The adjusted ratio is the right comparator: SPY's NAV accrues
+  its constituents' dividends as they go ex-dividend and pays them out once a quarter, so its raw
+  close drops by a whole quarter's dividends (~0.25-0.30 %) on SPY's own ex-date, whereas the price
+  index drops as each constituent goes ex-dividend. Measured on stored SPY bars and FRED SP500
+  since 2025 (5-session windows): in the 35 windows containing a SPY ex-date, |adjusted - SP500|
+  averaged 0.035 pp (0 above 0.3 pp) and |close_raw - SP500| 0.262 pp (6 above 0.3 pp); outside
+  them both series are identical. The week statement counts as cross-checked by an independent
+  agreeing source (cross_checked=True) only when the FRED observations known at T_c are exactly
+  s_-5 and s_0 and the STATED SPY return agrees with FRED in sign and within 0.3 percentage points.
+  FRED publishes SP500 for day d on the next day, so the s_0 value is normally NOT public at T_c:
+  the comparison is then made over the latest FRED window known at T_c (a data-consistency check
+  of the price source) and the week's statement stays UNCERTAIN.
 
 Per company (each ticker in ctx.universe)
   weekly return, excess vs SPY and vs its pre-declared sector ETF (ctx.weekly['sector_etf']), weekly
@@ -187,6 +194,14 @@ def excess_history(frame, bench, end_idx, weeks=HISTORY_WEEKS):
     return out
 
 
+def agrees(a, b, tolerance_pp=CROSS_CHECK_TOLERANCE_PP):
+    """True when two returns have the same sign and differ by <= tolerance_pp; None if one is unknown."""
+    if a is None or b is None:
+        return None
+    same_sign = (a > 0) == (b > 0) and (a < 0) == (b < 0)
+    return same_sign and abs(a - b) * 100 <= tolerance_pp
+
+
 def zscore(x, history, min_n=MIN_HISTORY_WEEKS):
     if x is None or len(history) < min_n:
         return None
@@ -320,7 +335,8 @@ def _company(ctx, res, ticker, bench_name, bench, bench_px, thr):
 def _sp500_crosscheck(ctx, res, bench_name, bench, bench_px, s_m5, s0):
     """
     {'exact': the FRED window known at T_c is s_-5 -> s_0, 'agree': True / False / None,
-     'items': FRED evidence, 'row': table row}; None when no comparison is possible.
+     'fred_r': FRED SP500 change, 'items': FRED evidence, 'row': table row}; None when no comparison
+    is possible. SPY side: adjusted close ratio (see the module docstring for why not close_raw).
     """
     tm = ctx.tm
     st = ctx.fred(SP500)
@@ -346,18 +362,15 @@ def _sp500_crosscheck(ctx, res, bench_name, bench, bench_px, s_m5, s0):
                             f'no SP500 observation for {d_p} as known at the cutoff'))
         return None
     fred_r = v_c / v_p - 1
-    col = 'close_raw' if value(bench, 'close_raw', i_c) and value(bench, 'close_raw', i_c - WEEK) else 'close'
-    spy_r = ratio_return(bench, col, i_c - WEEK, i_c)
+    col = 'adjusted close'
+    spy_r = ratio_return(bench, 'close', i_c - WEEK, i_c)
     fetch = st.get('fetch') or {}
     items = [evidence(tm, FRED_SOURCE, FRED_RANK, f'SP500 {d_p} = {v_p} -> {d_c} = {v_c} ({fmt_pct(fred_r)})',
                       as_of=d_c, published_at=pub_c, retrieved_at=fetch.get('retrieved_at'),
                       fetch_id=fetch.get('fetch_id'), fresh=fresh_flag(ctx, d_c, 'daily'),
                       basis='FRED vintage date (realtime_start), end of day New York')]
-    agree, diff = None, None
-    if spy_r is not None:
-        diff = abs(spy_r - fred_r) * 100
-        same_sign = (spy_r > 0) == (fred_r > 0) and (spy_r < 0) == (fred_r < 0)
-        agree = same_sign and diff <= CROSS_CHECK_TOLERANCE_PP
+    agree = agrees(spy_r, fred_r)
+    diff = None if spy_r is None else abs(spy_r - fred_r) * 100
     exact = d_c == s0 and d_p == s_m5
     row = [f'{bench_name} ({col}) vs FRED SP500', d_p, d_c, pct(spy_r), pct(fred_r),
            None if diff is None else round(diff, 3),
@@ -367,14 +380,14 @@ def _sp500_crosscheck(ctx, res, bench_name, bench, bench_px, s_m5, s0):
         spy_item = price_evidence(ctx, bench_name, bench_px, f'{col} ratio {d_p} -> {d_c} = {fmt_pct(spy_r)}',
                                   as_of=d_c)
         verdict = (f'agree in sign and within {CROSS_CHECK_TOLERANCE_PP} pp' if agree
-                   else f'do not agree in sign within {CROSS_CHECK_TOLERANCE_PP} pp')
+                   else f'do not agree (same sign and within {CROSS_CHECK_TOLERANCE_PP} pp required)')
         res.add(conclude('overall', Q, f'Over {d_p} -> {d_c} (the latest FRED SP500 window known at the cutoff, '
-                                       f'not the report week), the {bench_name} price return {fmt_pct(spy_r)} and '
+                                       f'not the report week), the {bench_name} adjusted-close return {fmt_pct(spy_r)} and '
                                        f'the FRED SP500 change {fmt_pct(fred_r)} {verdict} (difference '
                                        f'{diff:.3f} pp).',
                          [spy_item] + items, 'market_fact', cross_checked=bool(agree),
                          reason_codes=[] if agree else ['CONFLICTING_SOURCES']))
-    return {'exact': exact, 'agree': agree, 'items': items, 'row': row}
+    return {'exact': exact, 'agree': agree, 'fred_r': fred_r, 'items': items, 'row': row}
 
 
 def build(ctx):
@@ -396,8 +409,10 @@ def build(ctx):
 
     # overall
     check = _sp500_crosscheck(ctx, res, bench_name, bench, bench_px, s_m5, s0) if b_w is not None else None
-    week_checked = bool(check and check['exact'] and check['agree'])
-    week_conflict = bool(check and check['exact'] and check['agree'] is False)
+    # the figure that becomes STRONGLY SUPPORTED must be the figure that was checked: b_w itself
+    week_agree = agrees(b_w, check['fred_r']) if check and check['exact'] else None
+    week_checked = week_agree is True
+    week_conflict = week_agree is False
     returns = {t: p['r_w'] for t, p in per.items() if p and p.get('r_w') is not None}
     missing = [t for t in ctx.universe if t not in returns]
     ew = sum(returns.values()) / len(returns) if returns else None
@@ -417,10 +432,13 @@ def build(ctx):
         res.table('SPY vs FRED SP500 cross-check', ['comparison', 'from', 'to', 'SPY %', 'FRED SP500 %',
                                                     '|difference| pp', f'agree (same sign, <= {CROSS_CHECK_TOLERANCE_PP} pp)',
                                                     'window'], [check['row']], question=Q,
-                  note='Price returns on both sides (SPY close_raw excludes dividends, like the index). FRED '
-                       'publishes SP500 for day d on the next day, so the s_0 value is normally not public at '
-                       'the cutoff; the week statement is cross-checked only when the FRED window known at the '
-                       'cutoff is exactly s_-5 -> s_0.')
+                  note='SPY adjusted close ratio vs the SP500 price index. SPY accrues its constituents\' '
+                       'dividends and its raw close drops by a whole quarter of them on its own ex-date, while '
+                       'the index drops as each constituent goes ex-dividend: the adjusted ratio tracks the '
+                       'index (since 2025, SPY ex-date weeks: mean |adjusted - SP500| 0.035 pp vs 0.262 pp for '
+                       'close_raw). FRED publishes SP500 for day d on the next day, so the s_0 value is normally '
+                       'not public at the cutoff; the week statement is cross-checked only when the FRED window '
+                       'known at the cutoff is exactly s_-5 -> s_0 and the stated SPY return agrees.')
 
     if b_w is not None:
         items = [price_evidence(ctx, bench_name, bench_px, f'adjusted close ratio {s_m5} -> {s0} = {fmt_pct(b_w)}')]

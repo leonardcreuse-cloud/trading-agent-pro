@@ -51,26 +51,20 @@ class FakeDB:
         return sorted(rows, key=lambda r: r['available_at'])
 
     def series(self, entity, metric, known_at=None, source=None, strict_vintage=False, start=None, end=None):
+        """Like Database.series: one version per as_of_date, the latest published at known_at."""
         k = to_utc_iso(known_at)
-        return [(d, r) for d, r in self._xbrl.get((entity, metric), [])
-                if (k is None or r['published_at'] <= k) and (start is None or d >= start)
-                and (end is None or d <= end)]
+        chosen = {}
+        for d, r in sorted(self._xbrl.get((entity, metric), []), key=lambda x: x[1]['published_at']):
+            if (k is None or r['published_at'] <= k) and (start is None or d >= start) and (end is None or d <= end):
+                chosen[d] = dict(r)
+        return sorted(chosen.items())
 
 
-class FakeSEC:
-    """fundamentals(known_at) replays versions by their publication instant (like SECParser)."""
+class StrictSEC:
+    """Any use of the SEC client (which could download from sec.gov) fails the test."""
 
-    def __init__(self, versions=None):
-        self.versions = versions or {}
-        self.calls = []
-
-    def fundamentals(self, ticker, known_at=None):
-        self.calls.append((ticker, known_at))
-        known = [v for pub, v in self.versions.get(ticker, []) if pub <= to_utc_iso(known_at)]
-        if not known:
-            return {'status': UNAVAILABLE, 'debt': None, 'debt_to_equity': None,
-                    'reason': 'SEC XBRL company facts unavailable: test'}
-        return dict(known[-1], status='OK', fetch={'fetch_id': 9, 'retrieved_at': RETRIEVED})
+    def __getattr__(self, name):
+        raise AssertionError(f'the weekly section touched the live SEC client (attribute {name!r})')
 
 
 class FakeCtx:
@@ -81,7 +75,7 @@ class FakeCtx:
         self._fred = fred or {}            # sid -> [(obs_date, value, published_at)] (all vintages)
         self._fred_status = fred_status or {}
         self._filings = filings or {}
-        self.sec = sec or FakeSEC()
+        self.sec = sec or StrictSEC()
         self.db = db or FakeDB()
         self.universe = list(universe)
         self.weekly = weekly or json.loads(json.dumps(WEEKLY))
@@ -307,19 +301,37 @@ def form4(acc, code, value, owners, plan, available_at):
                                       'rule_10b5_1': plan})}
 
 
+STALE_RETRIEVAL = '2026-10-06T12:00:00+00:00'  # after T_p, before T_c
+
+
 def feed(rows, after_cutoff=True):
-    return {'status': 'OK', 'filings': rows, 'fetch': {'fetch_id': 5, 'retrieved_at': RETRIEVED},
+    return {'status': 'OK', 'filings': rows,
+            'fetch': {'fetch_id': 5, 'retrieved_at': RETRIEVED if after_cutoff else STALE_RETRIEVAL},
             'retrieved_after_cutoff': after_cutoff, 'reason': None}
 
 
-def filing(form, published, items=(), acc=None):
-    return {'form': form, 'filing_date': published[:10], 'accession_number': acc or f'acc-{form}-{published}',
+def filing(form, published, items=(), acc=None, report=None):
+    return {'form': form, 'filing_date': published[:10], 'report_date': report,
+            'accession_number': acc or f'acc-{form}-{published}',
             'published_at': published, 'published_at_basis': 'test', 'items': list(items)}
 
 
-def fundamentals(de, debt, bsd):
-    return {'debt_to_equity': de, 'debt': debt, 'equity': debt / de, 'balance_sheet_date': bsd,
-            'equity_tag': 'StockholdersEquity', 'debt_tags': ['LongTermDebt'], 'reason': None}
+def xbrl(versions, ticker='AAA'):
+    """[(published_at, balance_sheet_date, equity, {debt_tag: value})] -> FakeDB xbrl rows (stored facts)."""
+    out = {}
+    for k, (pub, bsd, equity, debts) in enumerate(versions):
+        for tag, v in [('StockholdersEquity', equity)] + list(debts.items()):
+            out.setdefault((ticker, f'xbrl:{tag}'), []).append(
+                (bsd, {'value': v, 'published_at': pub, 'published_at_basis': 'test acceptance',
+                       'fetch_id': 100 + k, 'retrieved_at': max(pub, RETRIEVED)}))
+    return out
+
+
+BS_VERSIONS = [('2026-06-10T12:00:00+00:00', '2026-05-31', 2e9, {'LongTermDebt': 1e9}),       # D/E 0.5
+               ('2026-10-02T12:00:00+00:00', '2026-08-31', 2e9, {'LongTermDebt': 1.2e9}),     # D/E 0.6, in P
+               ('2026-10-08T12:00:00+00:00', '2026-11-30', 1e9, {'LongTermDebt': 9e9})]       # after T_c
+PERIODIC = [filing('10-Q', '2026-06-10T12:00:00+00:00', report='2026-05-31'),
+            filing('10-Q', '2026-10-02T12:00:00+00:00', report='2026-08-31')]
 
 
 def weekly_fred(start_value, step, n=120, end='2026-09-25'):
@@ -347,12 +359,7 @@ def risks_ctx(**kw):
         form4('F1', 'S', 20_000.0, ['Fay'], False, '2026-07-05T14:00:00+00:00'),    # only in the T_p window
         form4('G1', 'S', 5_000.0, ['Gil'], False, '2026-03-01T14:00:00+00:00'),     # earliest stored
     ]
-    db = FakeDB(events={('AAA', 'form4:transaction'): events},
-                xbrl={('AAA', 'xbrl:StockholdersEquity'): [('2026-08-31', {'published_at': '2026-09-20T12:00:00+00:00'})],
-                      ('AAA', 'xbrl:LongTermDebt'): [('2026-08-31', {'published_at': '2026-10-02T12:00:00+00:00'})]})
-    sec = FakeSEC({'AAA': [('2026-06-10T12:00:00+00:00', fundamentals(0.5, 1e9, '2026-05-31')),
-                           ('2026-10-02T12:00:00+00:00', fundamentals(0.6, 1.2e9, '2026-08-31')),
-                           ('2026-10-08T12:00:00+00:00', fundamentals(9.9, 9e9, '2026-11-30'))]})   # after T_c
+    db = FakeDB(events={('AAA', 'form4:transaction'): events}, xbrl=xbrl(kw.pop('bs_versions', BS_VERSIONS)))
     filings_rows = [filing('4', e, acc=a) for a, e in (('A1', '2026-10-01T14:00:00+00:00'),
                                                        ('B1', '2026-09-10T14:00:00+00:00'),
                                                        ('C1', '2026-09-12T14:00:00+00:00'),
@@ -362,7 +369,7 @@ def risks_ctx(**kw):
     filings_rows += [filing('8-K', '2026-10-02T20:00:00+00:00', ['1.05', '9.01']),
                      filing('8-K', '2026-10-05T20:00:00+00:00', ['2.02']),          # earnings: not a red flag
                      filing('NT 10-Q', '2026-10-07T10:00:00+00:00'),               # after T_c: excluded
-                     filing('10-K', '2025-01-01T12:00:00+00:00')]
+                     filing('10-K', '2025-01-01T12:00:00+00:00', report='2024-12-31')] + PERIODIC
     vix = [(d, 15.0, end_of_us_trading_day_utc(date.fromisoformat(d) + timedelta(days=1)))
            for d in ALL_SESSIONS[-400:]]
     vix = [(d, v + (0.5 if i % 2 else -0.5), p) for i, (d, v, p) in enumerate(vix)]
@@ -373,7 +380,7 @@ def risks_ctx(**kw):
     base = dict(prices={'AAA': ok_prices(frame(risky_closes(), vols), 2)},
                 fred={'VIXCLS': vix, 'NFCI': nfci, 'STLFSI4': stl},
                 fred_status={'BAMLH0A0HYM2': 'FRED HTTP 500'},
-                filings={'AAA': feed(filings_rows)}, sec=sec, db=db)
+                filings={'AAA': feed(filings_rows)}, sec=StrictSEC(), db=db)
     base.update(kw)
     return FakeCtx(**base)
 
@@ -406,19 +413,20 @@ def test_risks_full_table_and_price_indicator_values():
     assert 'test-v1' in next(t for t in out['tables'] if t['scope'] == 'AAA')['note']
 
 
-def test_risks_sec_rows_are_point_in_time_and_official():
-    ctx = risks_ctx()
+def test_risks_sec_rows_are_point_in_time_official_and_reuse_only():
+    ctx = risks_ctx()                                     # ctx.sec is StrictSEC: any live-client use fails
     out = risks.build(ctx).as_dict()
     rows = risk_table(out)
     de = rows['debt-to-equity (SEC XBRL)']
-    assert (de['as known at T_p'], de['as known at T_c']) == (0.5, 0.6)       # 9.9 published after T_c: unseen
+    assert (de['as known at T_p'], de['as known at T_c']) == (0.5, 0.6)       # 9.0 published after T_c: unseen
     assert de['increased'] == 'not assessed: no pre-declared threshold'
-    assert rows['debt (SEC XBRL, USD)']['as known at T_c'] == 1.2e9
-    assert set(ctx.sec.calls) == {('AAA', T_C), ('AAA', T_P)}
+    debt = rows['debt (SEC XBRL, USD)']
+    assert (debt['as known at T_p'], debt['as known at T_c'], debt['change']) == (1e9, 1.2e9, '+20.0% relative')
     c = next(c for c in out['conclusions'] if c['statement'].startswith('AAA balance-sheet'))
-    assert c['kind'] == 'official_fact' and c['level'] == STRONG
-    assert c['evidence'][0]['published_at'] == '2026-10-02T12:00:00+00:00'
-    assert 'new balance sheet' in c['statement']
+    assert c['kind'] == 'official_fact' and c['level'] == STRONG and c['reason_codes'] == []
+    assert [e['published_at'] for e in c['evidence']] == ['2026-06-10T12:00:00+00:00', '2026-10-02T12:00:00+00:00']
+    assert [e['fetch_id'] for e in c['evidence']] == [100, 101]           # provenance of the stored facts used
+    assert 'new balance sheet' in c['statement'] and 'stored SEC XBRL facts' in c['statement']
     # an optional threshold key, once pre-declared in config, is honoured
     ctx = risks_ctx(weekly=dict(WEEKLY, thresholds=dict(THRESHOLDS, debt_to_equity_change_abs=0.05)))
     assert risk_table(risks.build(ctx).as_dict())['debt-to-equity (SEC XBRL)']['increased'] == 'yes'
@@ -471,8 +479,17 @@ def test_risks_red_flags_window_and_negative_fact():
     c = next(c for c in risks.build(quiet).as_dict()['conclusions'] if 'no red-flag' in c['statement'])
     assert c['level'] == STRONG and c['evidence'][0]['published_at'] == T_C
     stale_feed = risks_ctx(filings={'AAA': feed([filing('10-K', '2025-01-01T12:00:00+00:00')], after_cutoff=False)})
-    un = {u['item']: u['reason'] for u in risks.build(stale_feed).as_dict()['unavailable']}
+    out = risks.build(stale_feed).as_dict()
+    un = {u['item']: u['reason'] for u in out['unavailable']}
     assert 'negative fact' in un['absence of red-flag filings in the week']
+    # the row must not show 0 / 'no' when the absence is not established, nor count as assessed
+    rf = risk_table(out)['red-flag SEC filings in the week (count)']
+    assert rf['as known at T_c'] is None and rf['increased'] is None and rf['change'] is None
+    judge = next(c for c in out['conclusions'] if c['scope'] == 'AAA' and c['kind'] == 'interpretation')
+    assert 'PARTIAL_COVERAGE' in judge['reason_codes']
+    assert 'unavailable: ' in judge['statement'] and 'red-flag SEC filings in the week (count)' in judge['statement']
+    per_flag = next(t for t in out['tables'] if t['title'] == 'Companies per flag')
+    assert ['red-flag SEC filings in the week (count)', None, 0] in per_flag['rows']
 
 
 def test_risks_market_stress_rows():
@@ -537,3 +554,147 @@ def test_risks_look_ahead_from_a_broken_accessor_raises():
 def test_weekly_changes_rule():
     pts = [('2026-09-04', 1.0), ('2026-09-10', 1.5), ('2026-09-11', 2.0), ('2026-09-18', 1.0), ('2026-10-02', 4.0)]
     assert risks.weekly_changes(pts) == [1.0, -1.0]          # last obs of each week; the 2-week gap is skipped
+
+
+# ---------------------------------------------------------------- review fixes (P3.0 adversarial review)
+
+def test_market_cross_check_uses_adjusted_close_through_a_spy_ex_dividend_week():
+    """SPY's raw close drops by a quarter of dividends on its ex-date; the price index does not."""
+    adj = [100 * 1.001 ** i for i in range(len(ALL_SESSIONS))]
+    raw = [a / 0.9965 if d < '2026-10-02' else a for a, d in zip(adj, ALL_SESSIONS)]   # ex-date inside the week
+    ctx = market_ctx(prices={'SPY': ok_prices(frame(adj, close_raw=raw), 1)},
+                     fred={'SP500': sp500_vintages([5000 * 1.001 ** i for i in range(len(ALL_SESSIONS))],
+                                                   same_day=True)})
+    out = market.build(ctx).as_dict()
+    c = next(c for c in out['conclusions'] if c['statement'].startswith('SPY weekly'))
+    assert c['level'] == STRONG and 'FRED SP500 agrees' in c['statement']
+    row = next(t for t in out['tables'] if t['title'] == 'SPY vs FRED SP500 cross-check')['rows'][0]
+    assert 'adjusted close' in row[0] and row[5] == pytest.approx(0.0, abs=1e-6) and row[6] == 'yes'
+
+
+def test_market_strong_figure_is_the_figure_that_was_checked():
+    """Stated (adjusted) SPY return 0.35 pp away from FRED: never STRONGLY SUPPORTED with 'agrees'."""
+    raw = [100 * 1.001 ** i for i in range(len(ALL_SESSIONS))]
+    adj = [r * 0.9965 if d < '2026-10-02' else r for r, d in zip(raw, ALL_SESSIONS)]
+    ctx = market_ctx(prices={'SPY': ok_prices(frame(adj, close_raw=raw), 1)},
+                     fred={'SP500': sp500_vintages([5000 * 1.001 ** i for i in range(len(ALL_SESSIONS))],
+                                                   same_day=True)})
+    c = next(c for c in market.build(ctx).as_dict()['conclusions'] if c['statement'].startswith('SPY weekly'))
+    assert c['level'] == UNCERTAIN and 'CONFLICTING_SOURCES' in c['reason_codes']
+    assert 'FRED SP500 agrees' not in c['statement'] and 'FRED SP500 disagrees' in c['statement']
+    assert market.agrees(0.005, 0.0049) is True and market.agrees(0.001, -0.001) is False
+    assert market.agrees(None, 0.01) is None and market.agrees(0.0085, 0.005) is False
+
+
+def test_risks_balance_sheet_gap_against_the_sec_feed_is_unavailable():
+    # the feed lists the 10-Q for 2026-08-31 accepted in P, but its facts were never stored
+    ctx = risks_ctx(bs_versions=BS_VERSIONS[:1])
+    out = risks.build(ctx).as_dict()
+    rows = risk_table(out)
+    de, debt = rows['debt-to-equity (SEC XBRL)'], rows['debt (SEC XBRL, USD)']
+    assert (de['as known at T_p'], de['as known at T_c']) == (0.5, None)      # never the stale 0.5 as "at T_c"
+    assert (debt['as known at T_p'], debt['as known at T_c']) == (1e9, None)
+    un = {(u['scope'], u['item']): u['reason'] for u in out['unavailable']}
+    assert '10-Q for period 2026-08-31' in un[('AAA', 'debt-to-equity (SEC XBRL) at T_c')]
+    assert 'not in the stored XBRL facts' in un[('AAA', 'debt (SEC XBRL, USD) at T_c')]
+    c = next(c for c in out['conclusions'] if c['statement'].startswith('AAA balance-sheet'))
+    assert c['level'] == UNCERTAIN and 'PARTIAL_COVERAGE' in c['reason_codes']
+    assert '(balance sheet unknown, as known at T_c)' in c['statement'] and len(c['evidence']) == 1
+
+
+def test_risks_balance_sheet_coverage_unverified_with_a_feed_retrieved_before_the_cutoff():
+    ctx = risks_ctx(weekly=dict(WEEKLY, thresholds=dict(THRESHOLDS, debt_to_equity_change_abs=0.05)))
+    ctx._filings['AAA'] = dict(ctx._filings['AAA'], retrieved_after_cutoff=False,
+                               fetch={'fetch_id': 5, 'retrieved_at': STALE_RETRIEVAL})
+    out = risks.build(ctx).as_dict()
+    de = risk_table(out)['debt-to-equity (SEC XBRL)']
+    assert (de['as known at T_p'], de['as known at T_c']) == (0.5, 0.6)       # stored values, coverage unverified
+    assert de['increased'] is None                                            # a declared rule is not applied
+    un = {(u['scope'], u['item']): u['reason'] for u in out['unavailable']}
+    assert 'not verified' in un[('AAA', 'debt-to-equity (SEC XBRL): change vs the pre-declared rule')]
+    c = next(c for c in out['conclusions'] if c['statement'].startswith('AAA balance-sheet'))
+    assert 'PARTIAL_COVERAGE' in c['reason_codes'] and 'retrieved before this instant' in c['statement']
+
+
+def test_risks_debt_unknown_at_tp_has_a_reason_and_debt_from_zero():
+    out = risks.build(risks_ctx(bs_versions=BS_VERSIONS[1:2])).as_dict()     # first balance sheet public in P
+    debt = risk_table(out)['debt (SEC XBRL, USD)']
+    assert (debt['as known at T_p'], debt['as known at T_c'], debt['increased']) == (None, 1.2e9, None)
+    un = {(u['scope'], u['item']): u['reason'] for u in out['unavailable']}
+    assert 'no SEC XBRL balance-sheet fact stored' in un[('AAA', 'debt (SEC XBRL, USD) at T_p')]
+    assert ('AAA', 'debt-to-equity (SEC XBRL) at T_p') in un
+    zero = [('2026-06-10T12:00:00+00:00', '2026-05-31', 2e9, {'LongTermDebt': 0.0}),
+            ('2026-10-02T12:00:00+00:00', '2026-08-31', 2e9, {'LongTermDebt': 1e8})]
+    ctx = risks_ctx(bs_versions=zero, weekly=dict(WEEKLY, thresholds=dict(THRESHOLDS, debt_change_rel=0.2)))
+    out = risks.build(ctx).as_dict()
+    debt = risk_table(out)['debt (SEC XBRL, USD)']
+    assert (debt['as known at T_p'], debt['as known at T_c']) == (0.0, 1e8)
+    assert debt['change'] == 'from zero' and debt['increased'] == 'yes'
+    assert not [u for u in out['unavailable'] if u['scope'] == 'AAA' and 'debt' in u['item']]
+    ctx = risks_ctx(bs_versions=zero)
+    assert risk_table(risks.build(ctx).as_dict())['debt (SEC XBRL, USD)']['increased'] == risks.NOT_ASSESSED
+
+
+def test_risks_no_stored_xbrl_is_unavailable_without_any_sec_call():
+    out = risks.build(risks_ctx(bs_versions=[])).as_dict()                  # StrictSEC would raise on any call
+    rows = risk_table(out)
+    assert rows['debt-to-equity (SEC XBRL)']['as known at T_c'] is None
+    un = {(u['scope'], u['item']): u['reason'] for u in out['unavailable']}
+    assert 'never downloads' in un[('AAA', 'debt (SEC XBRL, USD)')]
+
+
+def test_risks_red_flag_row_unknown_unless_the_feed_covers_the_window():
+    # the feed does not reach back to T_p: absence not established
+    short = risks_ctx(filings={'AAA': feed([filing('8-K', '2026-10-05T20:00:00+00:00', ['2.02'])])})
+    out = risks.build(short).as_dict()
+    rf = risk_table(out)['red-flag SEC filings in the week (count)']
+    assert rf['as known at T_c'] is None and rf['increased'] is None
+    un = {u['item']: u['reason'] for u in out['unavailable']}
+    assert 'does not reach back to T_p' in un['absence of red-flag filings in the week']
+    # an 8-K of the window without item codes: its items are unknown
+    noitems = risks_ctx(filings={'AAA': feed([filing('8-K', '2026-10-05T20:00:00+00:00'),
+                                              filing('10-K', '2025-01-01T12:00:00+00:00')])})
+    out = risks.build(noitems).as_dict()
+    assert risk_table(out)['red-flag SEC filings in the week (count)']['as known at T_c'] is None
+    assert not [c for c in out['conclusions'] if 'no red-flag' in c['statement']]
+    # a listed red flag is a positive fact even from a stale feed; the count is then a lower bound
+    stale = risks_ctx(filings={'AAA': feed([filing('8-K', '2026-10-02T20:00:00+00:00', ['4.02']),
+                                            filing('10-K', '2025-01-01T12:00:00+00:00')], after_cutoff=False)})
+    out = risks.build(stale).as_dict()
+    rf = risk_table(out)['red-flag SEC filings in the week (count)']
+    assert rf['as known at T_c'] == '>= 1' and rf['increased'] == 'yes' and rf['change'] is None
+    c = next(c for c in out['conclusions'] if 'red-flag SEC filing(s)' in c['statement'])
+    assert 'PARTIAL_COVERAGE' in c['reason_codes'] and 'may be incomplete' in c['statement']
+
+
+def test_risks_stress_rule_scales_with_the_weeks_between_observations():
+    nfci = weekly_fred(0.0, 0.1, end='2026-09-11')                  # known at T_p: latest obs 2026-09-11
+    last = nfci[-1][1]
+    nfci += [('2026-09-18', last + 0.5, '2026-10-08T05:00:00+00:00'),       # published after T_c: unseen
+             ('2026-09-25', round(last + 0.12, 6), '2026-10-01T05:00:00+00:00')]
+    ctx = risks_ctx(fred={'NFCI': nfci}, fred_status={})
+    out = risks.build(ctx).as_dict()
+    t = next(t for t in out['tables'] if t['title'] == 'Market stress indicators (FRED, rank 1)')
+    row = {r[0]: dict(zip(t['columns'], r)) for r in t['rows']}['NFCI']
+    assert (row['obs date (T_p)'], row['obs date (T_c)'], row['weeks between obs']) == ('2026-09-11', '2026-09-25', 2)
+    sd = row['1 sd of weekly changes (known at T_p)']
+    assert sd == pytest.approx(0.1, rel=0.01) and row['change'] == pytest.approx(0.12)
+    assert row['rule threshold (1 sd x sqrt(weeks))'] == pytest.approx(sd * math.sqrt(2), rel=1e-3)
+    assert row['increased'] == 'no'                                  # 0.12 > 1 sd but < sqrt(2) sd
+    assert 'sqrt' in t['note']
+    assert risks.weeks_spanned('2026-09-28', '2026-10-05') == 1 and risks.weeks_spanned('2026-09-25', '2026-10-06') == 2
+
+
+def test_risks_stress_counts_only_assessed_series():
+    out = risks.build(risks_ctx()).as_dict()                         # BAMLH0A0HYM2: FRED HTTP 500
+    per_flag = next(t for t in out['tables'] if t['title'] == 'Companies per flag')
+    market_row = per_flag['rows'][-1]
+    assert market_row[1:] == [1, 3]                                  # VIXCLS beyond; 3 of 4 assessed
+    stress = next(c for c in out['conclusions'] if c['scope'] == 'overall' and c['kind'] == 'interpretation')
+    assert 'PARTIAL_COVERAGE' in stress['reason_codes'] and 'BAMLH0A0HYM2' in stress['statement']
+    assert '3 of 4 series assessed' in stress['statement']
+    none = FakeCtx(universe=('QQQ',), fred_status={s: 'FRED_API_KEY not set' for s, _, _ in risks.STRESS_SERIES})
+    out = risks.build(none).as_dict()
+    per_flag = next(t for t in out['tables'] if t['title'] == 'Companies per flag')
+    assert per_flag['rows'][-1][1:] == [None, 0]                     # never "0 beyond, 4 assessed"
+    assert all(r[1] is None and r[2] == 0 for r in per_flag['rows'][:-1])

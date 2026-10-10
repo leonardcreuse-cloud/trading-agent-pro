@@ -29,7 +29,14 @@ Processing (pre-declared)
   - de-duplicate on canonical URL (scheme, www., query and fragment removed; the query is kept only
     for script endpoints such as firehose.pl?id=..., where it identifies the document) and on the
     normalized title (lower case, punctuation removed, trailing ' - <outlet>' removed): duplicates
-    and syndicated copies are counted ONCE and listed as copies;
+    and syndicated copies are counted ONCE and listed as copies. A canonical-URL match counts as a
+    duplicate only when the titles also match (identical or token-set Jaccard >= JACCARD_MIN):
+    pages identified by their query alone (consent walls, item?id=...) share one canonical URL. The
+    title of a URL duplicate is registered too, so a later copy of an updated headline is matched.
+    Topic membership stays per original article: a copy never lends its topics to the article it
+    was folded into; topic evidence cites the article (or copy) whose own title / description
+    matched. An identical generic headline from two outlets is folded as a copy (outlet counts
+    conservative);
   - cluster near-duplicate titles: leader clustering in publishedAt order, token-set Jaccard >=
     JACCARD_MIN with the cluster's first title.
   Tables list EVERY cluster and every topic (no selection on what is 'interesting'); conclusions:
@@ -37,10 +44,12 @@ Processing (pre-declared)
   least STORY_MIN_OUTLETS distinct outlets (at most MAX_STORY_CONCLUSIONS); one per company story
   cluster ('reported by N outlet(s) (aggregator)' with its outlets and publishedAt; at most
   MAX_COMPANY_STORY_CONCLUSIONS per company); order: most outlets first, then earliest. Headlines are
-  quoted verbatim, never adopted; a headline containing causal or move-attribution wording is
-  listed in the table only. Relevance is a keyword match: off-topic matches (e.g. sports
-  'sanctions') are possible and are not removed by hand; the simple title clustering can split
-  one story written with different words (outlet counts are then conservative).
+  quoted verbatim, never adopted; a headline containing causal or move-attribution wording (a move
+  verb followed by as / on / after / amid / following, or 'N% on / after ...') is listed in the
+  table only (keyword list: a wording outside it can still be quoted). Relevance is a keyword
+  match: off-topic matches (e.g. sports 'sanctions') are possible and are not removed by hand; the
+  simple title clustering can split one story written with different words (outlet counts are
+  then conservative).
 Sections never call the wall clock, never write files themselves (fetch logging goes through
 ctx.db) and never download outside this documented NewsAPI call.
 """
@@ -98,11 +107,19 @@ CAUSAL_WORDING = re.compile(
     r'on the back of|thanks to|in response to|as a result|sen(d|ds|t) shares|boost(s|ed|ing)?|lift(s|ed|ing)?|'
     r'push(es|ed|ing)?|spur(s|red|ring)?|weigh(s|ed|ing)? on|hurt(s|ing)?|prompt(s|ed|ing)?|led by|lead(s)? to|'
     r'propel(s|led|ling)?|dragg?(ed|ing|s)? down)\b', re.IGNORECASE)
+MOVE_VERBS = (
+    r'falls?|fell|falling|drops?|dropped|dropping|slips?|slipped|slipping|sinks?|sank|sinking|slides?|slid|'
+    r'sliding|tumbles?|tumbled|tumbling|plunges?|plunged|plunging|jumps?|jumped|jumping|soars?|soared|soaring|'
+    r'surges?|surged|surging|rises?|rose|rising|climbs?|climbed|climbing|gains?|gained|gaining|'
+    r'rall(y|ies|ied|ying)|spikes?|spiked|eases?|eased|nudges?|nudged|ticks?|ticked|sheds?|shedding|pops?|'
+    r'popped|slumps?|slumped|advanc(e|es|ed|ing)|edg(e|es|ed|ing)\s+(up|down|higher|lower)|'
+    r'declin(e|es|ed|ing)|dips?|dipped|dipping|rebound(s|ed|ing)?|retreat(s|ed|ing)?|adds?|added|adding|'
+    r'loses?|lost|losing|sto(ck|cks) (up|down)|(trades?|trading|ends?|ended|closes?|closed|is|are|was|were) '
+    r'(up|down|higher|lower)')
+MOVE_CONNECTORS = r'as|on|after|amid|following'
 MOVE_ATTRIBUTION = re.compile(
-    r'\b(falls?|fell|drops?|dropped|slips?|slipped|sinks?|sank|slides?|slid|tumbles?|tumbled|plunges?|'
-    r'plunged|jumps?|jumped|soars?|soared|surges?|surged|rises?|rose|climbs?|climbed|gains?|gained|'
-    r'rall(y|ies|ied)|spikes?|spiked|eases?|eased|nudges?|nudged|ticks?|ticked|sheds?|pops?|popped|'
-    r'slumps?|slumped)\b.*\b(as|on|after|amid)\b', re.IGNORECASE)
+    r'\b(' + MOVE_VERBS + r')\b.*\b(' + MOVE_CONNECTORS + r')\b'
+    r'|\d+(\.\d+)?\s*%(\s+(higher|lower|up|down))?\s+(' + MOVE_CONNECTORS + r')\b', re.IGNORECASE)
 NOT_ESTABLISHED = ('aggregator only, not confirmed by a primary document: that any reported event happened '
                    'is not established by news alone')
 
@@ -146,6 +163,21 @@ def normalized_title(title, outlet=None):
 
 def jaccard(a, b):
     return len(a & b) / len(a | b) if a and b else 0.0
+
+
+def similar_titles(t1, t2):
+    """Normalized titles identical or token-set Jaccard >= JACCARD_MIN."""
+    return t1 == t2 or jaccard(set(t1.split()), set(t2.split())) >= JACCARD_MIN
+
+
+def members(a):
+    """The article and the duplicate / syndicated copies folded into it."""
+    return [a] + a.get('copies', [])
+
+
+def topic_member(a, label):
+    """First of the article and its copies whose OWN title / description matched `label` (None if none)."""
+    return next((m for m in members(a) if label in m['topics']), None)
 
 
 def code_host(url, outlet):
@@ -297,20 +329,24 @@ def select_articles(tm, payload, terms):
     for a in kept:
         cu = canonical_url(a['url']) if a['url'] else None
         nt = normalized_title(a['title'], a['outlet'])
-        first = (by_url.get(cu) if cu else None) or (by_title.get(nt) if nt else None)
-        if first is not None:
-            first['copies'].append(a)
-            first['topics'] = sorted(set(first['topics']) | set(a['topics']), key=_topic_order)
-            stats['duplicates'] += 1
-            if cu:
-                by_url.setdefault(cu, first)
-            continue
         a.update(canonical_url=cu, norm_title=nt, tokens=set(nt.split()))
+        # same canonical URL is a copy only with a matching title (query-identified pages share one path)
+        first = next((u for u in by_url.get(cu, []) if similar_titles(u['norm_title'], nt)), None) if cu else None
+        if first is None and nt:
+            first = by_title.get(nt)
+        if first is not None:
+            first['copies'].append(a)                   # topics stay with the copy (never merged)
+            stats['duplicates'] += 1
+            if cu and all(u is not first for u in by_url.get(cu, [])):
+                by_url.setdefault(cu, []).append(first)
+            if nt:
+                by_title.setdefault(nt, first)          # a later copy of this (updated) headline is matched
+            continue
         unique.append(a)
         if cu:
-            by_url[cu] = a
+            by_url.setdefault(cu, []).append(a)
         if nt:
-            by_title[nt] = a
+            by_title.setdefault(nt, a)
     stats['kept'] = len(unique)
     return unique, stats
 
@@ -340,7 +376,7 @@ def cluster(unique, prefix):
         c['outlets'] = sorted(outlets.values(), key=str.lower)
         c['first'] = min(x['published_at'] for x in arts)
         c['last'] = max(x['published_at'] for x in arts)
-        c['topics'] = sorted({t for x in arts for t in x['topics']}, key=_topic_order)
+        c['topics'] = sorted({t for x in arts for m in members(x) for t in m['topics']}, key=_topic_order)
         c['copies'] = [cp for x in arts for cp in x['copies']]
     return clusters
 
@@ -436,7 +472,8 @@ def _global(ctx, res, http_get, budget):
 
     topic_rows = []
     for label, term, stems in GEO_TOPICS:
-        arts = [a for a in unique if label in a['topics']]
+        # one entry per deduplicated article: the article itself, or the copy that matched the topic
+        arts = [m for m in (topic_member(a, label) for a in unique) if m is not None]
         cl = [c for c in clusters if label in c['topics']]
         outlets = {a['outlet'].lower() for a in arts}
         topic_rows.append([label, term, ', '.join(stems), len(arts), len(cl),

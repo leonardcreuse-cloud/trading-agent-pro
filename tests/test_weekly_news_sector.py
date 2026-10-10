@@ -13,6 +13,7 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
+from src import database as database_module
 from src.database import Database, freshness
 from src.weekly.core import STRONG, UNAVAILABLE, UNCERTAIN, LookAheadError, TimeModel
 from src.weekly.sections import news, sector
@@ -174,10 +175,70 @@ def test_sector_flag_not_set_reports_failed_conditions():
     assert flag['kind'] == 'interpretation' and flag['level'] == UNCERTAIN
     assert 'coincided' not in flag['statement']
 
-    # sign disagreement and peer share below 2/3
+    # sign disagreement only (2 of 3 peers share the negative median sign: the share condition holds)
     ctx = SectorCtx(prices=sector_prices(P1=ok(closes(-0.02), 4), P2=ok(closes(-0.04), 5), P3=ok(closes(0.01), 6)))
     row = row_of(table(sector.build(ctx).as_dict(), 'Sector-relative performance by company'), 'AAA')
-    assert row['sector-wide flag'] == 'no' and 'sign' in row['conditions not met']
+    assert row['sector-wide flag'] == 'no' and 'sign(ETF' in row['conditions not met']
+    assert 'peers with the median sign' not in row['conditions not met']
+
+
+def _flag_row(peer_returns, weekly=None):
+    """AAA with ETF XLK +3 % (> 1 sd, positive) and the given peer returns (median positive in the cases below)."""
+    names = [f'Q{i}' for i in range(1, len(peer_returns) + 1)]
+    weekly = json.loads(json.dumps(weekly or WEEKLY))
+    weekly['peers']['AAA'] = names
+    prices = sector_prices(**{n: ok(closes(r), 10 + i) for i, (n, r) in enumerate(zip(names, peer_returns))})
+    out = sector.build(SectorCtx(prices=prices, weekly=weekly)).as_dict()
+    return row_of(table(out, 'Sector-relative performance by company'), 'AAA'), out
+
+
+def test_sector_flag_peer_share_condition_is_checked_on_counts():
+    # ETF sign = peer median sign and |ETF| > k sd, but only 2 of 4 peers share the sign: flag 'no'
+    row, out = _flag_row([-0.03, -0.01, 0.02, 0.04])                   # median +0.5 %
+    assert row['peer median %'] == pytest.approx(0.5) and row['peers with the median sign'] == '2/4'
+    assert row['sector-wide flag'] == 'no'
+    assert row['conditions not met'] == 'peers with the median sign 2/4 below the minimum share 2/3'
+    # 3 of 5 (0.6) is below 2/3
+    row, _ = _flag_row([-0.02, -0.01, 0.01, 0.02, 0.03])
+    assert row['peers with the median sign'] == '3/5' and row['sector-wide flag'] == 'no'
+    assert 'peers with the median sign 3/5' in row['conditions not met']
+    # exactly 2/3 passes (default fixture: 2 of 3) and 4 of 6 passes
+    row, _ = _flag_row([0.02, 0.04, -0.01])
+    assert row['peers with the median sign'] == '2/3' and row['sector-wide flag'] == 'yes'
+    row, _ = _flag_row([0.02, 0.04, -0.01, 0.03, -0.02, 0.01])
+    assert row['peers with the median sign'] == '4/6' and row['sector-wide flag'] == 'yes'
+
+
+@pytest.mark.parametrize('declared', ['2/3', [2, 3], 0.6667, '0.6667', 0.667])
+def test_sector_declared_two_thirds_keeps_exactly_two_thirds_passing(declared):
+    weekly = json.loads(json.dumps(WEEKLY))
+    weekly['thresholds'][sector.SHARE_KEY] = declared
+    row, out = _flag_row([0.02, 0.04, -0.01], weekly)                   # 2 of 3 share the sign
+    assert row['sector-wide flag'] == 'yes', row['conditions not met']
+    note = table(out, 'Sector-relative performance by company')['note']
+    assert 'peer share from config thresholds test-v1' in note
+    assert sector.share_met(2, 3, sector.parse_share(declared))
+    assert sector.share_met(4, 6, sector.parse_share(declared))
+    assert not sector.share_met(3, 5, sector.parse_share(declared))
+
+
+def test_sector_share_parsing_and_invalid_config():
+    assert sector.parse_share('2/3')['text'] == '2/3' and sector.parse_share([2, 3])['tol'] == 0
+    assert 'share >= 0.6662' in sector.parse_share(0.6667)['text']      # effective bound is printed
+    assert not sector.share_met(2, 3, sector.parse_share(0.7))           # 0.667 < 0.6995: a stricter rule is kept
+    assert not sector.share_met(2, 3, sector.parse_share(0.67))
+    assert sector.share_met(1, 1, sector.parse_share(1)) and not sector.share_met(4, 5, sector.parse_share(1))
+    assert not sector.share_met(None, 3, sector.parse_share('2/3')) and not sector.share_met(0, 0, sector.parse_share('2/3'))
+    for bad in ('abc', [2, 0], 1.5, 0, True, '1/0'):
+        with pytest.raises(ValueError):
+            sector.parse_share(bad)
+    weekly = json.loads(json.dumps(WEEKLY))
+    weekly['thresholds'][sector.SHARE_KEY] = 'two thirds'
+    row, out = _flag_row([0.02, 0.04, -0.01], weekly)
+    assert row['sector-wide flag'] is None                               # never a silent default
+    u = next(u for u in out['unavailable'] if u['item'] == 'sector-wide move flag')
+    assert 'invalid' in u['reason'] and sector.SHARE_KEY in u['reason']
+    assert not any('sector-wide move flag' in c['statement'] for c in out['conclusions'])
 
 
 def test_sector_rule_parameters_come_from_config_when_declared():
@@ -204,7 +265,7 @@ def test_sector_missing_data_is_unavailable_never_filled():
     assert ('AAA', 'sector ETF XLK weekly return') in items
     assert ('AAA', 'peer P3 weekly return') in items
     assert ('AAA', 'sector-wide move flag') in items
-    assert ('AAA', 'SEC SIC industry code') in items                    # filings unavailable in this ctx
+    assert ('AAA', 'SEC SIC code at the cutoff') in items               # filings unavailable in this ctx
     assert all(u['reason'] for u in out['unavailable'])
     fact = next(c for c in out['conclusions'] if c['statement'].startswith('AAA sector week'))
     assert 'PARTIAL_COVERAGE' in fact['reason_codes']                    # one peer missing
@@ -246,28 +307,47 @@ def ok_shift(values):
     return {'status': 'OK', 'frame': df, 'fetch': {'fetch_id': 3, 'retrieved_at': RETRIEVED}, 'reason': None}
 
 
-def test_sector_sic_is_rank1_anchored_before_cutoff_and_freshness_unknown():
-    ctx = SectorCtx(prices=sector_prices(), filings={'AAA': SIC_FEED})
+def _available_at(e):
+    return e['published_at'] or e['retrieved_at']
+
+
+@pytest.mark.parametrize('retrieved', [RETRIEVED, '2026-10-16T13:00:00+00:00'])
+def test_sector_sic_from_a_feed_retrieved_after_the_cutoff_is_not_concluded(retrieved):
+    # the feed shows the CURRENT code; the time it became public is unknown: never back-dated to another filing
+    feed = dict(SIC_FEED, fetch={'fetch_id': 77, 'retrieved_at': retrieved})
+    ctx = SectorCtx(prices=sector_prices(), filings={'AAA': feed})
+    out = sector.build(ctx).as_dict()
+    assert not any('SIC' in c['statement'] for c in out['conclusions'])
+    u = next(u for u in out['unavailable'] if u['scope'] == 'AAA' and u['item'] == 'SEC SIC code at the cutoff')
+    assert 'after the cutoff' in u['reason'] and 'current SIC' in u['reason']
+    row = table(out, 'Official industry label (SEC SIC)')['rows'][0]
+    assert row[:3] == ['AAA', '7372', 'Services-Prepackaged Software']
+    assert 'not point-in-time' in row[3] and row[4] == retrieved
+    for c in out['conclusions']:                                         # COALESCE(published_at, retrieved_at) <= T_c
+        assert all(_available_at(e) <= ctx.tm.cutoff for e in c['evidence'])
+    # the same fact offered as evidence with an unknown publication time is look-ahead
+    with pytest.raises(LookAheadError):
+        sector.evidence(ctx.tm, 'SEC EDGAR', 1, 'SIC 7372', published_at=None, retrieved_at=retrieved)
+
+
+def test_sector_sic_from_a_feed_retrieved_before_the_cutoff_is_rank1_freshness_unknown():
+    before = '2026-10-07T03:00:00+00:00'                                 # T_c = 2026-10-07T05:00Z
+    feed = dict(SIC_FEED, fetch={'fetch_id': 77, 'retrieved_at': before})
+    ctx = SectorCtx(prices=sector_prices(), filings={'AAA': feed})
     out = sector.build(ctx).as_dict()
     sic = next(c for c in out['conclusions'] if 'SIC 7372' in c['statement'])
     assert sic['kind'] == 'official_fact' and sic['evidence'][0]['rank'] == 1
-    assert sic['evidence'][0]['published_at'] == '2026-09-02T20:10:00+00:00'   # filing after the cutoff not used
-    assert 'acc-before' in sic['evidence'][0]['published_at_basis']
+    e = sic['evidence'][0]
+    assert e['published_at'] is None and e['retrieved_at'] == before and e['fetch_id'] == 77   # never another filing's time
     assert sic['level'] == UNCERTAIN and sic['reason_codes'] == ['FRESHNESS_UNKNOWN']
-    sic_table = table(out, 'Official industry label (SEC SIC)')
-    assert sic_table['rows'][0][:3] == ['AAA', '7372', 'Services-Prepackaged Software']
+    row = table(out, 'Official industry label (SEC SIC)')['rows'][0]
+    assert row[:3] == ['AAA', '7372', 'Services-Prepackaged Software'] and 'before the cutoff' in row[3]
+    assert not any(u['item'] == 'SEC SIC code at the cutoff' for u in out['unavailable'])
 
-    # only an insider filing before the cutoff: used as the anchor (fallback)
-    feed = dict(SIC_FEED, filings=SIC_FEED['filings'][:2])
-    out = sector.build(SectorCtx(prices=sector_prices(), filings={'AAA': feed})).as_dict()
-    sic = next(c for c in out['conclusions'] if 'SIC 7372' in c['statement'])
-    assert 'acc-form4' in sic['evidence'][0]['published_at_basis']
-
-    # only filings after the cutoff: the label cannot be anchored -> DATA UNAVAILABLE, no conclusion
-    feed = dict(SIC_FEED, filings=[SIC_FEED['filings'][0]])
-    out = sector.build(SectorCtx(prices=sector_prices(), filings={'AAA': feed})).as_dict()
-    assert not any('SIC 7372' in c['statement'] for c in out['conclusions'])
-    assert any(u['item'] == 'SEC SIC industry code' for u in out['unavailable'])
+    # no SIC in the feed -> DATA UNAVAILABLE, no conclusion
+    out = sector.build(SectorCtx(prices=sector_prices(), filings={'AAA': dict(feed, sic='')})).as_dict()
+    assert not any('SIC' in c['statement'] for c in out['conclusions'])
+    assert any(u['item'] == 'SEC SIC code at the cutoff' and 'no SIC code' in u['reason'] for u in out['unavailable'])
 
 
 def test_sector_ticker_subset_and_overall_etf_conclusion():
@@ -324,8 +404,8 @@ GEO_ARTICLES = [
         'https://yahoo.com/x/9'),                                         # syndicated copy: identical title
     art('US expands export controls on advanced chips', 'The Verge', '2026-10-02T09:00:00Z',
         'https://theverge.com/b'),                                        # near-duplicate, other outlet
-    art('Export controls widened', 'Reuters', '2026-10-01T15:00:00Z',
-        'https://reuters.com/a/1/?utm_source=x#frag'),                    # same canonical URL as the first
+    art('US widens export controls on chips', 'Reuters', '2026-10-01T15:00:00Z',
+        'https://reuters.com/a/1/?utm_source=x#frag'),                    # same canonical URL, similar title
     art('tariffs-parser 1.2 released', 'Pypi.org', '2026-10-02T10:00:00Z', 'https://pypi.org/project/tariffs'),
     art('Stocks end the week mixed', 'CNBC', '2026-10-02T21:00:00Z', 'https://cnbc.com/s',
         'Indexes were little changed.'),                                  # not relevant to any topic
@@ -558,6 +638,100 @@ def test_news_look_ahead_article_evidence_raises():
         news.article_evidence(ctx, a, {'fetch_id': 1, 'retrieved_at': RETRIEVED})
 
 
+def test_news_same_generic_title_keeps_topic_membership_per_article(monkeypatch):
+    monkeypatch.setenv('NEWSAPI_KEY', TEST_KEY)
+    payload = {'status': 'ok', 'totalResults': 2, 'articles': [
+        art('Letters to the editor', 'Daily A', '2026-10-01T10:00:00Z', 'https://a.com/letters/1',
+            'Readers write about the coming elections.'),
+        art('Letters to the editor', 'Gazette B', '2026-10-01T11:00:00Z', 'https://b.com/letters/2',
+            'Readers write about new sanctions.')]}
+    unique, stats = news.select_articles(NewsCtx().tm, payload, [(l, st) for l, _, st in news.GEO_TOPICS])
+    assert len(unique) == 1 and stats['duplicates'] == 1                 # identical headline: folded (counted once)
+    assert unique[0]['topics'] == ['elections']                          # the copy's topic is not lent to it
+    assert unique[0]['copies'][0]['topics'] == ['sanctions']
+    out = news.build(NewsCtx(), tickers=[], http_get=http_for(geo=payload)).as_dict()
+    sanctions = next(c for c in out['conclusions'] if "topic 'sanctions'" in c['statement'])
+    assert [e['fact'] for e in sanctions['evidence']] == ['Gazette B: "Letters to the editor" (https://b.com/letters/2)']
+    assert sanctions['evidence'][0]['published_at'] == '2026-10-01T11:00:00+00:00'
+    elections = next(c for c in out['conclusions'] if "topic 'elections'" in c['statement'])
+    assert [e['fact'].split(':')[0] for e in elections['evidence']] == ['Daily A']
+    topics = {r[0]: r for r in table(out, 'Geopolitical news — pre-declared topics')['rows']}
+    assert topics['sanctions'][3] == 1 and topics['sanctions'][6] == 1 and topics['elections'][3] == 1
+
+
+def test_news_same_canonical_url_with_different_titles_is_not_a_duplicate():
+    tm = NewsCtx().tm
+    terms = [('Acme Robotics', ('Acme Robotics',))]
+    payload = {'articles': [   # consent-wall URLs: one path, the query identifies the article
+        art('Acme Robotics shares rally while tech slides', 'Yahoo Entertainment', '2026-10-01T10:00:00Z',
+            'https://consent.yahoo.com/v2/collectConsent?sessionId=3_cc-session_aaa'),
+        art('Acme Robotics names new CFO', 'Yahoo Entertainment', '2026-10-01T11:00:00Z',
+            'https://consent.yahoo.com/v2/collectConsent?sessionId=3_cc-session_bbb'),
+        art('Show HN: Acme Robotics arm kit', 'Ycombinator.com', '2026-10-01T12:00:00Z',
+            'https://news.ycombinator.com/item?id=1'),
+        art('Ask HN: is Acme Robotics hiring?', 'Ycombinator.com', '2026-10-01T13:00:00Z',
+            'https://news.ycombinator.com/item?id=2')]}
+    unique, stats = news.select_articles(tm, payload, terms)
+    assert stats['kept'] == 4 and stats['duplicates'] == 0
+    # same canonical URL and a similar (updated) headline: one article
+    payload = {'articles': [
+        art('Acme Robotics wins contract', 'Reuters', '2026-10-01T10:00:00Z', 'https://reuters.com/a'),
+        art('Acme Robotics wins Navy contract', 'Reuters', '2026-10-01T11:00:00Z', 'https://reuters.com/a?upd=1'),
+        # syndicated copy of the UPDATED headline at another URL: recognised through the registered title
+        art('Acme Robotics wins Navy contract', 'Yahoo Finance', '2026-10-01T12:00:00Z', 'https://finance.yahoo.com/x')]}
+    unique, stats = news.select_articles(tm, payload, terms)
+    assert stats['kept'] == 1 and stats['duplicates'] == 2
+    clusters = news.cluster(unique, 'AAA-')
+    assert [(c['id'], c['outlets']) for c in clusters] == [('AAA-1', ['Reuters'])]
+    assert [cp['outlet'] for cp in clusters[0]['copies']] == ['Reuters', 'Yahoo Finance']
+
+
+def test_news_complete_window_with_truncated_results_is_partial(monkeypatch):
+    monkeypatch.setenv('NEWSAPI_KEY', TEST_KEY)
+    ctx = NewsCtx(cutoff='2026-10-02T12:00:00+00:00', generated='2026-10-03T12:00:00+00:00')
+    assert ctx.tm.news_complete()
+    out = news.build(ctx, include_global=False, http_get=http_for(company=company_payload(total=10))).as_dict()
+    assert out['conclusions']
+    for c in out['conclusions']:
+        assert 'PARTIAL_COVERAGE' in c['reason_codes'] and c['level'] == UNCERTAIN
+    cov = table(out, 'Company news queries — coverage')
+    assert dict(zip(cov['columns'], cov['rows'][0]))['coverage'] == '40.0%'
+
+
+class Clock:
+    """Controls the completion time the database records for a fetch (offline reuse tests)."""
+
+    def __init__(self, monkeypatch):
+        self.now = None
+        monkeypatch.setattr(database_module, 'utc_now_iso', lambda: self.now)
+
+
+@pytest.mark.parametrize('stored_at, generated, reused', [
+    ('2026-10-08T01:00:00+00:00', '2026-10-08T08:00:00+00:00', False),   # window complete; fetch made before T_c + 26 h
+    ('2026-10-08T07:30:00+00:00', '2026-10-08T08:00:00+00:00', True),    # window complete; fetch made after T_c + 26 h
+    ('2026-10-07T07:00:00+00:00', '2026-10-07T20:00:00+00:00', False),   # window incomplete; fetch 13 h old
+    ('2026-10-07T09:00:00+00:00', '2026-10-07T20:00:00+00:00', True),    # window incomplete; fetch 11 h old
+    ('2026-10-07T04:00:00+00:00', '2026-10-07T12:00:00+00:00', False),   # fetch made before the cutoff T_c
+])
+def test_news_stored_fetch_reuse_age_bounds(monkeypatch, stored_at, generated, reused):
+    monkeypatch.setenv('NEWSAPI_KEY', TEST_KEY)
+    clock = Clock(monkeypatch)
+    clock.now = stored_at
+    store = NewsCtx(generated=stored_at)
+    assert news.fetch_query(store, news.GEO_QUERY, http_for())['status'] == 'OK'
+
+    clock.now = generated
+    ctx = NewsCtx(generated=generated)
+    assert ctx.tm.cutoff == '2026-10-07T05:00:00+00:00'
+    http = http_for()
+    out = news.build(ctx, tickers=[], http_get=http).as_dict()
+    cov = table(out, 'Geopolitical news — query and coverage')
+    row = dict(zip(cov['columns'], cov['rows'][0]))
+    assert len(http.calls) == (0 if reused else 1)
+    assert row['reused stored fetch'] == ('yes' if reused else 'no')
+    assert row['retrieved at'] == (stored_at if reused else generated)
+
+
 def test_news_helpers():
     assert news.canonical_url('https://www.Reuters.com/a/1/?utm=x#f') == 'reuters.com/a/1'
     assert news.canonical_url('https://slashdot.org/firehose.pl?op=view&amp;id=5') == 'slashdot.org/firehose.pl?id=5&op=view'
@@ -569,3 +743,9 @@ def test_news_helpers():
     assert not news.quotable('Shares fall as tariffs bite') and not news.quotable('Prices rose due to tariffs')
     assert not news.quotable('Deal boosts backlog') and not news.quotable('Imports pushed the deficit higher')
     assert news.quotable('Parliament sets snap elections')
+    assert not news.quotable('BlackBerry Advances 5% on Continued QNX Momentum; Palo Alto Networks Gains 4%, '
+                             'CrowdStrike Edges Up 2%')
+    assert not news.quotable('Stock declines 4% after earnings')
+    assert not news.quotable('Shares 3% higher on deal') and not news.quotable('Acme edges lower amid selloff')
+    assert not news.quotable('Acme rebounds after guidance') and not news.quotable('Acme dips following report')
+    assert news.quotable('Acme Robotics names new CFO') and news.quotable('US expands export controls on chips')

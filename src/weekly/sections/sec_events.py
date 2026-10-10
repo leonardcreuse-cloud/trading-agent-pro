@@ -17,14 +17,25 @@ Rules applied here (docs/DATA_POLICY.md, "Evidence levels for conclusions"):
     T_c: it belongs to next week's report and is not mentioned here.
   - Sessions: the UTC acceptance instant converted to New York time; before 09:30 -> that
     session (pre-open), 09:30-16:00 -> during that session, from 16:00 or on a non-session day
-    -> the next session; after the last session of the week -> 'no price reaction observable
-    in this report'. TIMESTAMP_AMBIGUOUS only when the conservative reading changes the session.
+    -> the next session; after the close of s_0 -> next week's session (next report).
+    TIMESTAMP_AMBIGUOUS only when the conservative reading changes the session.
+  - Carried over: a filing accepted after the close of s_-5 can be admissible at T_p (previous
+    window, reported last week) while its session is s_-4, inside this week. Such filings are
+    listed in a separate table with their session; they are not counted in this week's classes.
   - Existence, form, item codes, acceptance time and accession of filings, and as-filed XBRL
     values, are official facts (SEC rank 1). Negative facts ('no 8-K in the window') need a
     submissions fetch made after T_c covering the whole window, else PARTIAL_COVERAGE.
   - Classes come from the pre-declared map below (EVENT_MAP_VERSION); the meaning of a filing
-    beyond its form and item codes is not asserted. No judgement ('fundamentals improved') is
-    produced by this section; deltas carry no size qualifier (no threshold is pre-declared).
+    beyond its form and item codes is not asserted. 'No filing of class X' is a statement about
+    the map: when the window holds filings the map does not classify (unmapped form, 8-K item
+    not in the map), they are listed and the statement carries PARTIAL_COVERAGE.
+  - Counts over the window (Form 4, Form 144) are completeness claims: they carry the feed
+    coverage codes. A Form 4 is 'read' only when its transactions are stored, or when its stored
+    XML (read offline) lists no dated non-derivative transaction.
+  - Change claims cite the view at T_p as a baseline: its freshness is evaluated at T_p (its own
+    view instant); the view at T_c is evaluated at T_c.
+  - No judgement ('fundamentals improved') is produced by this section; deltas carry no size
+    qualifier (no threshold is pre-declared).
 Sections never call the wall clock, never write files and never download outside ctx.
 """
 
@@ -35,8 +46,8 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from ...common import DATA_UNAVAILABLE, to_utc_iso
-from ...database import source_rank
-from ...insider_tracker import FORM4_METRIC, form4_xml_url
+from ...database import freshness, source_rank
+from ...insider_tracker import FORM4_METRIC, form4_xml_url, parse_form4
 from ...sec_parser import SEC_SOURCE
 from ..core import LookAheadError, SectionResult, conclude, evidence, unavailable
 
@@ -46,16 +57,20 @@ QUESTIONS = [2, 7]
 SEC_RANK = source_rank(SEC_SOURCE)
 NEW_YORK = ZoneInfo('America/New_York')
 SESSION_OPEN, SESSION_CLOSE = time(9, 30), time(16, 0)
-AFTER_LAST = 'after the last session of the week: no price reaction observable in this report'
+AFTER_LAST = ("after the close of s_0: its session is in next week's report (carried-over table "
+              'there)')
 
 # ---------------------------------------------------------------- pre-declared maps
-EVENT_MAP_VERSION = 'sec-events-map-v1-2026-10-07'
+EVENT_MAP_VERSION = 'sec-events-map-v2-2026-10-07'
 STATEMENT_FORMS = ('10-K', '10-Q', '10-K/A', '10-Q/A', '10-KT', '10-QT', '10-KT/A', '10-QT/A')
 LATE_NOTICE_FORMS = ('NT 10-K', 'NT 10-Q', 'NT 10-K/A', 'NT 10-Q/A')
-EIGHT_K_FORMS = ('8-K', '8-K/A')
+# 8-K family (classified by item codes): 8-K12B / 8-K12G3 (successor issuer) and 8-K15D5 are 8-Ks.
+EIGHT_K_FORMS = ('8-K', '8-K/A', '8-K12B', '8-K12B/A', '8-K12G3', '8-K12G3/A', '8-K15D5', '8-K15D5/A')
+EXHIBIT_ITEM = '9.01'                # financial statements and exhibits: no event of its own
 FORM4_FORMS = ('4', '4/A')
 FORM144_FORMS = ('144', '144/A')
-INSIDER_FORMS = FORM4_FORMS + FORM144_FORMS
+OWNERSHIP_STATEMENT_FORMS = ('3', '3/A', '5', '5/A')   # Section 16 initial / annual statements
+INSIDER_FORMS = FORM4_FORMS + FORM144_FORMS           # aggregated in the insider table
 
 RESULTS, AGREEMENTS, MNA, FINANCING = 'results', 'agreements', 'M&A', 'financing/dilution'
 GOVERNANCE, RED_FLAGS, CYBER, LISTING = 'governance', 'accounting red flags', 'cybersecurity', 'listing'
@@ -81,13 +96,20 @@ ITEM_CLASSES = {
     '7.01': DISCLOSURE, '8.01': DISCLOSURE,
 }
 FORM_CLASSES = {
-    'S-4': MNA, 'S-4/A': MNA, '425': MNA, 'DEFM14A': MNA,
-    'S-3': FINANCING, 'S-3/A': FINANCING, 'S-3ASR': FINANCING, 'S-8': FINANCING,
-    'S-8 POS': FINANCING,
+    # M&A: business combinations and Regulation M-A schedules (tender offers, going private)
+    **{f: MNA for f in ('S-4', 'S-4/A', 'S-4 POS', 'S-4MEF', '425', 'DEFM14A', 'PREM14A', 'DEFM14C',
+                        'PREM14C', 'SC TO-T', 'SC TO-T/A', 'SC TO-I', 'SC TO-I/A', 'SC TO-C',
+                        'SC 14D9', 'SC 14D9/A', 'SC 14D9-C', 'SC 13E3', 'SC 13E3/A')},
+    # financing / dilution: registration statements and offering documents of securities
+    **{f: FINANCING for f in ('S-1', 'S-1/A', 'S-1MEF', 'S-3', 'S-3/A', 'S-3ASR', 'S-3MEF', 'S-3D',
+                              'POSASR', 'FWP', 'S-8', 'S-8 POS')},
+    # listing: registration of a class on an exchange, removal from listing, deregistration
+    **{f: LISTING for f in ('25-NSE', '25', '25/A', '8-A12B', '8-A12B/A', '8-A12G', '8-A12G/A',
+                            '15-12B', '15-12G', '15-15D')},
     **{f: RED_FLAGS for f in LATE_NOTICE_FORMS},
     **{f: OWNERSHIP for f in ('SC 13D', 'SC 13D/A', 'SC 13G', 'SC 13G/A', 'SCHEDULE 13D',
                               'SCHEDULE 13D/A', 'SCHEDULE 13G', 'SCHEDULE 13G/A')},
-    **{f: INSIDER for f in INSIDER_FORMS},
+    **{f: INSIDER for f in INSIDER_FORMS + OWNERSHIP_STATEMENT_FORMS},
 }
 FINANCING_PREFIXES = ('424B',)
 
@@ -209,8 +231,43 @@ def classify(form, items):
     return [OTHER_CLASS]
 
 
+def unmapped_items(form, items):
+    """8-K item codes the map does not classify (9.01 exhibits excluded); [] for other forms."""
+    if (form or '').strip().upper() not in EIGHT_K_FORMS:
+        return []
+    return [i for i in items or [] if i not in ITEM_CLASSES and i != EXHIBIT_ITEM]
+
+
+def unclassified(window):
+    """Filings whose class the map does not fully determine, as 'FORM accession (detail)' texts."""
+    out = []
+    for f in window:
+        items, classes = f.get('items') or [], classify(f['form'], f.get('items'))
+        if classes == [OTHER_CLASS]:
+            out.append(f"{f['form']} {f['accession_number']} (form not in the map)")
+        elif classes == [OTHER_8K_CLASS]:
+            out.append(f"{f['form']} {f['accession_number']} (items {', '.join(items) or 'none'}: "
+                       'no mapped item)')
+        elif unmapped_items(f['form'], items):
+            out.append(f"{f['form']} {f['accession_number']} (items "
+                       f"{', '.join(unmapped_items(f['form'], items))} not in the map)")
+    return out
+
+
 def _session_text(m):
     return m['session'] if m['session'] else AFTER_LAST
+
+
+def _event_row(f, m, classes):
+    return [_session_text(m), m['timing'], f.get('acceptance_utc'),
+            _ny(f['acceptance_utc']).strftime('%Y-%m-%d %H:%M:%S %Z') if f.get('acceptance_utc') else None,
+            f['form'], ', '.join(f.get('items') or []) or None, '; '.join(classes),
+            f['accession_number'], f['published_at'], 'TIMESTAMP_AMBIGUOUS' if m['ambiguous'] else None]
+
+
+def _when(f):
+    return (f"accepted {f['acceptance_utc']} (UTC label, {_ny(f['acceptance_utc']).strftime('%H:%M %Z')} "
+            'New York)' if f.get('acceptance_utc') else f"filed {f.get('filing_date')} (no acceptance time)")
 
 
 def _window_filings(ctx, feed):
@@ -224,6 +281,28 @@ def _window_filings(ctx, feed):
         rows.append(f)
     return sorted(rows, key=lambda f: (to_utc_iso(f.get('acceptance_utc') or f['published_at']),
                                        f['accession_number']))
+
+
+def _carried_over(ctx, feed):
+    """
+    Filings of the previous window (conservative published_at <= T_p, reported last week) whose
+    session (UTC reading, or the conservative reading) is in this week's W: typically accepted
+    after the close of s_-5. Admissible at T_c (published before T_p): no look-ahead.
+    """
+    tm = ctx.tm
+    week, first = set(tm.week), tm.previous_week[-1]
+    seen, rows = set(), []
+    for f in feed.get('filings') or []:
+        accession, pub = f.get('accession_number'), to_utc_iso(f.get('published_at'))
+        # a session in W needs an acceptance after the open of s_-5: published_at date >= s_-5
+        if not accession or accession in seen or not pub or pub > tm.previous_cutoff or pub[:10] < first:
+            continue
+        m = session_of(f, tm.sessions)
+        if m['session'] in week or m['conservative_session'] in week:
+            seen.add(accession)
+            rows.append((f, m))
+    return sorted(rows, key=lambda r: (to_utc_iso(r[0].get('acceptance_utc') or r[0]['published_at']),
+                                       r[0]['accession_number']))
 
 
 def _coverage(ctx, feed):
@@ -296,12 +375,7 @@ def _q7_company(ctx, res, t, feed, window, complete, problem):
         for c in classes:
             counts[c] += 1
         mapped.append((f, m, classes))
-        rows.append([_session_text(m), m['timing'], f.get('acceptance_utc'),
-                     _ny(f['acceptance_utc']).strftime('%Y-%m-%d %H:%M:%S %Z')
-                     if f.get('acceptance_utc') else None,
-                     f['form'], ', '.join(f.get('items') or []) or None, '; '.join(classes),
-                     f['accession_number'], f['published_at'],
-                     'TIMESTAMP_AMBIGUOUS' if m['ambiguous'] else None])
+        rows.append(_event_row(f, m, classes))
     res.table(f'{t}: every SEC filing available in the window ({tm.previous_cutoff}, {tm.cutoff}]',
               EVENT_COLUMNS, rows, scope=t, question=7,
               note=(f"Classes: pre-declared map {EVENT_MAP_VERSION}. Session: acceptance label read as "
@@ -309,13 +383,22 @@ def _q7_company(ctx, res, t, feed, window, complete, problem):
                     "reading used for admissibility. "
                     + ('' if complete else f'Coverage incomplete: {problem}.')))
 
+    carried = _carried_over(ctx, feed)
+    res.table(f'{t}: filings of the previous window whose session is in this week (carried over)',
+              EVENT_COLUMNS, [_event_row(f, m, classify(f['form'], f.get('items'))) for f, m in carried],
+              scope=t, question=7,
+              note=(f'Admissible at T_p ({tm.previous_cutoff}) under the conservative reading, so they '
+                    "belong to the previous window and were reported last week; their session (UTC "
+                    "reading, or the conservative reading when ambiguous) is in this week's sessions "
+                    f"{tm.week[0]} .. {tm.week[-1]}. Not counted in this week's classes."
+                    + ('' if carried else ' None.')))
+
     for f, m, classes in mapped:
         if f['form'] in INSIDER_FORMS:
             continue                       # aggregated below
         items = f"items {', '.join(f['items'])}; " if f.get('items') else ''
-        when = (f"accepted {f['acceptance_utc']} (UTC label, "
-                f"{_ny(f['acceptance_utc']).strftime('%H:%M %Z')} New York)"
-                if f.get('acceptance_utc') else f"filed {f.get('filing_date')} (no acceptance time)")
+        extra = unmapped_items(f['form'], f.get('items'))
+        extra = f" (items {', '.join(extra)} not in the map)" if extra else ''
         if m['ambiguous']:
             where = 'session attribution ambiguous (separate record)'
         elif m['session']:
@@ -323,7 +406,7 @@ def _q7_company(ctx, res, t, feed, window, complete, problem):
         else:
             where = AFTER_LAST
         ev = _filing_evidence(ctx, feed, f)
-        res.add(conclude(t, 7, f"{t}: {f['form']} {when}, {items}class {'; '.join(classes)}, "
+        res.add(conclude(t, 7, f"{t}: {f['form']} {_when(f)}, {items}class {'; '.join(classes)}{extra}, "
                                f"accession {f['accession_number']}; {where}", [ev], 'official_fact'))
         if m['ambiguous']:
             res.add(conclude(
@@ -337,9 +420,32 @@ def _q7_company(ctx, res, t, feed, window, complete, problem):
                                 'NOT IMPLEMENTED: exhibit 99.1 is not XBRL-tagged and is not parsed; '
                                 'figures quoted by news would be aggregator-level only'))
 
+    for f, m in carried:                   # session link only: existence was reported last week
+        if f['form'] in INSIDER_FORMS:
+            continue
+        classes = classify(f['form'], f.get('items'))
+        items = f"items {', '.join(f['items'])}; " if f.get('items') else ''
+        if m['ambiguous']:
+            where = (f"session {_session_text(m)} with the label read as UTC, "
+                     f"{m['conservative_session'] or AFTER_LAST} with the conservative New York reading")
+        else:
+            where = f"mapped to session {m['session']} of this week ({m['timing']})"
+        res.add(conclude(t, 7, f"{t}: {f['form']} {_when(f)}, {items}class {'; '.join(classes)}, accession "
+                               f"{f['accession_number']}: available in the previous window (reported last "
+                               f"week); {where}",
+                         [_filing_evidence(ctx, feed, f)], 'official_fact',
+                         ['TIMESTAMP_AMBIGUOUS'] if m['ambiguous'] else [],
+                         resolve='an acceptance time with an explicit time zone (EDGAR filing header)'
+                         if m['ambiguous'] else None))
+
     if not any(f['form'] in EIGHT_K_FORMS for f in window):
-        res.add(conclude(t, 7, f'{t}: no 8-K or 8-K/A accepted in the window '
-                               f'({tm.previous_cutoff}, {tm.cutoff}]',
+        statement = (f'{t}: no 8-K or 8-K/A (8-K family: {", ".join(EIGHT_K_FORMS)}) accepted in the '
+                     f'window ({tm.previous_cutoff}, {tm.cutoff}]')
+        carried_8k = [f for f, _ in carried if f['form'] in EIGHT_K_FORMS]
+        if carried_8k:
+            statement += (f"; {len(carried_8k)} 8-K of the previous window map to a session of this week "
+                          f"(carried-over table): {', '.join(f['accession_number'] for f in carried_8k)}")
+        res.add(conclude(t, 7, statement,
                          [_feed_evidence(ctx, feed, f'{t}: no 8-K in the submissions feed for the window',
                                          complete)], 'official_fact', partial, resolve=resolve))
     zero = [c for c in CLASS_ORDER if counts[c] == 0]
@@ -348,12 +454,60 @@ def _q7_company(ctx, res, t, feed, window, complete, problem):
                          [_feed_evidence(ctx, feed, f'{t}: no filing in the submissions feed for the window',
                                          complete)], 'official_fact', partial, resolve=resolve))
     elif zero:
-        res.add(conclude(t, 7, f"{t}: no filing of the pre-declared classes {', '.join(zero)} accepted "
-                               'in the window',
+        loose = unclassified(window)
+        statement = (f"{t}: no filing of the pre-declared classes {', '.join(zero)} (map {EVENT_MAP_VERSION}) "
+                     'accepted in the window')
+        codes, resolves = list(partial), [resolve] if partial else []
+        if loose:
+            statement += (f'; {len(loose)} filing(s) of the window not fully classified by the map, their '
+                          f"class is not determined: {'; '.join(loose)}")
+            codes.append('PARTIAL_COVERAGE')
+            resolves.append('classify the listed filings (read the documents or extend the pre-declared map)')
+        res.add(conclude(t, 7, statement,
                          [_feed_evidence(ctx, feed, f'{t}: classes absent from the window: {zero}',
-                                         complete)], 'official_fact', partial, resolve=resolve))
+                                         complete)], 'official_fact', codes,
+                         resolve='; '.join(resolves) or None))
     _insider(ctx, res, t, feed, window, complete, partial, resolve)
     return counts
+
+
+def _form4_documents(ctx, t, form4, txns):
+    """
+    accession -> (read, stored XML fetch or None, detail) for the Form 4 of the window.
+    Read = every dated non-derivative transaction of the document is stored. A stored XML is
+    parsed offline (no download) and its dated transactions compared with the stored rows; with
+    no stored XML, stored rows count as read (ingestion stores all rows of a document at once).
+    """
+    stored = {}
+    for x in txns:
+        stored[x.get('accession')] = stored.get(x.get('accession'), 0) + 1
+    try:
+        cik = ctx.sec.get_cik(t)
+    except Exception:  # noqa: BLE001 - only used to locate stored documents
+        cik = None
+    out = {}
+    for f in form4:
+        accession, n = f['accession_number'], stored.get(f['accession_number'], 0)
+        doc = (ctx.db.latest_fetch(SEC_SOURCE, form4_xml_url(cik, accession, f['primary_document']))
+               if cik and f.get('primary_document') else None)
+        if not doc:
+            out[accession] = ((True, None, f'{n} stored transaction(s)') if n
+                              else (False, None, 'XML document not stored'))
+            continue
+        try:
+            dated = sum(1 for x in parse_form4(ctx.db.read_raw(doc['fetch_id']))['transactions']
+                        if x.get('date'))
+        except Exception as e:  # noqa: BLE001 - an unreadable document is reported as not read
+            out[accession] = (False, doc, f"stored XML (fetch {doc.get('fetch_id')}) not readable: "
+                                          f'{type(e).__name__}')
+            continue
+        if n >= dated:
+            out[accession] = (True, doc, f'stored XML lists {dated} dated non-derivative transaction(s), '
+                                         f'{n} stored')
+        else:
+            out[accession] = (False, doc, f'stored XML lists {dated} dated non-derivative transaction(s), '
+                                          f'{n} stored (transactions not ingested)')
+    return out
 
 
 def _insider(ctx, res, t, feed, window, complete, partial, resolve):
@@ -362,6 +516,7 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
     form4 = [f for f in window if f['form'] == '4']
     form4a = [f for f in window if f['form'] == '4/A']
     form144 = [f for f in window if f['form'] in FORM144_FORMS]
+    statements = [f for f in window if f['form'] in OWNERSHIP_STATEMENT_FORMS]
     events = ctx.db.events(t, FORM4_METRIC, published_from=tm.previous_cutoff,
                            published_to=tm.cutoff, source=SEC_SOURCE)
     txns, unreadable = [], 0
@@ -373,17 +528,8 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
             continue
         row['_available_at'] = e['available_at']
         txns.append(row)
-    with_rows = {x.get('accession') for x in txns}
-    try:
-        cik = ctx.sec.get_cik(t)
-    except Exception:  # noqa: BLE001 - only used to check stored documents
-        cik = None
-    docs = {}                              # accession -> stored XML fetch (None: not found)
-    for f in form4:
-        docs[f['accession_number']] = (ctx.db.latest_fetch(SEC_SOURCE, form4_xml_url(
-            cik, f['accession_number'], f['primary_document'])) if cik and f.get('primary_document') else None)
-    # read = transactions stored, or document stored with no non-derivative transaction in it
-    unknown = [a for a, doc in docs.items() if a not in with_rows and not doc]
+    docs = _form4_documents(ctx, t, form4, txns)
+    unknown = [a for a, (read, _, _) in docs.items() if not read]
     fetched = len(docs) - len(unknown)
 
     def side(code):
@@ -410,8 +556,9 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
               ('measure', 'value'), [
                   ['Form 4 filings accepted in the window', len(form4)],
                   ['Form 4/A filings accepted in the window (not parsed)', len(form4a)],
-                  ['Form 4 documents read (stored XML)', fetched],
-                  ['Form 4 documents not read', len(unknown)],
+                  ['Form 4 documents read (all dated transactions stored, or stored XML with none)', fetched],
+                  ['Form 4 documents not read (XML not stored or unreadable, or transactions not ingested)',
+                   len(unknown)],
                   ['stored non-derivative transactions', len(txns)],
                   ['open-market purchases (P): transactions', buys['n']],
                   ['open-market purchases (P): shares', buys['shares']],
@@ -428,15 +575,22 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
                   ['open-market sales (S): distinct primary reporting owners', sells['owners']],
                   ['other transaction codes (not open-market)', other_text],
                   ['Form 144 notices accepted in the window', len(form144)],
+                  ['Form 3 / Form 5 ownership statements accepted in the window (listed per filing, not '
+                   'parsed)', len(statements)],
               ], scope=t, question=7,
               note='Transactions are keyed on filing availability (published_at), not on the '
                    'transaction date: Form 4 is due within 2 business days, so reported trades can '
                    'predate the window. Distinct owners: one per filing (primary reporting owner). '
-                   'A Form 144 is a notice of a proposed sale, not a sale.')
+                   'A Form 144 is a notice of a proposed sale, not a sale. Stored Form 4 XML documents '
+                   'are read offline to check that their transactions are stored.'
+                   + ('' if complete else ' Counts cover the window only as far as the submissions feed does.'))
 
     codes = list(partial)
     if unknown or form4a or unreadable:
         codes.append('PARTIAL_COVERAGE')
+    gap_resolve = 'read every Form 4 / 4/A document of the window (InsiderTracker.ingest stores them)'
+    form4a_items = [_filing_evidence(ctx, feed, f) for f in form4a]
+    form4a_text = ', '.join(f['accession_number'] for f in form4a)
     if form4 or txns:
         items = []
         if form4:
@@ -446,8 +600,8 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
         by_accession = {}
         for x in txns:
             by_accession.setdefault(x.get('accession'), []).append(x)
-        for accession, rows in by_accession.items():     # one item per Form 4 document read
-            doc = docs.get(accession) or {}
+        for accession, rows in by_accession.items():     # one item per Form 4 document with stored rows
+            doc = (docs.get(accession) or (None, None, None))[1] or {}
             pub = max(to_utc_iso(x['_available_at']) for x in rows)
             codes_seen = ','.join(sorted({str(x.get('code')) for x in rows}))
             items.append(evidence(tm, SEC_SOURCE, SEC_RANK,
@@ -456,11 +610,24 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
                                   published_at=pub, retrieved_at=doc.get('retrieved_at'),
                                   fetch_id=doc.get('fetch_id'), fresh=_fresh(ctx, pub, EVENT_CADENCE),
                                   basis='filing acceptance time (New York reading)'))
+        for f in form4:                                  # documents read with no stored row
+            read, doc, detail = docs[f['accession_number']]
+            if read and f['accession_number'] not in by_accession:
+                items.append(evidence(tm, SEC_SOURCE, SEC_RANK,
+                                      f"Form 4 {f['accession_number']}: {detail}",
+                                      as_of=f.get('filing_date'), published_at=f['published_at'],
+                                      retrieved_at=(doc or {}).get('retrieved_at'),
+                                      fetch_id=(doc or {}).get('fetch_id'),
+                                      fresh=_fresh(ctx, f['published_at'], EVENT_CADENCE),
+                                      basis=f.get('published_at_basis')))
+        items += form4a_items
         gaps = []
         if unknown:
-            gaps.append(f"{len(unknown)} Form 4 document(s) not read ({', '.join(unknown[:5])})")
+            gaps.append(f"{len(unknown)} Form 4 document(s) not read ("
+                        + '; '.join(f'{a}: {docs[a][2]}' for a in unknown[:5])
+                        + ('; ...' if len(unknown) > 5 else '') + ')')
         if form4a:
-            gaps.append(f'{len(form4a)} Form 4/A not parsed')
+            gaps.append(f'{len(form4a)} Form 4/A not parsed ({form4a_text})')
         if unreadable:
             gaps.append(f'{unreadable} stored transaction(s) unreadable')
         statement = (f"{t}: {len(form4)} Form 4 filing(s) accepted in the window; stored open-market "
@@ -475,8 +642,15 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
                           'unknown value (not counted in USD totals)')
         if gaps:
             statement += '; coverage gaps: ' + '; '.join(gaps)
-        res.add(conclude(t, 7, statement, items, 'official_fact', codes,
-                         resolve='read every Form 4 / 4/A document of the window' if gaps else None))
+        resolves = ([resolve] if partial else []) + ([gap_resolve] if gaps else [])
+        res.add(conclude(t, 7, statement, items, 'official_fact', codes, resolve='; '.join(resolves) or None))
+    elif form4a:
+        res.add(conclude(t, 7, f'{t}: no original Form 4 accepted in the window; {len(form4a)} Form 4/A '
+                               f'accepted ({form4a_text}), not parsed: transactions they report are not counted',
+                         [_feed_evidence(ctx, feed, f'{t}: no original Form 4 in the submissions feed for the '
+                                                    'window', complete)] + form4a_items,
+                         'official_fact', codes,
+                         resolve='; '.join(([resolve] if partial else []) + [gap_resolve])))
     else:
         res.add(conclude(t, 7, f'{t}: no Form 4 filing accepted in the window',
                          [_feed_evidence(ctx, feed, f'{t}: no Form 4 in the submissions feed for the window',
@@ -485,7 +659,8 @@ def _insider(ctx, res, t, feed, window, complete, partial, resolve):
         res.add(conclude(t, 7, f'{t}: {len(form144)} Form 144 notice(s) of proposed sale accepted in the '
                                f"window ({', '.join(f['accession_number'] for f in form144)}); a notice is "
                                'not a sale',
-                         [_filing_evidence(ctx, feed, f) for f in form144], 'official_fact'))
+                         [_filing_evidence(ctx, feed, f) for f in form144], 'official_fact', partial,
+                         resolve=resolve))
 
 
 # ---------------------------------------------------------------- Q2
@@ -521,7 +696,13 @@ def _fact_evidence(ctx, F, fact, published, as_of, known_at, label):
     if published and published > to_utc_iso(known_at):
         raise LookAheadError(f'{SEC_SOURCE}: {fact!r} published {published}, after the view instant '
                              f'{label} = {known_at}')
-    if published:
+    if published and label == 'T_p':
+        # baseline of a change claim: cited as the view at T_p, so its freshness is evaluated at T_p
+        status = freshness(published[:10], PERIODIC_CADENCE, now=datetime.fromisoformat(to_utc_iso(known_at)))['status']
+        pub, fresh = published, True if status == 'FRESH' else False if status == 'STALE' else None
+        basis = ('acceptance time of the latest filing among the inputs (New York reading); baseline view: '
+                 'freshness evaluated at T_p')
+    elif published:
         pub, fresh = published, _fresh(ctx, published, PERIODIC_CADENCE)
         basis = 'acceptance time of the latest filing among the inputs (New York reading)'
     else:
@@ -613,7 +794,7 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
     F_p, F_c = _fundamentals(ctx, t, T_p), _fundamentals(ctx, t, T_c)
     summary = {'statements': None if statements is None else len(statements),
                'late': None if late is None else len(late), 'revenue_changed': None,
-               'balance_changed': None, 'revisions': 0,
+               'balance_changed': None, 'revisions': None,   # None: not determinable, never 0
                'facts_retrieved_at': (F_c.get('fetch') or {}).get('retrieved_at')}
     if not F_c.get('fetch') or not F_p.get('fetch'):
         for label, F in (('T_p', F_p), ('T_c', F_c)):
@@ -654,7 +835,7 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
               f"{F_c['fetch'].get('fetch_id')} retrieved {facts_after}."
               + (' Coverage: ' + '; '.join(coverage_note) + '.' if coverage_note else '')))
 
-    revision_rows = []
+    revision_rows, compared = [], False
     for group, keys, comparability, describe, has in (
             ('revenue', REVENUE_KEYS, ('revenue_tag',), _describe_revenue,
              lambda F: F.get('revenue') is not None),
@@ -666,6 +847,7 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
         summary[f'{short}_changed'] = changed
         if not p_has and not c_has:
             continue                        # reported below as DATA UNAVAILABLE
+        compared = True
         as_of = (lambda F: F.get('revenue_period_end')) if short == 'revenue' else \
             (lambda F: F.get('balance_sheet_date'))
         ev_p = _fact_evidence(ctx, F_p, f'{t} {describe(F_p)} (as known at T_p)', pubs[(short, 'T_p')],
@@ -713,7 +895,8 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
                                           'no periodic statement accepted in the window'])
         res.add(conclude(t, 2, statement, items, 'official_fact', codes, resolve=resolve_q2))
 
-    summary['revisions'] = len(revision_rows)
+    # revisions are determinable only with the submissions feed (was a statement accepted?)
+    summary['revisions'] = len(revision_rows) if statements is not None and compared else None
     res.table(f'{t}: revisions / restatements (fundamentals changed without a periodic filing)', (
         'field', 'as known at T_p', 'as known at T_c', 'T_p inputs published', 'T_c inputs published',
         'note'), revision_rows, scope=t, question=2,
@@ -745,9 +928,18 @@ def build(ctx):
         'mapping uses the label read as UTC; TIMESTAMP_AMBIGUOUS marks filings whose session changes '
         'under the New York reading. Early closes (13:00 ET) are not modelled: no source in the system.',
         'Filings accepted before T_c under the UTC reading but admissible only after T_c under the '
-        "conservative reading belong to next week's report.",
+        "conservative reading belong to next week's report. Filings admissible at T_p (previous window) "
+        "whose session falls in this week (e.g. accepted after the close of s_-5) are listed in a "
+        "carried-over table with their session and are not counted in this week's classes.",
+        "'No filing of class X' is a statement about the pre-declared map: filings the map does not "
+        'classify (unmapped forms, 8-K items not in the map other than 9.01) are listed and the '
+        'statement then carries PARTIAL_COVERAGE. Counts over the window (Form 4, Form 144) carry the '
+        'submissions-feed coverage codes.',
+        'A Form 4 counts as read only when all its dated non-derivative transactions are stored, or '
+        'when its stored XML (read offline, no download) lists none.',
         "Freshness: 10-K / 10-Q family 'quarterly_filing' (120 d); event filings and negative facts "
-        "'weekly' (14 d), evaluated at the cutoff.",
+        "'weekly' (14 d), evaluated at the cutoff; in change claims the baseline view at T_p is "
+        'evaluated at T_p (its own view instant).',
         'Item 5.02 covers both departures and appointments; the code alone does not say which. An 8-K/A '
         'repeats an earlier event (link to the original not parsed). Rule 10b5-1 sales are planned.',
         'No interpretation of filing content is made: classes are item-code lookups only; timing is '

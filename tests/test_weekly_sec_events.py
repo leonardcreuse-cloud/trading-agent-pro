@@ -43,10 +43,29 @@ def filing(form, label, accession, items=(), report_date=None, doc='doc.xml'):
 OLD = filing('10-Q', '2026-08-05T16:00:00Z', 'old-10q', report_date='2026-06-30')
 
 
-def feed(rows, after=True, retrieved=None):
+def feed(rows, after=True, retrieved=None, old=True):
     fetch = dict(FEED_FETCH, retrieved_at=retrieved or FEED_FETCH['retrieved_at'])
-    return {'status': 'OK', 'filings': list(rows) + [OLD], 'fetch': fetch, 'reason': None,
+    return {'status': 'OK', 'filings': list(rows) + ([OLD] if old else []), 'fetch': fetch, 'reason': None,
             'retrieved_after_cutoff': after}
+
+
+def xml_url(accession, doc):
+    return f"https://www.sec.gov/Archives/edgar/data/123/{accession.replace('-', '')}/{doc.split('/')[-1]}"
+
+
+def form4_xml(rows=()):
+    """Minimal Form 4 XML with the elements parse_form4 reads; rows = (date or None, code, shares, price)."""
+    tx = ''.join(
+        '<nonDerivativeTransaction><securityTitle><value>Common</value></securityTitle>'
+        + (f'<transactionDate><value>{d}</value></transactionDate>' if d else '')
+        + f'<transactionCoding><transactionCode>{c}</transactionCode></transactionCoding>'
+        f'<transactionAmounts><transactionShares><value>{n}</value></transactionShares>'
+        f'<transactionPricePerShare><value>{p}</value></transactionPricePerShare>'
+        '<transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>'
+        '</transactionAmounts></nonDerivativeTransaction>' for d, c, n, p in rows)
+    return ('<?xml version="1.0"?><ownershipDocument><reportingOwner><reportingOwnerId>'
+            '<rptOwnerName>Owner A</rptOwnerName></reportingOwnerId></reportingOwner>'
+            f'<nonDerivativeTable>{tx}</nonDerivativeTable></ownershipDocument>')
 
 
 def view(**over):
@@ -62,10 +81,11 @@ def view(**over):
 
 
 class FakeDB:
-    def __init__(self, txns=(), facts=None, xml_urls=()):
+    def __init__(self, txns=(), facts=None, xml=None):
         self.txns = list(txns)          # (entity, available_at, dict)
         self.facts = facts or {}        # (entity, metric) -> [(as_of, published_at, value)]
-        self.xml_urls = set(xml_urls)
+        self.xml = dict(xml or {})      # stored Form 4 XML: url -> text (None: payload unreadable)
+        self.ids = []
 
     def events(self, entity, metric, published_from=None, published_to=None, source=None):
         assert metric == 'form4:transaction' and source == 'SEC EDGAR'
@@ -82,7 +102,17 @@ class FakeDB:
         return sorted(chosen.items())
 
     def latest_fetch(self, source, endpoint, since=None):
-        return {'fetch_id': 99, 'retrieved_at': '2026-10-07T08:30:00+00:00'} if endpoint in self.xml_urls else None
+        if endpoint not in self.xml:
+            return None
+        if endpoint not in self.ids:
+            self.ids.append(endpoint)
+        return {'fetch_id': 100 + self.ids.index(endpoint), 'retrieved_at': '2026-10-07T08:30:00+00:00'}
+
+    def read_raw(self, fetch_id):
+        text = self.xml[self.ids[fetch_id - 100]]
+        if text is None:
+            raise RuntimeError(f'raw payload of fetch {fetch_id} does not match its SHA-256')
+        return text
 
 
 class FakeSEC:
@@ -203,7 +233,7 @@ def test_quiet_week_negative_facts_are_strong_with_post_cutoff_feed():
     assert ctx.sec.calls == [('AAA', T_P), ('AAA', T_C)]                 # both views, point-in-time
     no_stmt = find(r, 'AAA', 2, r'no new periodic financial statements accepted in the window')
     assert no_stmt['level'] == STRONG and no_stmt['kind'] == 'official_fact'
-    assert find(r, 'AAA', 7, r'no 8-K or 8-K/A accepted')['level'] == STRONG
+    assert find(r, 'AAA', 7, r'no 8-K or 8-K/A')['level'] == STRONG
     rev = find(r, 'AAA', 2, r'^AAA: revenue as known at T_c')
     assert rev['level'] == STRONG and 'unchanged' in rev['statement'] and '1,000.0 M USD' in rev['statement']
     assert rev['evidence'][0]['published_at'] == '2026-08-05T20:00:00+00:00'
@@ -213,6 +243,9 @@ def test_quiet_week_negative_facts_are_strong_with_post_cutoff_feed():
     events = table(r, 'AAA: every SEC filing')
     assert [row[7] for row in events['rows']] == ['f4-1', 'n144-1']
     assert events['rows'][0][0] == '2026-10-01' and events['rows'][1][0] == '2026-10-02'
+    # published exactly at T_p (previous window) but its session (2026-09-30) is in this week
+    carried = table(r, 'AAA: filings of the previous window')
+    assert [(row[0], row[7]) for row in carried['rows']] == [('2026-09-30', 'f4-boundary')]
     # fundamentals table: full pre-declared rows, values in USD m, deltas
     fund = table(r, 'AAA: SEC XBRL fundamentals')
     by_field = {row[0]: row for row in fund['rows']}
@@ -224,9 +257,13 @@ def test_quiet_week_negative_facts_are_strong_with_post_cutoff_feed():
     assert table(r, 'AAA: revisions')['rows'] == []
 
 
+F41_XML = form4_xml([('2026-09-30', 'S', 100, 10), ('2026-09-30', 'S', 50, 20), ('2026-09-30', 'P', 10, 5),
+                     ('2026-09-30', 'S', 7, ''), ('2026-09-30', 'M', 30, 1)])
+
+
 def test_form4_totals_from_stored_transactions():
     ctx = quiet_ctx()
-    ctx.db.xml_urls.add(f'https://www.sec.gov/Archives/edgar/data/123/f41/f4-1.xml')
+    ctx.db.xml[xml_url('f4-1', 'xsl/f4-1.xml')] = F41_XML        # 5 dated rows, all 5 stored
     r = build(ctx).as_dict()
     rows = dict(table(r, 'AAA: Form 4 in the window')['rows'])
     assert rows['Form 4 filings accepted in the window'] == 1
@@ -244,7 +281,9 @@ def test_form4_totals_from_stored_transactions():
     c = find(r, 'AAA', 7, r'Form 4 filing\(s\) accepted in the window')
     assert c['level'] == STRONG and '1 P/S transaction(s) with unknown value' in c['statement']
     doc = [e for e in c['evidence'] if e['fact'].startswith('Form 4 f4-1')]
-    assert len(doc) == 1 and doc[0]['fetch_id'] == 99 and doc[0]['retrieved_at']   # XML provenance
+    assert len(doc) == 1 and doc[0]['fetch_id'] == 100 and doc[0]['retrieved_at']  # XML provenance
+    assert dict(table(r, 'AAA: Form 4 in the window')['rows'])[
+        'Form 4 documents read (all dated transactions stored, or stored XML with none)'] == 1
     assert find(r, 'AAA', 7, r'Form 144 notice')['level'] == STRONG
 
 
@@ -255,18 +294,120 @@ def test_form4_document_not_read_is_partial_coverage():
     c = find(r, 'AAA', 7, r'Form 4 filing\(s\) accepted in the window')
     assert c['level'] == UNCERTAIN and 'PARTIAL_COVERAGE' in c['reason_codes']
     assert 'not read' in c['statement']
-    ctx.db.xml_urls.add(f'https://www.sec.gov/Archives/edgar/data/123/f4unread/unread.xml')
+    ctx.db.xml[xml_url('f4-unread', 'xsl/unread.xml')] = form4_xml([])   # no non-derivative transaction
     c = find(build(ctx).as_dict(), 'AAA', 7, r'Form 4 filing\(s\) accepted in the window')
     assert c['level'] == STRONG                                            # read, no non-derivative rows
+    assert any('stored XML lists 0 dated' in e['fact'] and e['fetch_id'] == 100 for e in c['evidence'])
 
 
 def test_negative_facts_need_a_feed_retrieved_after_the_cutoff():
     r = build(quiet_ctx(after=False)).as_dict()
-    for q, pattern in ((2, r'no new periodic financial statements'), (7, r'no 8-K or 8-K/A')):
-        c = find(r, 'AAA', q, pattern)
+    for q, pattern in ((2, r'no new periodic financial statements'), (7, r'no 8-K or 8-K/A'),
+                       (7, r'Form 144 notice'), (7, r'Form 4 filing\(s\) accepted')):
+        c = find(r, 'AAA', q, pattern)                       # counts over the window are completeness claims
         assert c['level'] == UNCERTAIN and 'PARTIAL_COVERAGE' in c['reason_codes']
-        assert c['what_would_resolve_it']
+        assert 'submissions fetch made after the cutoff' in c['what_would_resolve_it']
     assert 'PARTIAL_COVERAGE' in find(r, 'AAA', 2, r'^AAA: revenue as known')['reason_codes']
+
+
+def test_feed_without_a_filing_older_than_the_window_is_partial_coverage():
+    ctx = FakeCtx({'AAA': feed([], old=False)}, {'AAA': same})       # recent block may not reach T_p
+    r = build(ctx).as_dict()
+    for q, pattern in ((2, r'no new periodic financial statements'), (7, r'no 8-K or 8-K/A'),
+                       (7, r'no SEC filing of any form'), (7, r'no Form 4 filing')):
+        c = find(r, 'AAA', q, pattern)
+        assert c['level'] == UNCERTAIN and c['reason_codes'] == ['PARTIAL_COVERAGE']
+    assert 'no filing older than the window start' in table(r, 'AAA: every SEC filing')['note']
+
+
+def test_form4a_only_window_is_not_a_strong_negative():
+    ctx = FakeCtx({'AAA': feed([filing('4/A', '2026-10-01T20:00:00Z', 'f4a-1')])}, {'AAA': same})
+    r = build(ctx).as_dict()
+    assert not any(re.search(r'no Form 4 filing', c['statement']) for c in r['conclusions'])
+    c = find(r, 'AAA', 7, r'no original Form 4 accepted in the window; 1 Form 4/A')
+    assert c['level'] == UNCERTAIN and c['reason_codes'] == ['PARTIAL_COVERAGE']
+    assert 'f4a-1' in c['statement'] and any('f4a-1' in e['fact'] for e in c['evidence'])
+    assert 'Form 4 / 4/A' in c['what_would_resolve_it']
+    # with an original Form 4 as well, the 4/A is cited and keeps the claim partial
+    rows = [filing('4/A', '2026-10-01T20:00:00Z', 'f4a-1'), filing('4', '2026-10-02T20:00:00Z', 'f4-2')]
+    ctx = FakeCtx({'AAA': feed(rows)}, {'AAA': same},
+                  FakeDB(facts=balance_facts('AAA'), xml={xml_url('f4-2', 'doc.xml'): form4_xml([])}))
+    c = find(build(ctx).as_dict(), 'AAA', 7, r'Form 4 filing\(s\) accepted in the window')
+    assert c['level'] == UNCERTAIN and 'PARTIAL_COVERAGE' in c['reason_codes']
+    assert '1 Form 4/A not parsed (f4a-1)' in c['statement'] and any('f4a-1' in e['fact'] for e in c['evidence'])
+
+
+def test_stored_xml_without_stored_transactions_is_not_read():
+    rows = [filing('4', '2026-10-01T04:00:06Z', 'f4-x', doc='xsl/x.xml')]
+    db = FakeDB(facts=balance_facts('AAA'), xml={xml_url('f4-x', 'x.xml'): form4_xml([('2026-09-29', 'P', 1000, 30)])})
+    r = build(FakeCtx({'AAA': feed(rows)}, {'AAA': same}, db)).as_dict()
+    c = find(r, 'AAA', 7, r'Form 4 filing\(s\) accepted in the window')
+    assert c['level'] == UNCERTAIN and c['reason_codes'] == ['PARTIAL_COVERAGE']
+    assert 'f4-x: stored XML lists 1 dated non-derivative transaction(s), 0 stored (transactions not ingested)' \
+        in c['statement']
+    t = dict(table(r, 'AAA: Form 4 in the window')['rows'])
+    assert t['Form 4 documents read (all dated transactions stored, or stored XML with none)'] == 0
+    assert t['Form 4 documents not read (XML not stored or unreadable, or transactions not ingested)'] == 1
+    # a stored row only for part of the document: still not read
+    db.txns.append(('AAA', acceptance_to_utc('2026-10-01T04:00:06Z'), txn('f4-x', 'P', 1000.0, 30.0, None)))
+    db.xml[xml_url('f4-x', 'x.xml')] = form4_xml([('2026-09-29', 'P', 1000, 30), ('2026-09-29', 'S', 5, 30)])
+    c = find(build(FakeCtx({'AAA': feed(rows)}, {'AAA': same}, db)).as_dict(), 'AAA', 7, r'Form 4 filing')
+    assert c['level'] == UNCERTAIN and '2 dated non-derivative transaction(s), 1 stored' in c['statement']
+    # undated rows are not ingested: a document whose only row is undated is read
+    db.txns.clear()
+    db.xml[xml_url('f4-x', 'x.xml')] = form4_xml([(None, 'G', 10, 0)])
+    assert find(build(FakeCtx({'AAA': feed(rows)}, {'AAA': same}, db)).as_dict(), 'AAA', 7,
+                r'Form 4 filing')['level'] == STRONG
+    # an unreadable stored payload is not read
+    db.xml[xml_url('f4-x', 'x.xml')] = None
+    c = find(build(FakeCtx({'AAA': feed(rows)}, {'AAA': same}, db)).as_dict(), 'AAA', 7, r'Form 4 filing')
+    assert c['level'] == UNCERTAIN and 'not readable: RuntimeError' in c['statement']
+
+
+def test_carried_over_filing_is_linked_to_its_session_in_this_week():
+    # 16:05 EDT on s_-5 (2026-09-29): admissible at T_p (previous window), session s_-4 = 2026-09-30
+    late = filing('8-K', '2026-09-29T20:05:00Z', '8k-carried', items=['2.02', '9.01'])
+    assert late['published_at'] <= T_P
+    ctx = FakeCtx({'AAA': feed([late])}, {'AAA': same})
+    r = build(ctx).as_dict()
+    assert table(r, 'AAA: every SEC filing')['rows'] == []
+    carried = table(r, 'AAA: filings of the previous window')
+    assert [(row[0], row[7], row[6]) for row in carried['rows']] == [('2026-09-30', '8k-carried', RESULTS)]
+    c = find(r, 'AAA', 7, r'accession 8k-carried: available in the previous window')
+    assert c['level'] == STRONG and 'mapped to session 2026-09-30 of this week' in c['statement']
+    no8k = find(r, 'AAA', 7, r'no 8-K or 8-K/A')
+    assert no8k['level'] == STRONG and '8k-carried' in no8k['statement']
+    counts = {row[0]: row[1] for row in table(r, 'SEC filings in the window by class')['rows']}
+    assert counts[RESULTS] == 0 and counts['filings (distinct accessions)'] == 0   # last week's filing
+    # the previous week's report saw it after its last session and points to this report
+    prev = FakeCtx({'AAA': feed([late])}, {'AAA': same})
+    prev.tm = TimeModel(SESSIONS, '2026-09-30T12:00:00+00:00', '2026-09-30T12:00:00+00:00')
+    assert AFTER_LAST in find(build(prev).as_dict(), 'AAA', 7, r'accession 8k-carried')['statement']
+    assert "next week's report" in AFTER_LAST
+
+
+def test_unclassified_filings_qualify_the_class_absence_statement():
+    rows = [filing('SC TO-T', '2026-10-01T12:00:00Z', 'tender'), filing('25-NSE', '2026-10-01T13:00:00Z', 'delist'),
+            filing('POSASR', '2026-10-01T14:00:00Z', 'shelf'), filing('3', '2026-10-01T15:00:00Z', 'form3'),
+            filing('8-K12B', '2026-10-01T16:00:00Z', 'succ', items=['2.02'])]
+    r = build(FakeCtx({'AAA': feed(rows)}, {'AAA': same})).as_dict()
+    assert not any('no 8-K' in c['statement'] for c in r['conclusions'])          # 8-K12B is an 8-K
+    zero = find(r, 'AAA', 7, r'no filing of the pre-declared classes')
+    for cls in (MNA, FINANCING, 'listing', INSIDER, RESULTS):
+        assert cls not in zero['statement'].split(' (map')[0]
+    assert zero['level'] == STRONG and 'v2' in zero['statement']
+    assert find(r, 'AAA', 7, r'^AAA: 3 accepted')['statement'].count(INSIDER) == 1
+    rows = [filing('DEF 14A', '2026-10-01T12:00:00Z', 'proxy'),
+            filing('8-K', '2026-10-01T13:00:00Z', 'blackout', items=['5.04', '9.01']),
+            filing('8-K', '2026-10-01T20:30:00Z', 'ctrl', items=['2.02', '5.01', '9.01'])]
+    r = build(FakeCtx({'AAA': feed(rows)}, {'AAA': same})).as_dict()
+    zero = find(r, 'AAA', 7, r'no filing of the pre-declared classes')
+    assert zero['level'] == UNCERTAIN and zero['reason_codes'] == ['PARTIAL_COVERAGE']
+    assert '3 filing(s) of the window not fully classified' in zero['statement']
+    assert 'DEF 14A proxy (form not in the map)' in zero['statement']
+    assert '8-K blackout (items 5.04, 9.01: no mapped item)' in zero['statement']
+    assert '8-K ctrl (items 5.01 not in the map)' in zero['statement']
+    assert '(items 5.01 not in the map)' in find(r, 'AAA', 7, r'accession ctrl')['statement']
 
 
 # ---------------------------------------------------------------- busy week
@@ -375,6 +516,26 @@ def test_new_10q_without_its_facts_is_partial_coverage():
     assert 'no revenue input carries its acceptance time' in c['statement']
 
 
+def test_change_claim_baseline_freshness_is_evaluated_at_tp():
+    # T_p inputs published 2026-06-02: 120 days before T_p (fresh then), 127 days before T_c
+    old_pub, new_pub = '2026-06-02T20:00:00+00:00', acceptance_to_utc('2026-10-02T14:30:00Z')
+    assert freshness(old_pub[:10], 'quarterly_filing', now=datetime.fromisoformat(T_C))['status'] == 'STALE'
+
+    def views(known_at):
+        if known_at == T_C:
+            return view(revenue=1.3e9, revenue_period_end='2026-09-30', revenue_published_at=new_pub)
+        return view(revenue_published_at=old_pub)
+    k = filing('10-K', '2026-10-02T14:30:00Z', 'k', report_date='2026-09-30')
+    c = find(build(FakeCtx({'AAA': feed([k])}, {'AAA': views})).as_dict(), 'AAA', 2, r'^AAA: revenue: ')
+    assert c['level'] == STRONG and [e['fresh_at_cutoff'] for e in c['evidence']] == [True, True]
+    assert 'freshness evaluated at T_p' in c['evidence'][0]['published_at_basis']
+
+    def stale_then(known_at):          # baseline already older than 120 days at T_p
+        return views(known_at) if known_at == T_C else view(revenue_published_at='2026-05-01T20:00:00+00:00')
+    c = find(build(FakeCtx({'AAA': feed([k])}, {'AAA': stale_then})).as_dict(), 'AAA', 2, r'^AAA: revenue: ')
+    assert c['level'] == UNCERTAIN and c['reason_codes'] == ['STALE_AT_CUTOFF']
+
+
 # ---------------------------------------------------------------- missing data
 
 def test_missing_sources_are_data_unavailable_with_reasons():
@@ -392,6 +553,27 @@ def test_missing_sources_are_data_unavailable_with_reasons():
     assert all(u['level'] == UNAVAILABLE for u in r['unavailable'])
     overall = table(r, 'SEC filings in the window by class')
     assert all(row[1] is None and row[2] is None for row in overall['rows'])   # never 0 for unknown
+    fund = table(r, 'Fundamental changes per company')
+    assert fund['rows'][0][:6] == ['AAA', None, None, None, None, None]        # revision rows: unknown
+
+
+def test_revision_rows_are_unknown_without_both_sources():
+    col = 5                                                                    # 'revision rows'
+
+    def changed(known_at):
+        return view(revenue=1.05e9) if known_at == T_C else view()
+
+    def no_facts(_known_at):
+        return {'status': 'DATA UNAVAILABLE', 'fetch': None, 'reason': 'SEC XBRL company facts unavailable'}
+    down = {'status': 'DATA UNAVAILABLE', 'filings': [], 'fetch': None, 'reason': 'HTTP 403 from proxy'}
+    cases = [(down, changed, None), (feed([]), no_facts, None), (feed([]), changed, 1), (feed([]), same, 0)]
+    for f, views, expected in cases:
+        r = build(FakeCtx({'AAA': copy.deepcopy(f)}, {'AAA': views})).as_dict()
+        row = table(r, 'Fundamental changes per company')['rows'][0]
+        assert row[col] == expected and (expected is None or isinstance(row[col], int)), (f['status'], row)
+    r = build(FakeCtx({'AAA': copy.deepcopy(down)}, {'AAA': changed})).as_dict()
+    assert table(r, 'Fundamental changes per company')['rows'][0][3] == 'yes'
+    assert table(r, 'AAA: revisions')['note'] == 'not determinable: submissions feed unavailable'
 
 
 def test_unreported_ratio_is_unavailable_never_zero():
@@ -417,6 +599,8 @@ def test_feed_exception_does_not_stop_other_companies():
               FakeDB(facts={**balance_facts('AAA'), **balance_facts('BBB')}))
     r = build(ctx).as_dict()
     assert any(u['scope'] == 'BBB' and 'RuntimeError: boom' in u['reason'] for u in r['unavailable'])
+    rows = {row[0]: row for row in table(r, 'Fundamental changes per company')['rows']}
+    assert rows['BBB'][5] is None and rows['AAA'][5] == 0                       # unknown is not 0
     assert find(r, 'AAA', 7, r'no 8-K or 8-K/A')['level'] == STRONG
 
 

@@ -11,18 +11,27 @@ cutoff) and at T_c (cutoff); decreases and unchanged rows are shown too (no sele
                    Rule: drawdown at T_c <= drawdown_new_low_pct (%) and deeper than at T_p.
   volume ratio     volume of the 5 sessions ending s_0 (s_-5) / mean of the 20 previous weeks.
                    Rule: ratio at T_c >= volume_ratio and higher than at T_p.
-  debt / D-E       ctx.sec.fundamentals(ticker, known_at=T) (stored SEC XBRL facts, rank 1).
+  debt / D-E       stored SEC XBRL balance-sheet facts read point-in-time (ctx.db.series known_at=T,
+                   sec_xbrl.balance_sheet: same definitions as SECParser.fundamentals). REUSE ONLY:
+                   the section never downloads from SEC (facts come from the daily SEC ingestion).
+                   Coverage is checked against the SEC submissions feed: when the latest 10-K / 10-Q
+                   accepted by T is listed but its balance sheet is not stored, the value as known at
+                   T is DATA UNAVAILABLE; when it cannot be checked, PARTIAL_COVERAGE.
   insider sales    discretionary (no Rule 10b5-1 box) open-market sales (code S) over the 90 days
                    ending T_c / T_p from stored Form 4 events (published_at windows): USD value and
                    distinct sellers (first reporting owner of each filing).
   red-flag filings 8-K items 4.01, 4.02, 1.05, 3.01, 2.05, 2.06 and NT 10-K / NT 10-Q accepted in
-                   P = (T_p, T_c] vs the previous week. Rule: any red-flag filing in P.
+                   P = (T_p, T_c] vs the previous week. Rule: any red-flag filing in P. A count of
+                   zero (absence) is shown only when the feed was retrieved after the cutoff, reaches
+                   back to T_p and lists item codes for every 8-K of P; otherwise N/A (unknown).
 Debt, D/E and insider rows have no pre-declared threshold in config v1: they are shown and marked
 "not assessed" unless the optional keys of OPTIONAL_THRESHOLDS are added to weekly.thresholds.
 
 Market rows: VIXCLS, BAMLH0A0HYM2, NFCI, STLFSI4 (FRED, rank 1) as known at T_c and T_p (vintages).
 Rule (documented in the table note): increase > 1 sample sd of the Friday-to-Friday changes (last
-observation of each week) of the series as known at T_p (at least 26 weekly changes).
+observation of each week) of the series as known at T_p (at least 26 weekly changes), scaled by
+sqrt(n) when the two observations compared are n weeks apart (n = round(days / 7), at least 1; e.g. a
+weekly series whose T_p observation is two weeks older than its T_c observation).
 
 Levels: price measurements are market_fact (single rank-2 source -> UNCERTAIN by rule), SEC and FRED
 measurements are official_fact; the judgement "risk increased for X" is ALWAYS an interpretation.
@@ -34,6 +43,7 @@ import math
 from datetime import date, datetime, timedelta
 
 from ...common import end_of_us_trading_day_utc, to_utc_iso
+from ...sec_xbrl import DATE_TOLERANCE_DAYS, INSTANT_TAGS, MAX_BALANCE_AGE_DAYS, PERIODIC_FORMS, balance_sheet
 from ..core import SectionResult, conclude, evidence, unavailable
 from .market import (WEEK, _num, _std, fresh_flag, prices_aligned, price_evidence, thresholds,
                      thresholds_version, value, weekly_volume_ratio)
@@ -177,75 +187,172 @@ def _row(name, at_p, at_c, change, rule, flag, source):
             'source': source}
 
 
-# ---------------------------------------------------------------- SEC fundamentals
+# ---------------------------------------------------------------- SEC fundamentals (stored facts only)
 
-def _xbrl_published(ctx, ticker, tags, as_of, known_at):
-    """Latest publication instant of the balance-sheet facts used (stored XBRL rows), or None."""
-    pubs = []
-    for tag in tags or []:
-        try:
-            rows = ctx.db.series(ticker, f'xbrl:{tag}', known_at=known_at, source=SEC_SOURCE,
-                                 start=as_of, end=as_of)
-        except Exception:  # noqa: BLE001 - provenance lookup only
-            continue
-        pubs += [r.get('published_at') for _, r in rows if r.get('published_at')]
-    return max(pubs) if pubs else None
+def stored_balance_sheet(ctx, ticker, known_at):
+    """
+    Debt, equity and debt-to-equity from the SEC XBRL facts ALREADY STORED (never downloads), as known
+    at `known_at` (facts whose filing was public by then). Same definitions as SECParser.fundamentals
+    (sec_xbrl.balance_sheet). Missing values are None with a reason, never 0.
+    """
+    instants = {tag: dict(ctx.db.series(ticker, f'xbrl:{tag}', known_at=known_at, source=SEC_SOURCE))
+                for tag in INSTANT_TAGS}
+    out = {'stored': any(instants.values()), 'debt': None, 'equity': None, 'debt_to_equity': None,
+           'balance_sheet_date': None, 'latest_equity_date': None, 'equity_tag': None, 'debt_tags': None,
+           'published_at': None, 'published_at_basis': None, 'fetch_id': None, 'retrieved_at': None,
+           'reason': None}
+    if not out['stored']:
+        out['reason'] = ('no SEC XBRL balance-sheet fact stored as known at this instant (the weekly report reuses '
+                         'the facts ingested by the daily SEC run and never downloads)')
+        return out
+    sheet = balance_sheet(instants)
+    day, equity, debt = sheet['date'], sheet['equity'], sheet['debt']
+    out.update(balance_sheet_date=day, latest_equity_date=sheet['latest_equity_date'], equity_tag=sheet['equity_tag'])
+    if not day:
+        out['reason'] = 'stockholders equity not in the stored SEC XBRL facts'
+        return out
+    used = [equity] if equity else []
+    out['equity'] = _num((equity or {}).get('value'))
+    reasons = []
+    if debt is None:
+        reasons.append(f'no recognised debt concept in the stored SEC XBRL facts between {day} and '
+                       f'{MAX_BALANCE_AGE_DAYS} days earlier (leases excluded; company-specific extension tags '
+                       'are not in SEC company facts)')
+    else:
+        out['debt'], out['debt_tags'] = _num(debt['value']), list(debt['tags'])
+        used += [instants[t][day] for t in debt['tags']]
+        if out['equity'] is None:
+            reasons.append('stockholders equity value missing')
+        elif out['equity'] > 0 and out['debt'] is not None:
+            out['debt_to_equity'] = round(out['debt'] / out['equity'], 3)
+        else:
+            reasons.append('stockholders equity <= 0: debt-to-equity not meaningful')
+    out['reason'] = '; '.join(reasons) or None
+    dated = [r for r in used if r.get('published_at')]
+    if dated:
+        last = max(dated, key=lambda r: r['published_at'])
+        out.update(published_at=last['published_at'], published_at_basis=last.get('published_at_basis'),
+                   fetch_id=last.get('fetch_id'), retrieved_at=last.get('retrieved_at'))
+    return out
 
 
-def _fundamental_rows(ctx, res, ticker, thr):
+def sheet_coverage(feed, sheet, known_at, feed_after):
+    """
+    None when the stored facts hold the balance sheet of the latest 10-K / 10-Q accepted by known_at
+    (as listed in the SEC submissions feed), else (kind, note): kind 'gap' when a listed filing's balance
+    sheet is missing from the stored facts known at known_at, 'unverified' when it cannot be checked.
+    feed_after: the feed was retrieved after known_at (otherwise later filings may be missing from it).
+    """
+    if feed.get('status') != 'OK':
+        return 'unverified', (f'SEC submissions feed unavailable ({feed.get("reason")}): coverage of the stored '
+                              'XBRL facts not verified')
+    if not feed_after:
+        return 'unverified', ('the SEC submissions feed was retrieved before this instant: a 10-K / 10-Q accepted '
+                              'after its retrieval would not be listed')
+    periodic = [f for f in feed.get('filings') or [] if f.get('form') in PERIODIC_FORMS and f.get('published_at')
+                and f['published_at'] <= known_at and f.get('report_date')]
+    if not periodic:
+        return 'unverified', 'no 10-K / 10-Q accepted by this instant is listed in the SEC submissions feed'
+    latest = max(periodic, key=lambda f: (f['report_date'], f['published_at']))
+    have = sheet.get('latest_equity_date')
+    due = date.fromisoformat(str(latest['report_date'])[:10]) - timedelta(days=DATE_TOLERANCE_DAYS)
+    if have is None or date.fromisoformat(str(have)[:10]) < due:
+        return 'gap', (f'the {latest["form"]} for period {latest["report_date"]} (accepted {latest["published_at"]}) '
+                       f'is listed by SEC but its balance sheet is not in the stored XBRL facts known at this '
+                       f'instant (they end at {have or "no balance sheet"}): run the SEC ingestion')
+    return None
+
+
+def _debt_change(db_p, db_c, t2):
+    """(change text, flag, undefined reason) of the debt row."""
+    if db_p is None or db_c is None:
+        return None, None, None
+    if db_p > 0:
+        rel = db_c / db_p - 1
+        return f'{100 * rel:+.1f}% relative', (NOT_ASSESSED if t2 is None else rel >= t2), None
+    if db_p == 0 and db_c >= 0:
+        # from zero: any positive debt is beyond any relative threshold
+        return ('unchanged at zero' if db_c == 0 else 'from zero'), (NOT_ASSESSED if t2 is None else db_c > 0), None
+    return None, None, f'relative change undefined: debt at T_p is {db_p}'
+
+
+def _fundamental_rows(ctx, res, ticker, thr, feed):
     tm = ctx.tm
     names = ('debt-to-equity (SEC XBRL)', 'debt (SEC XBRL, USD)')
-    fc = ctx.sec.fundamentals(ticker, known_at=tm.cutoff) or {}
-    fp = ctx.sec.fundamentals(ticker, known_at=tm.previous_cutoff) or {}
-    if fc.get('status') != 'OK' and fc.get('debt') is None:
-        reason = fc.get('reason') or 'SEC fundamentals unavailable'
+    source = 'SEC EDGAR XBRL, stored facts (rank 1)'
+    retrieved = to_utc_iso((feed.get('fetch') or {}).get('retrieved_at'))
+    sides = {}
+    for label, instant in (('T_p', tm.previous_cutoff), ('T_c', tm.cutoff)):
+        sheet = stored_balance_sheet(ctx, ticker, instant)
+        after = (bool(feed.get('retrieved_after_cutoff')) if label == 'T_c'
+                 else retrieved is not None and retrieved > instant)
+        cov = sheet_coverage(feed, sheet, instant, after) if sheet['stored'] else None
+        if cov and cov[0] == 'gap':          # the value as known at this instant is not the stored one
+            sheet = dict(sheet, debt=None, debt_to_equity=None, equity=None, balance_sheet_date=None, reason=cov[1])
+        sides[label] = (sheet, cov)
+    fp, fc = sides['T_p'][0], sides['T_c'][0]
+    if not fc['stored']:
         for n in names:
-            res.add(unavailable(ticker, Q, n, reason))
-        return [_row(n, None, None, None, 'N/A', None, 'SEC EDGAR (rank 1)') for n in names], []
+            res.add(unavailable(ticker, Q, n, fc['reason']))
+        return [_row(n, None, None, None, 'N/A', None, source) for n in names], []
+    unverified = [f'{label}: {cov[1]}' for label, (_, cov) in sides.items() if cov and cov[0] == 'unverified']
+
     rows, parts = [], []
-    de_c, de_p = _num(fc.get('debt_to_equity')), _num(fp.get('debt_to_equity'))
+    de_c, de_p = fc['debt_to_equity'], fp['debt_to_equity']
     t = _num(thr.get('debt_to_equity_change_abs'))
     ch = de_c - de_p if de_c is not None and de_p is not None else None
     flag = None if ch is None else (NOT_ASSESSED if t is None else ch >= t)
-    rows.append(_row(names[0], de_p, de_c, None if ch is None else f'{ch:+.3f}',
-                     f'change >= {t}' if t is not None else NOT_ASSESSED, flag, 'SEC EDGAR (rank 1)'))
-    if de_c is None:
-        res.add(unavailable(ticker, Q, names[0] + ' at T_c', fc.get('reason') or 'not computable'))
-    if de_p is None:
-        res.add(unavailable(ticker, Q, names[0] + ' at T_p', fp.get('reason') or 'not computable'))
-
-    db_c, db_p = _num(fc.get('debt')), _num(fp.get('debt'))
+    db_c, db_p = fc['debt'], fp['debt']
     t2 = _num(thr.get('debt_change_rel'))
-    rel = db_c / db_p - 1 if db_c is not None and db_p else None
-    flag2 = None if rel is None else (NOT_ASSESSED if t2 is None else rel >= t2)
-    rows.append(_row(names[1], db_p, db_c, None if rel is None else f'{100 * rel:+.1f}% relative',
-                     f'relative change >= {t2}' if t2 is not None else NOT_ASSESSED, flag2, 'SEC EDGAR (rank 1)'))
-    if db_c is None:
-        res.add(unavailable(ticker, Q, names[1] + ' at T_c', fc.get('reason') or 'no recognised debt concept'))
+    change2, flag2, undefined = _debt_change(db_p, db_c, t2)
+    if unverified:                       # a declared rule is not applied to values whose coverage is unverified
+        for n, fl, rule in ((names[0], flag, t), (names[1], flag2, t2)):
+            if rule is not None and isinstance(fl, bool):
+                res.add(unavailable(ticker, Q, f'{n}: change vs the pre-declared rule',
+                                    'coverage of the stored XBRL facts not verified (' + '; '.join(unverified) + ')'))
+        flag = None if t is not None and isinstance(flag, bool) else flag
+        flag2 = None if t2 is not None and isinstance(flag2, bool) else flag2
+    rows.append(_row(names[0], de_p, de_c, None if ch is None else f'{ch:+.3f}',
+                     f'change >= {t}' if t is not None else NOT_ASSESSED, flag, source))
+    rows.append(_row(names[1], db_p, db_c, change2, f'relative change >= {t2}' if t2 is not None else NOT_ASSESSED,
+                     flag2, source))
+    for n, val, side, label in ((names[0], de_c, fc, 'T_c'), (names[0], de_p, fp, 'T_p'),
+                                (names[1], db_c, fc, 'T_c'), (names[1], db_p, fp, 'T_p')):
+        if val is None:
+            res.add(unavailable(ticker, Q, f'{n} at {label}', side['reason'] or 'not computable from the stored facts'))
+    if undefined:
+        res.add(unavailable(ticker, Q, f'{names[1]}: relative change', undefined))
 
-    bsd_c, bsd_p = fc.get('balance_sheet_date'), fp.get('balance_sheet_date')
-    if de_c is not None or db_c is not None:
-        parts.append(f'debt-to-equity {_fmt(de_p, ".3f")} (balance sheet {bsd_p}, as known at T_p) -> '
-                     f'{_fmt(de_c, ".3f")} (balance sheet {bsd_c}, as known at T_c)')
-        parts.append(f'debt USD {_fmt(db_p and db_p / 1e9, ".3f")} bn -> {_fmt(db_c and db_c / 1e9, ".3f")} bn')
-        if bsd_c != bsd_p:
-            parts.append('a new balance sheet became public between T_p and T_c')
+    bsd_c, bsd_p = fc['balance_sheet_date'], fp['balance_sheet_date']
     items = []
-    if parts:
-        tags = [fc.get('equity_tag')] + list(fc.get('debt_tags') or [])
-        pub = _xbrl_published(ctx, ticker, [x for x in tags if x], bsd_c, tm.cutoff)
-        fetch = fc.get('fetch') or {}
-        item = evidence(tm, SEC_SOURCE, SEC_RANK, f'{ticker}: ' + '; '.join(parts), as_of=bsd_c,
-                        published_at=pub, retrieved_at=fetch.get('retrieved_at') if pub else None,
-                        fetch_id=fetch.get('fetch_id'),
-                        fresh=fresh_flag(ctx, pub, 'quarterly_filing') if pub else None,
-                        basis='latest acceptance time of the XBRL facts used' if pub
-                        else 'publication time not found in stored XBRL facts')
-        items.append(item)
+    for label, side, bsd in (('T_p', fp, bsd_p), ('T_c', fc, bsd_c)):
+        if side['debt'] is None and side['debt_to_equity'] is None:
+            continue
+        items.append(evidence(
+            tm, SEC_SOURCE, SEC_RANK,
+            f'{ticker}: balance sheet {bsd} as known at {label}: debt USD {_fmt(side["debt"], ",.0f")} '
+            f'({", ".join(side["debt_tags"] or []) or "no debt concept"}), equity USD {_fmt(side["equity"], ",.0f")} '
+            f'({side["equity_tag"]}), debt-to-equity {_fmt(side["debt_to_equity"], ".3f")}',
+            as_of=bsd, published_at=side['published_at'],
+            retrieved_at=side['retrieved_at'], fetch_id=side['fetch_id'],
+            fresh=fresh_flag(ctx, side['published_at'], 'quarterly_filing') if side['published_at'] else None,
+            basis=side['published_at_basis'] or 'stored XBRL fact without publication time'))
+    if items:
+        parts.append(f'debt-to-equity {_fmt(de_p, ".3f")} (balance sheet {bsd_p or "unknown"}, as known at T_p) -> '
+                     f'{_fmt(de_c, ".3f")} (balance sheet {bsd_c or "unknown"}, as known at T_c)')
+        parts.append(f'debt USD {_fmt(None if db_p is None else db_p / 1e9, ".3f")} bn -> '
+                     f'{_fmt(None if db_c is None else db_c / 1e9, ".3f")} bn' + (f' ({change2})' if change2 else ''))
+        if bsd_c and bsd_p and bsd_c != bsd_p:
+            parts.append('a new balance sheet became public between T_p and T_c')
+        gaps = [f'{label}: {cov[1]}' for label, (_, cov) in sides.items() if cov and cov[0] == 'gap']
+        notes = unverified + gaps
         rules = [r for r in (t, t2) if r is not None]
-        res.add(conclude(ticker, Q, f'{ticker} balance-sheet indicators: ' + '; '.join(parts)
-                         + ('' if rules else '; no pre-declared threshold, change not assessed') + ' (SEC XBRL).',
-                         [item], 'official_fact'))
+        res.add(conclude(ticker, Q, f'{ticker} balance-sheet indicators (stored SEC XBRL facts): ' + '; '.join(parts)
+                         + ('' if rules else '; no pre-declared threshold, change not assessed')
+                         + (f' (coverage: {"; ".join(notes)})' if notes else '') + ' (SEC XBRL).',
+                         items, 'official_fact', reason_codes=['PARTIAL_COVERAGE'] if notes else [],
+                         resolve=('an SEC submissions feed retrieved after the cutoff and stored XBRL facts for '
+                                  'every 10-K / 10-Q it lists up to T_c') if notes else None))
     return rows, items
 
 
@@ -365,10 +472,13 @@ def red_flag(filing):
 def _red_flag_rows(ctx, res, ticker, feed):
     tm = ctx.tm
     name = 'red-flag SEC filings in the week (count)'
+    rule = 'any red-flag filing in P = (T_p, T_c]'
     if feed.get('status') != 'OK':
         res.add(unavailable(ticker, Q, name, f'SEC submissions feed unavailable: {feed.get("reason")}'))
-        return [_row(name, None, None, None, 'any red-flag filing in P', None, 'SEC EDGAR (rank 1)')], []
+        return [_row(name, None, None, None, rule, None, 'SEC EDGAR (rank 1)')], []
     t_pp = end_of_us_trading_day_utc(tm.sessions[-2 * WEEK - 1])
+    fetch = feed.get('fetch') or {}
+    retrieved = to_utc_iso(fetch.get('retrieved_at'))
     listed = [f for f in feed.get('filings') or [] if f.get('published_at')]
     oldest = min((f['published_at'] for f in listed), default=None)
 
@@ -378,15 +488,29 @@ def _red_flag_rows(ctx, res, ticker, feed):
     flags_c = [(f, red_flag(f)) for f in cur if red_flag(f)]
     flags_p = [(f, red_flag(f)) for f in prev if red_flag(f)]
     no_items = [f for f in cur if f.get('form') in EIGHT_K_FORMS and not f.get('items')]
-    codes = []
+    no_items_p = [f for f in prev if f.get('form') in EIGHT_K_FORMS and not f.get('items')]
+    # what prevents a complete count for P (a count of zero is a negative fact: it needs all three)
+    gaps = []
+    if not feed.get('retrieved_after_cutoff'):
+        gaps.append('the SEC submissions feed was retrieved before the cutoff: a negative fact needs a fetch made '
+                    'after the cutoff covering the whole window')
     if oldest is None or oldest > tm.previous_cutoff:
-        codes.append('PARTIAL_COVERAGE')
+        gaps.append(f'the SEC submissions feed does not reach back to T_p {tm.previous_cutoff} (oldest listed '
+                    f'filing {oldest})')
     if no_items:
-        codes.append('PARTIAL_COVERAGE')
-    prev_count = None if oldest is None or oldest > t_pp else len(flags_p)
-    row = _row(name, prev_count, len(flags_c), None if prev_count is None else f'{len(flags_c) - prev_count:+d}',
-               'any red-flag filing in P = (T_p, T_c]', bool(flags_c), 'SEC EDGAR (rank 1)')
-    fetch = feed.get('fetch') or {}
+        gaps.append(f'{len(no_items)} 8-K filing(s) of the window have no item codes in the feed (items unknown)')
+    complete = not gaps
+    prev_ok = (oldest is not None and oldest <= t_pp and retrieved is not None and retrieved > tm.previous_cutoff
+               and not no_items_p)
+    prev_count = len(flags_p) if prev_ok else None
+    if flags_c:                       # a listed red-flag filing is a positive fact; the count may be a lower bound
+        at_c, flag = (len(flags_c) if complete else f'>= {len(flags_c)}'), True
+    elif complete:
+        at_c, flag = 0, False
+    else:                             # absence not established: unknown, never 0
+        at_c, flag = None, None
+    change = (f'{at_c - prev_count:+d}' if isinstance(at_c, int) and prev_count is not None else None)
+    row = _row(name, prev_count, at_c, change, rule, flag, 'SEC EDGAR (rank 1)')
     items = []
     if flags_c:
         for f, desc in flags_c:
@@ -399,11 +523,11 @@ def _red_flag_rows(ctx, res, ticker, feed):
                                   basis=f.get('published_at_basis')))
         res.add(conclude(ticker, Q, f'{ticker}: red-flag SEC filing(s) accepted in the week: '
                          + '; '.join(f'{d} (accepted {f["published_at"]})' for f, d in flags_c)
-                         + ' (SEC EDGAR, rank 1).', items, 'official_fact', reason_codes=codes))
-    elif not feed.get('retrieved_after_cutoff'):
-        res.add(unavailable(ticker, Q, 'absence of red-flag filings in the week',
-                            'the SEC submissions feed was retrieved before the cutoff: a negative fact needs a '
-                            'fetch made after the cutoff covering the whole window'))
+                         + (f' (the list may be incomplete: {"; ".join(gaps)})' if gaps else '')
+                         + ' (SEC EDGAR, rank 1).', items, 'official_fact',
+                         reason_codes=['PARTIAL_COVERAGE'] if gaps else []))
+    elif not complete:
+        res.add(unavailable(ticker, Q, 'absence of red-flag filings in the week', '; '.join(gaps)))
     else:
         item = evidence(tm, SEC_SOURCE, SEC_RANK,
                         f'{ticker}: {len(cur)} filings accepted in (T_p, T_c], none with a red-flag form or 8-K item',
@@ -411,11 +535,13 @@ def _red_flag_rows(ctx, res, ticker, feed):
                         fetch_id=fetch.get('fetch_id'), fresh=True,
                         basis='negative fact over window P, from the SEC submissions feed retrieved after the cutoff')
         items.append(item)
-        extra = (f'; {len(no_items)} 8-K without item codes in the feed' if no_items else '')
         res.add(conclude(ticker, Q, f'{ticker}: no red-flag SEC filing (8-K items {", ".join(RED_FLAG_ITEMS)}; '
                                     f'NT 10-K / NT 10-Q) was accepted in (T_p, T_c] ({len(cur)} filing(s) in the '
-                                    f'window{extra}; SEC EDGAR, rank 1).', [item], 'official_fact',
-                         reason_codes=codes))
+                                    'window; SEC EDGAR, rank 1).', [item], 'official_fact'))
+    if prev_count is None:
+        res.add(unavailable(ticker, Q, f'{name} in the previous week',
+                            'the SEC submissions feed does not cover the previous week completely (it must reach back '
+                            'to T_p - 5 sessions, be retrieved after T_p and list item codes for every 8-K)'))
     return [row], items
 
 
@@ -434,20 +560,31 @@ def weekly_changes(points):
     return [weeks[b] - weeks[a] for a, b in zip(keys, keys[1:]) if (b - a).days == 7]
 
 
+def weeks_spanned(d_p, d_c):
+    """Whole weeks between the two observations compared (round(days / 7), at least 1)."""
+    days = (date.fromisoformat(d_c) - date.fromisoformat(d_p)).days
+    return max(1, round(days / 7))
+
+
 def _stress_rows(ctx, res):
+    """Returns (flagged, assessed, not_assessed {sid: reason}) over STRESS_SERIES."""
     tm = ctx.tm
-    rows, items, flagged = [], [], []
+    rows, items, flagged, assessed, not_assessed = [], [], [], [], {}
+    blank = [None] * 10
     for sid, cadence, label in STRESS_SERIES:
         st = ctx.fred(sid)
         if st.get('status') != 'OK':
-            res.add(unavailable('overall', Q, f'{sid} ({label})', f'FRED: {st.get("reason")}'))
-            rows.append([sid, label] + [None] * 8 + [None])
+            reason = f'FRED: {st.get("reason")}'
+            res.add(unavailable('overall', Q, f'{sid} ({label})', reason))
+            rows.append([sid, label] + blank)
+            not_assessed[sid] = reason
             continue
         now, prev = ctx.value_at(sid, tm.cutoff), ctx.value_at(sid, tm.previous_cutoff)
         if not now or not prev:
-            res.add(unavailable('overall', Q, f'{sid} ({label})',
-                                f'no observation known at {"the cutoff" if not now else "the previous cutoff"}'))
-            rows.append([sid, label] + [None] * 8 + [None])
+            reason = f'no observation known at {"the cutoff" if not now else "the previous cutoff"}'
+            res.add(unavailable('overall', Q, f'{sid} ({label})', reason))
+            rows.append([sid, label] + blank)
+            not_assessed[sid] = reason
             continue
         (d_c, v_c, pub_c), (d_p, v_p, pub_p) = now, prev
         d_c, d_p, v_c, v_p = str(d_c)[:10], str(d_p)[:10], _num(v_c), _num(v_p)
@@ -457,19 +594,27 @@ def _stress_rows(ctx, res):
         revised = {str(d)[:10]: _num(v) for d, v in ctx.series_at(sid, tm.cutoff, start=d_p)}.get(d_p)
         revision = revised - v_p if revised is not None and v_p is not None else None
         new_obs = d_c != d_p
+        n_weeks = weeks_spanned(d_p, d_c) if new_obs else None
+        limit = sd * math.sqrt(n_weeks) if sd is not None and n_weeks else None
         if delta is None:
             flag = None
+            not_assessed[sid] = 'change not computable (missing value)'
         elif not new_obs:
             flag = False
+        elif limit is None:
+            flag = None
+            not_assessed[sid] = f'{len(changes)} weekly changes in the history known at T_p (minimum {MIN_WEEKLY_CHANGES})'
         else:
-            flag = None if sd is None else delta > sd
+            flag = delta > limit
         if sd is None:
             res.add(unavailable('overall', Q, f'{sid} increase rule', f'{len(changes)} weekly changes in the '
                                 f'history known at T_p (minimum {MIN_WEEKLY_CHANGES})'))
+        if isinstance(flag, bool):
+            assessed.append(sid)
         if flag:
             flagged.append(sid)
-        rows.append([sid, label, d_p, v_p, d_c, v_c, _r(delta), _r(sd), len(changes), _r(revision),
-                     _yes(flag) if new_obs else 'no (no new observation)'])
+        rows.append([sid, label, d_p, v_p, d_c, v_c, _r(delta), _r(sd), len(changes), n_weeks, _r(limit),
+                     _r(revision), _yes(flag) if new_obs else 'no (no new observation)'])
         codes = []
         if new_obs and delta and revision and abs(revision) >= abs(delta):
             codes.append('FIRST_PRINT_WITHIN_REVISION_NOISE')
@@ -485,9 +630,10 @@ def _stress_rows(ctx, res):
         elif delta is None:
             text = f'{sid}: {d_p} -> {d_c}, change not computable (missing value)'
         else:
-            verdict = ('rule not assessed' if sd is None else
-                       f'{"beyond" if flag else "not beyond"} the rule increase > 1 sd of weekly changes '
-                       f'({sd:.4g}, {len(changes)} weeks as known at T_p)')
+            verdict = ('rule not assessed' if limit is None else
+                       f'{"beyond" if flag else "not beyond"} the rule increase > 1 sd of weekly changes x '
+                       f'sqrt({n_weeks} week(s) between the observations) = {limit:.4g} (sd {sd:.4g}, '
+                       f'{len(changes)} weeks as known at T_p)')
             text = f'{sid}: {v_p} ({d_p}) -> {v_c} ({d_c}), change {delta:+.4g}; {verdict}'
         if revision:
             text += f'; the {d_p} value was revised by {revision:+.4g} between T_p and T_c'
@@ -496,19 +642,25 @@ def _stress_rows(ctx, res):
         res.add(conclude('overall', Q, text + ' (FRED, rank 1).', [item], 'official_fact', reason_codes=codes))
     res.table('Market stress indicators (FRED, rank 1)',
               ['series', 'description', 'obs date (T_p)', 'value (T_p)', 'obs date (T_c)', 'value (T_c)', 'change',
-               '1 sd of weekly changes (known at T_p)', 'weekly changes used', 'revision of the T_p obs by T_c',
-               'increased'], rows, question=Q,
+               '1 sd of weekly changes (known at T_p)', 'weekly changes used', 'weeks between obs',
+               'rule threshold (1 sd x sqrt(weeks))', 'revision of the T_p obs by T_c', 'increased'], rows, question=Q,
               note=('Values as known at T_p and at T_c (FRED vintages). Rule (documented, not validated): increased = '
                     'change > 1 sample standard deviation of the Friday-to-Friday changes (last observation of each '
-                    f'week) of the series as known at T_p, at least {MIN_WEEKLY_CHANGES} changes. Higher = more '
-                    'stress for all four series. FIRST_PRINT_WITHIN_REVISION_NOISE when the T_p observation was '
-                    f'revised by at least the size of the change. Thresholds {thresholds_version(ctx)}.'))
+                    f'week) of the series as known at T_p, at least {MIN_WEEKLY_CHANGES} changes, multiplied by '
+                    'sqrt(n) when the two observations compared are n weeks apart (n = round(calendar days / 7), at '
+                    'least 1: a weekly series whose T_p observation is two weeks older is compared with sqrt(2) sd). '
+                    'Higher = more stress for all four series. FIRST_PRINT_WITHIN_REVISION_NOISE when the T_p '
+                    f'observation was revised by at least the size of the change. Thresholds {thresholds_version(ctx)}.'))
     if items:
-        text = (f'Market stress indicators beyond their rule this week: {", ".join(flagged)}' if flagged
-                else 'No market stress indicator was beyond its rule this week')
-        res.add(conclude('overall', Q, text + '. Reading this as a change in market risk is an interpretation '
-                         '(no validated risk model).', items, 'interpretation', reason_codes=['HEURISTIC_THRESHOLD']))
-    return flagged
+        missing = (f'; not assessed: ' + '; '.join(f'{k} ({v})' for k, v in not_assessed.items())
+                   if not_assessed else '')
+        head = (f'Market stress indicators beyond their rule this week: {", ".join(flagged)}' if flagged
+                else 'No assessed market stress indicator was beyond its rule this week')
+        res.add(conclude('overall', Q, f'{head} ({len(assessed)} of {len(STRESS_SERIES)} series assessed{missing}). '
+                         'Reading this as a change in market risk is an interpretation (no validated risk model).',
+                         items, 'interpretation',
+                         reason_codes=['HEURISTIC_THRESHOLD'] + (['PARTIAL_COVERAGE'] if not_assessed else [])))
+    return flagged, assessed, not_assessed
 
 
 # ---------------------------------------------------------------- section
@@ -521,7 +673,7 @@ def build(ctx):
     for ticker in ctx.universe:
         feed = ctx.filings(ticker) or {}
         rows, items = [], []
-        for part in (_price_rows(ctx, res, ticker, thr), _fundamental_rows(ctx, res, ticker, thr),
+        for part in (_price_rows(ctx, res, ticker, thr), _fundamental_rows(ctx, res, ticker, thr, feed),
                      _insider_rows(ctx, res, ticker, thr, feed), _red_flag_rows(ctx, res, ticker, feed)):
             rows += part[0]
             items += part[1]
@@ -558,11 +710,13 @@ def build(ctx):
         res.add(conclude(ticker, Q, text, items, 'interpretation',
                          reason_codes=['HEURISTIC_THRESHOLD'] + (['PARTIAL_COVERAGE'] if missing else [])))
 
-    flagged_market = _stress_rows(ctx, res)
+    flagged_market, assessed_market, _ = _stress_rows(ctx, res)
     res.table('Companies per flag', ['indicator', 'companies beyond the rule', 'companies assessed'],
-              [[k, v[0], v[1]] for k, v in flag_counts.items()]
-              + [['market stress series beyond the rule', len(flagged_market), len(STRESS_SERIES)]],
-              question=Q, note=f'Thresholds {thresholds_version(ctx)}.')
+              [[k, v[0] if v[1] else None, v[1]] for k, v in flag_counts.items()]
+              + [['market stress series beyond the rule (series, not companies)',
+                  len(flagged_market) if assessed_market else None, len(assessed_market)]],
+              question=Q, note=f'Only rows with a yes/no outcome count as assessed (N/A and "not assessed" rows are '
+                               f'excluded). Thresholds {thresholds_version(ctx)}.')
     res.add(unavailable('overall', Q, 'risk_score', 'NOT IMPLEMENTED: no risk model exists (risk engine is phase '
                                                     'P3.1); no aggregate risk score is computed'))
     res.add(unavailable('overall', Q, 'options implied volatility', 'not ingested: no options data source is '

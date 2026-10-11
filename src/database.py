@@ -296,7 +296,14 @@ class Database:
         if raw is None:
             return None
         if isinstance(raw, bytes):
-            text = raw.decode('utf-8', errors='replace')
+            try:
+                text = raw.decode('utf-8')
+            except UnicodeDecodeError:      # binary file (zip, xls): kept byte for byte, never altered
+                for name in SECRET_ENV_VARS:
+                    secret = os.getenv(name, '').strip().strip('<>').strip()
+                    if len(secret) >= 6 and secret.encode('utf-8') in raw:
+                        raise RuntimeError(f'refusing to store raw payload containing {name}')
+                return raw
         elif isinstance(raw, str):
             text = raw
         else:
@@ -378,15 +385,20 @@ class Database:
                 'raw_path': row['raw_path'], 'raw_sha256': row['raw_sha256'],
                 'raw_bytes': row['raw_bytes'], 'reused': True}
 
-    def read_raw(self, fetch_id):
-        """Decompressed raw payload of a fetch, after checking its SHA-256."""
+    def read_raw_bytes(self, fetch_id):
+        """Decompressed raw payload of a fetch as stored (bytes), after checking its SHA-256."""
         fetch = self.get_fetch(fetch_id)
         if not fetch or not fetch['raw_path']:
             return None
         data = gzip.decompress((data_dir() / fetch['raw_path']).read_bytes())
         if hashlib.sha256(data).hexdigest() != fetch['raw_sha256']:
             raise RuntimeError(f'raw payload of fetch {fetch_id} does not match its SHA-256')
-        return data.decode('utf-8')
+        return data
+
+    def read_raw(self, fetch_id):
+        """Decompressed text payload of a fetch, after checking its SHA-256 (binary files: read_raw_bytes)."""
+        data = self.read_raw_bytes(fetch_id)
+        return None if data is None else data.decode('utf-8')
 
     # ------------------------------------------------------------------ observations
 

@@ -84,11 +84,11 @@ class PipelineAudit:
         secrets = [s for s in secrets if len(s) >= 6]
         for fetch_id in sample:
             try:
-                text = self.db.read_raw(fetch_id)
+                data = self.db.read_raw_bytes(fetch_id)
             except Exception as e:  # noqa: BLE001 - reported
                 broken.append(f'fetch {fetch_id}: {type(e).__name__}')
                 continue
-            if any(s in (text or '') for s in secrets):
+            if any(s.encode('utf-8') in (data or b'') for s in secrets):
                 leaked.append(f'fetch {fetch_id}')
         out.append(check(f'raw payload SHA-256 ({len(sample)} sampled)', FAIL if broken else PASS,
                          f'{len(broken)} unreadable / mismatched', broken[:10]))

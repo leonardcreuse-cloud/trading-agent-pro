@@ -112,6 +112,30 @@ def test_record_fetch_stores_verifiable_raw_payload_without_secrets(monkeypatch)
     assert db.read_raw(fetch['fetch_id']) == text           # SHA-256 verified on read
 
 
+def test_binary_raw_payload_is_stored_byte_for_byte(monkeypatch):
+    """A zip / xls file must come back identical (it used to be decoded as UTF-8 with replacements)."""
+    import hashlib
+    import io
+    import zipfile
+    from src.database import Database
+    from src.pipeline_audit import PipelineAudit
+    monkeypatch.setenv('FRED_API_KEY', SECRET)
+    db = Database()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('20261009.export.CSV', 'a\tb\n' * 100)
+    original = buf.getvalue()
+    fetch = db.record_fetch('GDELT', 'https://data.gdeltproject.org/events/x.zip', status='OK', raw=original,
+                            raw_ext='zip')
+    assert db.read_raw_bytes(fetch['fetch_id']) == original
+    assert fetch['raw_sha256'] == hashlib.sha256(original).hexdigest()
+    assert zipfile.ZipFile(io.BytesIO(db.read_raw_bytes(fetch['fetch_id']))).namelist() == ['20261009.export.CSV']
+    checks = {c['check']: c['status'] for c in PipelineAudit(db=db).storage_checks()}
+    assert checks['raw payload SHA-256 (1 sampled)'] == 'PASS'
+    with pytest.raises(RuntimeError, match='FRED_API_KEY'):
+        db.record_fetch('GDELT', 'y', status='OK', raw=original + SECRET.encode() + b'\xff', raw_ext='zip')
+
+
 def test_identical_raw_payloads_are_stored_once():
     from src.database import Database
     db = Database()

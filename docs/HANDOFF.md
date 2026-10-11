@@ -38,6 +38,11 @@ The SQLite database (`data/`, ~550 MB) is NOT in git: a new session rebuilds it 
 (`python main.py analyze`, then `python main.py weekly`; SEC requests are throttled). In this session `data/`
 holds only the `collect` sources (~93 MB; GDELT raw zips ~6 MB per day): `analyze` / `weekly` not yet re-run.
 
+## Local daily run (decided 2026-10-11)
+The database lives on the owner's Windows PC; a scheduled task runs `scripts\daily_run.py` every day at 23:00
+Paris (collect + analyze; weekly report on Saturdays). Setup and reasons: `docs/LOCAL_RUN.md`. Cloud sessions
+start with an empty database: use them for development, the local run for the real reports.
+
 ## Environment checklist (owner)
 - Environment variables, one per line `NAME=value`: `FRED_API_KEY`, `NEWSAPI_KEY`, `SEC_USER_AGENT`,
   and the new `BLS_API_KEY`, `BEA_API_KEY`, `EIA_API_KEY` (read in a session started after saving).
@@ -65,9 +70,10 @@ answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA ke
    EIA values carry no publication date (retrieval time), so the weekly report only sees a release after a
    collect run that followed it.
 3. Done (P4.0 phase 2): positioning, geopolitics and agencies sections; FOMC / BLS calendars and earnings
-   snapshots in catalysts; SP500 cross-check; stale items removed. Open points: run `python main.py collect`
-   DAILY (BLS, EIA, option and earnings snapshots, BLS calendars and FRED release calendars only count once
-   retrieved before a cutoff; most new DATA UNAVAILABLE items of the 2026-10-09 report come from that); GDP and
+   snapshots in catalysts; SP500 cross-check; stale items removed. Open points: the daily run on the owner's
+   PC (`docs/LOCAL_RUN.md`) is what makes BLS, EIA, option and earnings snapshots, BLS calendars and FRED
+   release calendars admissible (retrieved before a cutoff); most new DATA UNAVAILABLE items of the 2026-10-09
+   report come from their absence; GDP and
    commodities are read from BEA / EIA (agencies section), not added to the FRED macro tables; BLS October 2025
    does not exist (2025 shutdown), so a 12-month change that needs it is DATA UNAVAILABLE.
 4. Audit corrections: SEC acceptanceDateTime labels changed on 2026-10-10 (+4/5 h for ~16 % of

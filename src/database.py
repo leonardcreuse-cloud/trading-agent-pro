@@ -68,6 +68,7 @@ CADENCE_MAX_AGE_DAYS = {
     'daily': 7,            # daily official series (published with a lag)
     'weekly': 14,          # weekly official series (jobless claims, NFCI, mortgage rates)
     'event': 14,           # event filings (8-K, Form 4, 144, 13D/G, S-3 / 424B, NT 10-x)
+    'semi_monthly': 30,    # FINRA short interest: two settlements a month + ~7 business days dissemination
     'monthly': 80,         # monthly series: period start + ~6 weeks publication lag
     'quarterly_filing': 120,  # 10-Q / 10-K publication date
     'news': 7,

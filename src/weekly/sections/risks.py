@@ -719,11 +719,7 @@ def build(ctx):
                                f'excluded). Thresholds {thresholds_version(ctx)}.')
     res.add(unavailable('overall', Q, 'risk_score', 'NOT IMPLEMENTED: no risk model exists (risk engine is phase '
                                                     'P3.1); no aggregate risk score is computed'))
-    res.add(unavailable('overall', Q, 'options implied volatility', 'not ingested: no options data source is '
-                        'wired into the pipeline (Yahoo options endpoint and cboe.com were unreachable from this '
-                        'machine when probed on 2026-10-07)'))
-    res.add(unavailable('overall', Q, 'short interest', 'not ingested: no short-interest source is wired into the '
-                        'pipeline (FINRA hosts blocked and Yahoo quoteSummary unauthorised when probed on 2026-10-07)'))
+    # options implied volatility and short interest: see the 'positioning' section (Q8)
     res.notes.append(f'T_p = {tm.previous_cutoff}, T_c = {tm.cutoff}; thresholds {thresholds_version(ctx)}. Optional '
                      f'threshold keys honoured if added to config: {", ".join(OPTIONAL_THRESHOLDS)}. Timing only: no '
                      'causal link and no prediction is asserted.')

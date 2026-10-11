@@ -365,6 +365,36 @@ def test_fred_vintages_stored_and_current_vintage_displayed(monkeypatch):
     assert known_mid_2025['value'] == 4.1                     # first release, not the revision
 
 
+def test_fred_series_not_in_alfred_is_requested_without_vintages(monkeypatch):
+    """Real FRED answer of 2026-10-11 for SP500 with real-time parameters: HTTP 400 "not in ALFRED"."""
+    from src.macro_fred import SP500_BASIS, MacroFRED
+    monkeypatch.setenv('FRED_API_KEY', 'x' * 32)
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(dict(params))
+        if 'realtime_start' in params:
+            return FakeResponse({'error_code': 400, 'error_message': 'Bad Request.  The series does not exist in '
+                                 'ALFRED but may exist in FRED.  Try setting realtime_start and realtime_end to '
+                                 "today's date or removing the realtime_start and realtime_end variables."}, 400)
+        return FakeResponse({'observations': [
+            {'realtime_start': '2026-10-10', 'realtime_end': '2026-10-10', 'date': '2026-10-08', 'value': '7765.36'},
+            {'realtime_start': '2026-10-10', 'realtime_end': '2026-10-10', 'date': '2026-10-09', 'value': '7811.54'}]})
+    monkeypatch.setattr('src.macro_fred.requests.get', fake_get)
+    macro = MacroFRED()
+    current, published = macro.fetch_observations('SP500')
+    assert [c for c in calls if 'realtime_start' not in c] and len(calls) == 2
+    assert [v for _, v in current] == [7765.36, 7811.54]
+    rows = dict(macro.db.series('SP500', 'value'))
+    assert rows['2026-10-08']['published_at'] == '2026-10-10T05:00:00+00:00'     # Thursday -> end of Friday
+    friday = rows['2026-10-09']           # next business day after Friday is Tuesday 10-13 (Columbus Day)
+    assert friday['published_at'] == min('2026-10-14T05:00:00+00:00', friday['retrieved_at'])
+    assert rows['2026-10-08']['published_at_basis'] == SP500_BASIS
+    with macro.db.connect() as conn:
+        statuses = [r[0] for r in conn.execute("SELECT status FROM source_fetches WHERE source='FRED' ORDER BY fetch_id")]
+    assert statuses == ['DATA UNAVAILABLE', 'OK']                                 # both calls logged
+
+
 def test_news_articles_stored_with_publication_time(monkeypatch):
     from src.news_processor import NewsProcessor
     monkeypatch.setenv('NEWSAPI_KEY', 'k' * 32)

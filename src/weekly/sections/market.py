@@ -16,7 +16,8 @@ Overall
   them both series are identical. The week statement counts as cross-checked by an independent
   agreeing source (cross_checked=True) only when the FRED observations known at T_c are exactly
   s_-5 and s_0 and the STATED SPY return agrees with FRED in sign and within 0.3 percentage points.
-  FRED publishes SP500 for day d on the next day, so the s_0 value is normally NOT public at T_c:
+  FRED keeps no vintages for SP500 (not in ALFRED): its values are dated by macro_fred.SP500_BASIS (end of
+  the business day after the session, New York), so the s_0 value is NOT public at T_c:
   the comparison is then made over the latest FRED window known at T_c (a data-consistency check
   of the price source) and the week's statement stays UNCERTAIN.
 
@@ -39,6 +40,7 @@ from datetime import date
 
 import pandas as pd
 
+from ...macro_fred import SP500_BASIS
 from ...market_data import session_close_utc
 from ..core import SectionResult, conclude, evidence, unavailable
 
@@ -368,7 +370,7 @@ def _sp500_crosscheck(ctx, res, bench_name, bench, bench_px, s_m5, s0):
     items = [evidence(tm, FRED_SOURCE, FRED_RANK, f'SP500 {d_p} = {v_p} -> {d_c} = {v_c} ({fmt_pct(fred_r)})',
                       as_of=d_c, published_at=pub_c, retrieved_at=fetch.get('retrieved_at'),
                       fetch_id=fetch.get('fetch_id'), fresh=fresh_flag(ctx, d_c, 'daily'),
-                      basis='FRED vintage date (realtime_start), end of day New York')]
+                      basis=SP500_BASIS)]
     agree = agrees(spy_r, fred_r)
     diff = None if spy_r is None else abs(spy_r - fred_r) * 100
     exact = d_c == s0 and d_p == s_m5

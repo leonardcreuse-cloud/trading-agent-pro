@@ -20,6 +20,10 @@ P0.2 changes (provenance):
   error_message is reported instead. A placeholder key such as "<key>" is rejected
   before any call. The legacy macro_data table is backed up and dropped by the v2 migration.
 - Vintage-consistent transformations (YoY as known at a past date) come in phase P0.4.
+
+P4.0 change: a series that ALFRED does not keep (FRED answers HTTP 400 "does not exist in ALFRED" to a
+vintage request, e.g. SP500) is requested again without real-time parameters (current values only). Its
+values are dated by NO_VINTAGE_BASIS when the series is declared there, else by retrieval time.
 """
 
 from datetime import date, datetime, timedelta
@@ -37,6 +41,13 @@ FRED_SOURCE = 'FRED (Federal Reserve Bank of St. Louis)'
 DB_SOURCE = 'FRED'
 CURRENT_VINTAGE_END = '9999-12-31'
 VINTAGE_BASIS = 'FRED vintage date (realtime_start), end of day New York (conservative)'
+NOT_IN_ALFRED = 'does not exist in ALFRED'
+# Series without ALFRED vintages, dated by a declared rule: series id -> basis. 'next business day':
+# end of day New York of the business day after the observation date (federal holidays skipped).
+SP500_BASIS = ('FRED keeps no vintages for SP500 (not in ALFRED): end of the business day after the session, '
+               'New York (FRED posts the close the next day; conservative)')
+NO_VINTAGE_BASIS = {'SP500': SP500_BASIS}
+NO_VINTAGE_DEFAULT_BASIS = 'FRED keeps no vintages for this series (not in ALFRED): retrieval time'
 
 
 class FredError(Exception):
@@ -67,11 +78,29 @@ class MacroFRED:
         """
         Current-vintage [(date, float)] sorted by date, plus {date: published_at} of the
         current vintage. All vintages are stored. Raises FredError on HTTP/parsing errors.
+        A series not kept by ALFRED is requested again without real-time parameters (both calls logged).
         """
         start = (datetime.now() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
         params = {'series_id': series_id, 'api_key': self.api_key, 'file_type': 'json',
                   'observation_start': start, 'realtime_start': start,
                   'realtime_end': CURRENT_VINTAGE_END}
+        try:
+            return self._observations(series_id, params, vintages=True)
+        except FredError as e:
+            if NOT_IN_ALFRED not in str(e):
+                raise
+        current_only = {k: v for k, v in params.items() if not k.startswith('realtime_')}
+        return self._observations(series_id, current_only, vintages=False)
+
+    @staticmethod
+    def _no_vintage_published(series_id, obs_date):
+        """(published_at, basis) of a value from a series without vintages."""
+        if series_id in NO_VINTAGE_BASIS:
+            from .external_sources import add_business_days
+            return end_of_us_trading_day_utc(add_business_days(obs_date, 1)), NO_VINTAGE_BASIS[series_id]
+        return None, NO_VINTAGE_DEFAULT_BASIS
+
+    def _observations(self, series_id, params, vintages):
         requested_at = utc_now_iso()
         response = None
         try:
@@ -109,12 +138,15 @@ class MacroFRED:
             if obs.get('value') in (None, '.', ''):
                 continue  # FRED marks missing observations with '.'
             obs_date = date.fromisoformat(obs['date'])
-            vintage = obs.get('realtime_start')
-            pub = end_of_us_trading_day_utc(vintage) if vintage else None
+            if vintages:
+                vintage = obs.get('realtime_start')
+                pub = end_of_us_trading_day_utc(vintage) if vintage else None
+                basis = VINTAGE_BASIS if vintage else 'unknown'
+            else:
+                pub, basis = self._no_vintage_published(series_id, obs_date)
             stored.append({'entity': series_id, 'metric': 'value', 'as_of_date': obs_date,
-                           'value': float(obs['value']), 'published_at': pub,
-                           'published_at_basis': VINTAGE_BASIS if vintage else 'unknown'})
-            if obs.get('realtime_end', CURRENT_VINTAGE_END) == CURRENT_VINTAGE_END:
+                           'value': float(obs['value']), 'published_at': pub, 'published_at_basis': basis})
+            if not vintages or obs.get('realtime_end', CURRENT_VINTAGE_END) == CURRENT_VINTAGE_END:
                 current[obs_date] = float(obs['value'])
                 published[obs_date] = min(pub, fetch['retrieved_at']) if pub else None
         self.db.upsert_observations(fetch, stored)

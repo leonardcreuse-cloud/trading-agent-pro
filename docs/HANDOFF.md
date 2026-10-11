@@ -27,7 +27,16 @@ The SQLite database (`data/`, ~550 MB) is NOT in git: a new session rebuilds it 
   www.federalreserve.gov, api.gdeltproject.org, data.gdeltproject.org, finance.yahoo.com, fc.yahoo.com,
   query1.finance.yahoo.com, query2.finance.yahoo.com, www.federalregister.gov,
   sanctionslist.ofac.treas.gov, www.bis.gov, ustr.gov, apps.bea.gov, api.eia.gov,
-  www.matteoiacoviello.com (Nasdaq's internal API and OCC are deliberately not used).
+  www.matteoiacoviello.com (Nasdaq's internal API and OCC are deliberately not used), plus the
+  pre-existing api.stlouisfed.org, newsapi.org, data.sec.gov, www.sec.gov (keep them when editing the list).
+- `SEC_USER_AGENT` must be `Name email` (a space, then a real address): www.sec.gov answers 403 otherwise,
+  while data.sec.gov still accepts it.
+
+### Key check on 2026-10-11 (live)
+FRED, NewsAPI, BLS v2, BEA, EIA: OK. All allowed domains reachable through the proxy.
+SEC: data.sec.gov OK; www.sec.gov 403 with the old User-Agent (no email), 200 with the `Name email`
+format -> owner fixed the variable; re-check at the start of the next session
+(`curl -A "$SEC_USER_AGENT" https://www.sec.gov/files/company_tickers.json` must answer 200).
 
 ## Next (agreed: "voie 1" — a real weekly financial-analysis assistant, no prediction claims)
 1. Verify the three new keys live; add BLS v2 / BEA / EIA clients that read them (DATA UNAVAILABLE when

@@ -195,6 +195,7 @@ def test_collect_all_reports_every_source_without_raising(monkeypatch):
     monkeypatch.setattr(ex, 'collect_options', lambda db, t: ex._result('options_snapshot', DATA_UNAVAILABLE, 0, 'x'))
     results = ex.collect_all(db, tickers=['CRWD'], today=date(2026, 10, 11))
     assert [r['collector'] for r in results] == ['cftc_cot', 'finra_short_interest', 'cboe_put_call',
-                                                 'fed_fomc_calendar', 'bls_schedules', 'federal_register',
-                                                 'gpr_index', 'gdelt_events', 'options_snapshot']
+                                                 'fed_fomc_calendar', 'bls_schedules', 'bls_api', 'bea_nipa',
+                                                 'eia_energy', 'federal_register', 'gpr_index', 'gdelt_events',
+                                                 'options_snapshot']
     assert all(r['status'] == DATA_UNAVAILABLE and r['stored'] == 0 for r in results)

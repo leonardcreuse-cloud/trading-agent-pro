@@ -1,0 +1,120 @@
+{
+ "BEAAPI": {
+  "Request": {
+   "RequestParam": [
+    {
+     "ParameterName": "USERID",
+     "ParameterValue": "KEY-REMOVED"
+    },
+    {
+     "ParameterName": "METHOD",
+     "ParameterValue": "GETDATA"
+    },
+    {
+     "ParameterName": "DATASETNAME",
+     "ParameterValue": "NIPA"
+    },
+    {
+     "ParameterName": "TABLENAME",
+     "ParameterValue": "T20600"
+    },
+    {
+     "ParameterName": "FREQUENCY",
+     "ParameterValue": "M"
+    },
+    {
+     "ParameterName": "YEAR",
+     "ParameterValue": "2026"
+    },
+    {
+     "ParameterName": "RESULTFORMAT",
+     "ParameterValue": "JSON"
+    }
+   ]
+  },
+  "Results": {
+   "Statistic": "NIPA Table",
+   "UTCProductionTime": "2026-10-11T19:56:20.433",
+   "Data": [
+    {
+     "TableName": "T20600",
+     "SeriesCode": "A065RC",
+     "LineNumber": "1",
+     "LineDescription": "Personal income",
+     "TimePeriod": "2026M07",
+     "METRIC_NAME": "Current Dollars",
+     "CL_UNIT": "Level",
+     "UNIT_MULT": "6",
+     "DataValue": "27,560,284",
+     "NoteRef": "T20600"
+    },
+    {
+     "TableName": "T20600",
+     "SeriesCode": "A065RC",
+     "LineNumber": "1",
+     "LineDescription": "Personal income",
+     "TimePeriod": "2026M08",
+     "METRIC_NAME": "Current Dollars",
+     "CL_UNIT": "Level",
+     "UNIT_MULT": "6",
+     "DataValue": "27,626,933",
+     "NoteRef": "T20600"
+    },
+    {
+     "TableName": "T20600",
+     "SeriesCode": "DPCERC",
+     "LineNumber": "29",
+     "LineDescription": "Personal consumption expenditures",
+     "TimePeriod": "2026M07",
+     "METRIC_NAME": "Current Dollars",
+     "CL_UNIT": "Level",
+     "UNIT_MULT": "6",
+     "DataValue": "22,117,708",
+     "NoteRef": "T20600"
+    },
+    {
+     "TableName": "T20600",
+     "SeriesCode": "DPCERC",
+     "LineNumber": "29",
+     "LineDescription": "Personal consumption expenditures",
+     "TimePeriod": "2026M08",
+     "METRIC_NAME": "Current Dollars",
+     "CL_UNIT": "Level",
+     "UNIT_MULT": "6",
+     "DataValue": "22,308,527",
+     "NoteRef": "T20600"
+    },
+    {
+     "TableName": "T20600",
+     "SeriesCode": "A072RC",
+     "LineNumber": "35",
+     "LineDescription": "Personal saving as a percentage of disposable personal income",
+     "TimePeriod": "2026M07",
+     "METRIC_NAME": "Ratio",
+     "CL_UNIT": "Level",
+     "UNIT_MULT": "0",
+     "DataValue": "4.6",
+     "NoteRef": "T20600"
+    },
+    {
+     "TableName": "T20600",
+     "SeriesCode": "A072RC",
+     "LineNumber": "35",
+     "LineDescription": "Personal saving as a percentage of disposable personal income",
+     "TimePeriod": "2026M08",
+     "METRIC_NAME": "Ratio",
+     "CL_UNIT": "Level",
+     "UNIT_MULT": "0",
+     "DataValue": "4.1",
+     "NoteRef": "T20600"
+    }
+   ],
+   "Notes": [
+    {
+     "NoteRef": "T20600",
+     "NoteText": "Table 2.6. Personal Income and Its Disposition, Monthly [Billions of dollars; months are seasonally adjusted at annual rates] - LastRevised: September 30, 2026"
+    }
+   ]
+  }
+ }
+}

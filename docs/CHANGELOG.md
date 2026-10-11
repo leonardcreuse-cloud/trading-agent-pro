@@ -1,5 +1,24 @@
 # Changelog
 
+## P4.1 — Keyed agency APIs: BLS v2, BEA, EIA (`python main.py collect`)
+
+- `src/agency_apis.py`, run by `collect_all`: 15 BLS series (CPI-U headline / core SA and NSA, shelter,
+  energy, food, services less energy; PPI final demand; unemployment and participation rates; payrolls;
+  hourly earnings, nominal and real; JOLTS openings), BEA NIPA tables 1.1.1 / 2.8.4 / 2.6 (real GDP and
+  real PCE growth, PCE and core PCE price indexes, personal income, PCE, saving rate), 12 EIA series
+  (WTI, Brent and Henry Hub spot prices; weekly crude, SPR, gasoline and distillate stocks, crude
+  production, refinery utilisation, retail gasoline and diesel prices, natural gas storage).
+  DATA UNAVAILABLE without its key, and no call is made.
+- Publication dates: BLS and EIA = retrieval time (no date in either API; the BLS schedule pages list
+  future releases only); BEA = the table's `LastRevised` date, end of day New York, and a value
+  unchanged since the stored version keeps its earlier date (no duplicate version at each release).
+- Echoed keys (BEA UserID in every response, BLS key in its error messages) are redacted from raw
+  payloads, logged endpoints and reasons; `userid` / `registrationkey` added to the redacted parameters.
+- Live check 2026-10-11: the three keys work. A trial collection into a scratch database stored 293 BLS,
+  112 BEA and 1,317 EIA values; a second run stored none; storage audit PASS. BLS October 2025 CPI and
+  unemployment rate are `-` ("lapse in appropriations") and are not stored.
+- `main.py status` lists the three keys; tests 416 → 430.
+
 ## P2.2 — Stage 2 holdout replication (242 new stocks, pre-registered): 0 of 4 confirmed
 
 - `python main.py research --stage 2` on every eligible S&P 500 stock not in stage 1 (242 with data,

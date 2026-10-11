@@ -36,6 +36,7 @@ Terms of use: CFTC, FINRA, Federal Reserve, BLS and Federal Register publish pub
 Yahoo restrict automated use and redistribution (personal research use only, never redistributed);
 GDELT asks for citation; the GPR index asks for citation of Caldara and Iacoviello (2022).
 Nasdaq's internal calendar API and OCC (anti-bot protection) are deliberately NOT used.
+The keyed BLS, BEA and EIA APIs (phase P4.1) are in agency_apis.py and run from collect_all.
 """
 
 import io
@@ -56,7 +57,7 @@ from .database import Database
 NEW_YORK = ZoneInfo('America/New_York')
 DEFAULT_TIMEOUT = 45
 MIN_INTERVAL = {'publicreporting.cftc.gov': 1.0, 'api.finra.org': 1.0, 'www.cboe.com': 1.0,
-                'data.gdeltproject.org': 2.0, 'www.bls.gov': 1.0}
+                'data.gdeltproject.org': 2.0, 'www.bls.gov': 1.0, 'api.bls.gov': 1.0, 'apps.bea.gov': 1.0}
 _LAST_CALL = {}
 
 # ---------------------------------------------------------------- calendars of business days
@@ -715,6 +716,7 @@ def collect_options(db, tickers, today=None, max_days=60):
 
 def collect_all(db=None, tickers=None, today=None, history_days=400):
     """Run every collector; one failing source never stops the others. Returns the per-collector results."""
+    from .agency_apis import collect_bea, collect_bls_api, collect_eia
     from .common import tickers as configured
     db = db or Database()
     tickers = tickers or configured()
@@ -727,6 +729,9 @@ def collect_all(db=None, tickers=None, today=None, history_days=400):
             ('cboe_put_call', lambda: collect_cboe(db, cboe_days)),
             ('fed_fomc_calendar', lambda: collect_fomc(db)),
             ('bls_schedules', lambda: collect_bls(db)),
+            ('bls_api', lambda: collect_bls_api(db, since.year, today.year)),
+            ('bea_nipa', lambda: collect_bea(db, range(since.year, today.year + 1))),
+            ('eia_energy', lambda: collect_eia(db, since)),
             ('federal_register', lambda: collect_federal_register(db, today - timedelta(days=60))),
             ('gpr_index', lambda: collect_gpr(db, since)),
             ('gdelt_events', lambda: collect_gdelt(db, recent)),

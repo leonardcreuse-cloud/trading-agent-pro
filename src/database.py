@@ -54,6 +54,8 @@ SOURCES = {
     'Cboe': {'rank': 1, 'kind': 'exchange operator statistics (Cboe-listed volume only)'},
     'Federal Reserve Board': {'rank': 1, 'kind': 'official central bank publication (FOMC calendar)'},
     'BLS': {'rank': 1, 'kind': 'official statistics agency (U.S. Bureau of Labor Statistics)'},
+    'BEA': {'rank': 1, 'kind': 'official statistics agency (U.S. Bureau of Economic Analysis)'},
+    'EIA': {'rank': 1, 'kind': 'official statistics agency (U.S. Energy Information Administration)'},
     'Federal Register': {'rank': 1, 'kind': 'official journal of the U.S. federal government'},
     'GPR index (Caldara-Iacoviello)': {
         'rank': 2, 'kind': 'academic index built from newspaper text (not a record of events)'},
@@ -75,7 +77,7 @@ LEGACY_TABLES = ('sec_data', 'macro_data', 'backtest_results', 'backtest_fixed',
                  'insider_transactions', 'fundamentals', 'prices', 'calendar_events',
                  'macro_indicators')
 
-SECRET_PARAM_NAMES = {'api_key', 'apikey', 'token', 'access_token'}
+SECRET_PARAM_NAMES = {'api_key', 'apikey', 'token', 'access_token', 'userid', 'registrationkey'}
 
 SCHEMA_V2 = """
 CREATE TABLE IF NOT EXISTS source_fetches (

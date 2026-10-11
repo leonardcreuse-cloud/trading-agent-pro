@@ -12,6 +12,11 @@
   Cboe put/call, Fed FOMC calendar, BLS release schedules, Federal Register (BIS, OFAC, USTR,
   presidential documents), GPR index, GDELT daily events, yfinance option snapshots. Tested offline on
   real payload excerpts; NOT yet run live (the hosts were refused by the network policy at the time).
+- P4.1: keyed agency APIs `src/agency_apis.py` (BLS v2: 15 series - CPI, PPI, jobs, earnings, JOLTS; BEA:
+  NIPA tables 1.1.1 / 2.8.4 / 2.6 - GDP, PCE, PCE prices, income, saving rate; EIA: 12 series - oil and gas spot
+  prices, weekly stocks, production, refinery utilisation, retail fuel prices, gas storage), run by
+  `python main.py collect`. Tested offline on real payload excerpts and live into a scratch database (293 BLS,
+  112 BEA, 1,317 EIA values; second run stored none; storage audit PASS). The project database was not touched.
 
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
@@ -35,17 +40,23 @@ The SQLite database (`data/`, ~550 MB) is NOT in git: a new session rebuilds it 
 ### Key check on 2026-10-11 (live)
 FRED, NewsAPI, BLS v2, BEA, EIA: OK. All allowed domains reachable through the proxy.
 SEC: data.sec.gov OK; www.sec.gov 403 with the old User-Agent (no email), 200 with the `Name email`
-format -> owner fixed the variable; re-check at the start of the next session
-(`curl -A "$SEC_USER_AGENT" https://www.sec.gov/files/company_tickers.json` must answer 200).
+format -> owner fixed the variable.
+Re-checked in the next session (2026-10-11, live): `SEC_USER_AGENT` has the `Name email` format; www.sec.gov
+(company_tickers.json, browse-edgar, Archives Form 4 XML) and data.sec.gov (submissions, companyfacts) all
+answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA keys verified by real data calls.
 
 ## Next (agreed: "voie 1" — a real weekly financial-analysis assistant, no prediction claims)
-1. Verify the three new keys live; add BLS v2 / BEA / EIA clients that read them (DATA UNAVAILABLE when
-   a key is missing).
-2. Run `python main.py collect` live; fix any parser against the real responses.
+1. Done (P4.1): keys verified live; BLS v2 / BEA / EIA clients in `src/agency_apis.py`.
+2. Run `python main.py collect` live (now also BLS API, BEA, EIA); fix any parser against the real responses.
+   BLS and EIA values carry no publication date (retrieval time): run `collect` daily so the weekly report
+   sees a release before its cutoff.
 3. P4.0 phase 2 — wire into the weekly report: a `positioning` section (COT, Cboe put/call, FINRA short
    interest, option IV), FOMC + BLS calendars and earnings dates in `catalysts`, GDP + commodities (FRED)
    and Federal Register / GPR / GDELT in `macro` Q4; fix the FRED SP500 cross-check (series not in
-   ALFRED: request without realtime parameters); remove the now-resolved DATA UNAVAILABLE items.
+   ALFRED: request without realtime parameters); remove the now-resolved DATA UNAVAILABLE items (macro.py
+   STATIC_UNAVAILABLE still says bls.gov / bea.gov / federalreserve.gov / GPR / GDELT / Federal Register are
+   blocked). Use the BLS / BEA / EIA series (entities `BLS:`, `BEA:`, `EIA:`) in macro and commodities; BLS
+   October 2025 does not exist (2025 shutdown), so a 12-month change that needs it is DATA UNAVAILABLE.
 4. Audit corrections: SEC acceptanceDateTime labels changed on 2026-10-10 (+4/5 h for ~16 % of
    filings) -> single rule, de-duplicate stored facts, audit back to 0 FAIL; refresh calendars daily;
    Form 4 matching; valuation / cash flow / margins in the report.

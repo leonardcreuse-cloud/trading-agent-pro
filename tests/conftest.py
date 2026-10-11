@@ -29,7 +29,7 @@ def offline(monkeypatch, tmp_path):
     """Isolate filesystem and block all network access."""
     monkeypatch.setenv('TRADING_AGENT_DATA_DIR', str(tmp_path / 'data'))
     monkeypatch.setenv('TRADING_AGENT_REPORTS_DIR', str(tmp_path / 'reports'))
-    for var in ('SEC_USER_AGENT', 'FRED_API_KEY', 'NEWSAPI_KEY'):
+    for var in ('SEC_USER_AGENT', 'FRED_API_KEY', 'NEWSAPI_KEY', 'BLS_API_KEY', 'BEA_API_KEY', 'EIA_API_KEY'):
         monkeypatch.delenv(var, raising=False)
 
     def blocked_request(self, method, url, *args, **kwargs):

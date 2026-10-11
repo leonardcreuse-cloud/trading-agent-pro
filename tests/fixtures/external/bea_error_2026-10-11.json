@@ -1,0 +1,43 @@
+{
+ "BEAAPI": {
+  "Request": {
+   "RequestParam": [
+    {
+     "ParameterName": "USERID",
+     "ParameterValue": "KEY-REMOVED"
+    },
+    {
+     "ParameterName": "METHOD",
+     "ParameterValue": "GETDATA"
+    },
+    {
+     "ParameterName": "DATASETNAME",
+     "ParameterValue": "NIPA"
+    },
+    {
+     "ParameterName": "TABLENAME",
+     "ParameterValue": "T99999"
+    },
+    {
+     "ParameterName": "FREQUENCY",
+     "ParameterValue": "Q"
+    },
+    {
+     "ParameterName": "YEAR",
+     "ParameterValue": "2026"
+    },
+    {
+     "ParameterName": "RESULTFORMAT",
+     "ParameterValue": "JSON"
+    }
+   ]
+  },
+  "Error": {
+   "APIErrorDescription": "Error retrieving NIPA data.",
+   "APIErrorCode": "201",
+   "ErrorDetail": {
+    "Description": "Invalid TableName was requested."
+   }
+  }
+ }
+}

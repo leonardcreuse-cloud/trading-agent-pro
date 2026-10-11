@@ -16,6 +16,9 @@ REQUIRED_SETTINGS = {
     'SEC_USER_AGENT': 'SEC EDGAR (filings, Form 4)',
     'FRED_API_KEY': 'FRED macro indicators',
     'NEWSAPI_KEY': 'NewsAPI news aggregator',
+    'BLS_API_KEY': 'BLS Public Data API v2 (CPI, jobs, PPI)',
+    'BEA_API_KEY': 'BEA NIPA tables (GDP, PCE, income)',
+    'EIA_API_KEY': 'EIA energy data (oil, gas, stocks)',
 }
 
 
@@ -79,7 +82,7 @@ def print_menu():
     print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] - Predictive-edge study")
     print("  python main.py weekly [--cutoff ISO] - Weekly analyst report (source-verified)")
     print("  python main.py collect   - Download external sources (CFTC, FINRA, Cboe, Fed, BLS,")
-    print("                              Federal Register, GPR, GDELT, options); run it daily")
+    print("                              BEA, EIA, Federal Register, GPR, GDELT, options); run it daily")
     print("  python main.py status    - Show configuration status")
 
 

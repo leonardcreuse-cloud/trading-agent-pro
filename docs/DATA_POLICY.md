@@ -78,12 +78,18 @@ When in doubt, the later plausible time is used:
 | FRED | Vintage date (`realtime_start`), end of day New York |
 | yfinance | Session date 21:00 UTC; adjusted prices are `value_revisable` (use `strict_vintage`) |
 | NewsAPI | Article `publishedAt` |
+| BLS API v2 (P4.1) | Unknown (`NULL`, retrieval time): the API returns the current revision without a date and the schedule pages list future releases only |
+| BEA NIPA (P4.1) | Table note `LastRevised` date, end of day New York; a value equal to the latest stored version keeps that version's date |
+| EIA API v2 (P4.1) | Unknown (`NULL`, retrieval time): the API gives no publication date |
 
 A publication time later than retrieval is clamped to retrieval. Revised values are stored as new
 versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
 (`data/backups/`) and refilled from the sources.
 
 **Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, yfinance 2, NewsAPI 3, S&P 500 list (datasets/s-and-p-500-companies, third-party compilation) 3.
+BLS, BEA and EIA (keyed APIs, `src/agency_apis.py`) are rank 1; their values are stored as published, entity
+`BLS:<series id>`, `BEA:<series code>`, `EIA:<series>`, metric `value`. A value the agency marks unavailable
+(e.g. BLS `-` for October 2025, "lapse in appropriations") is not stored.
 **Freshness**: `FRESH` if the age of `as_of_date` (publication date for filings) is within the cadence (weekly series: 14 days)
 limit: market sessions 5 days, daily series 7, monthly series 80, 10-K/10-Q 120, news 7.
 
@@ -139,6 +145,8 @@ flags backdated fetch rows and FRED calls logged without their api_key parameter
 
 ## Configuration
 
-Secrets go in `.env` (see `.env.example`): `SEC_USER_AGENT`, `FRED_API_KEY`, `NEWSAPI_KEY`.
+Secrets go in `.env` (see `.env.example`): `SEC_USER_AGENT`, `FRED_API_KEY`, `NEWSAPI_KEY`, `BLS_API_KEY`,
+`BEA_API_KEY`, `EIA_API_KEY`.
 Paste raw values only: a placeholder-shaped value such as `<abc123>` is rejected as `DATA UNAVAILABLE`.
-API keys are never written to logs, the database, raw payloads or reports (`common.redact`).
+API keys are never written to logs, the database, raw payloads or reports (`common.redact`); this includes
+keys echoed by a source (BEA returns the UserID in every response, BLS the key in its error messages).

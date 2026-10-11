@@ -408,6 +408,40 @@ def test_target_range_observation_after_s0_known_at_cutoff_covers_the_window():
     assert 'Observations up to 2026-10-07 (after s_0 = 2026-10-06) are known at T_c' in c['statement']
 
 
+def stored_fomc_page(last_update='September 02, 2026', retrieved='2026-10-07T13:00:00+00:00'):
+    """Real Federal Reserve Board page excerpt (2026 meetings) with its "Last Update" set before the cutoff."""
+    from src.external_sources import FOMC_URL
+    real = (Path(__file__).parent / 'fixtures' / 'external' / 'fomc_calendar_excerpt.html').read_text()
+    db = Database()
+    fetch = db.record_fetch('Federal Reserve Board', FOMC_URL, status='OK', raw_ext='html',
+                            raw=real.replace('October 07, 2026', last_update))
+    with db.connect() as conn:
+        conn.execute('UPDATE source_fetches SET requested_at=?, completed_at=? WHERE fetch_id=?',
+                     (retrieved, retrieved, fetch['fetch_id']))
+    return db
+
+
+def test_target_range_statement_cites_the_fomc_calendar():
+    store = Store()
+    target(store, change=False)
+    store.add('DFEDTARU', '2026-10-07', 4.25, '2026-10-06')
+    store.add('DFEDTARL', '2026-10-07', 4.00, '2026-10-06')
+    ctx = FakeCtx(store)
+    no_page = find(macro.build(ctx, series=list(macro.TARGET)), 'No change of the federal funds target range')
+    assert 'no Federal Reserve Board calendar page known at the cutoff' in no_page['statement']
+    ctx.db = stored_fomc_page()
+    c = find(macro.build(ctx, series=list(macro.TARGET)), 'No change of the federal funds target range')
+    assert 'page version of 2026-09-02) lists no FOMC meeting ending in the week (2026-09-29, 2026-10-06]' \
+        in c['statement']
+    fed = [e for e in c['evidence'] if e['source'] == 'Federal Reserve Board']
+    assert fed and fed[0]['fresh_at_cutoff'] is True and c['level'] == STRONG
+    # the week of the September meeting (15-16): s_0 = 2026-09-18
+    ctx.tm = TimeModel(ALL_SESSIONS, '2026-09-19T12:00:00+00:00', '2026-09-19T12:00:00+00:00')
+    items = []
+    text = macro._fomc_in_window(ctx, items)
+    assert text.endswith('lists an FOMC meeting ending in the week (2026-09-15 to 2026-09-16).') and len(items) == 1
+
+
 def test_epu_weekly_means_heavily_revised_are_uncertain_and_not_events():
     store = Store()
     epu(store)
@@ -418,14 +452,10 @@ def test_epu_weekly_means_heavily_revised_are_uncertain_and_not_events():
     r = table(res, 'Policy-uncertainty indices')['rows'][0]
     assert r[7] == 30                                   # largest revision of a daily value
     assert 'n 6' in r[3] and 'n 6' in r[4]              # 6 values dated in each week known at each cutoff
-    items = {u['item'] for u in res.unavailable if u['question'] == 4}
-    assert any(i.startswith('Caldara-Iacoviello') for i in items)
-    assert any(i.startswith('GDELT') for i in items)
-    assert any(i.startswith('official primary documents') for i in items)
-    reasons = ' '.join(u['reason'] for u in res.unavailable if u['question'] == 4)
-    assert 'matteoiacoviello.com' in reasons and 'gdeltproject.org' in reasons
-    fomc = [u for u in res.unavailable if u['item'].startswith('FOMC meeting calendar')]
-    assert fomc and 'federalreserve.gov' in fomc[0]['reason'] and 'release 326' in fomc[0]['reason']
+    # GPR, GDELT and Federal Register documents moved to the geopolitics section; FOMC meetings to catalysts
+    assert not [u for u in res.unavailable if u['question'] == 4 and not u['item'].startswith('GEPUCURRENT')]
+    assert not [u for u in res.unavailable if u['item'].startswith('FOMC meeting calendar')]
+    assert 'blocked' not in ' '.join(u['reason'] for u in res.unavailable)
 
 
 def test_labour_block_interpretation_and_claims_four_week_average():

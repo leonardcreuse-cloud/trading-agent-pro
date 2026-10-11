@@ -50,8 +50,8 @@ Q3  DGS10, DGS2, T10Y2Y, DFF, DFEDTARU / DFEDTARL (target range: a change publis
     Daily series: also the mean of observations dated in the week (s_-5, s_0] known at T_c vs the
     previous week (s_-10, s_-5] known at T_p.
 Q4  USEPUINDXD (daily, heavily revised: weekly means only) and GEPUCURRENT (monthly, long lag). Both
-    measure policy uncertainty from newspaper coverage, NOT geopolitical events. GPR, GDELT, official
-    primary documents: DATA UNAVAILABLE (hosts blocked by the proxy).
+    measure policy uncertainty from newspaper coverage, NOT geopolitical events. Federal Register documents,
+    the GPR index and GDELT event counts are reported by the 'geopolitics' section (Q4).
 Q5  UNRATE, PAYEMS, ICSA / CCSA (4-week averages from one vintage), UMCSENT (one reading per month in FRED),
     RSAFS, JTSJOL, MORTGAGE30US, HOUST, CES0500000003 (+ derived real earnings with the CPI of the
     same month known at T_c: an ESTIMATE). Directional readings of a block ("labour indicators
@@ -167,34 +167,20 @@ BLOCKS = {
 TARGET = ('DFEDTARU', 'DFEDTARL')
 
 STATIC_UNAVAILABLE = [
-    (3, 'FOMC meeting calendar (full)',
-     'www.federalreserve.gov is blocked by the proxy (CONNECT 403; HTTP "Host not in allowlist"), tested '
-     '2026-10-07; FRED release 101 lists every calendar day and cannot identify meetings. A partial calendar '
-     '(Summary of Economic Projections meetings, FRED release 326) is handled by the catalysts section. A '
-     'meeting with an unchanged target range cannot be detected from DFEDTARU / DFEDTARL.'),
     (3, 'consensus forecasts and surprises for macro and socio-economic releases',
      'no source of consensus forecasts is available to this system (no licensed survey data; FRED does not '
      'publish consensus)'),
-    (3, 'official release times of day',
-     'FRED gives vintage dates only; bls.gov, bea.gov and federalreserve.gov are blocked by the proxy, so the '
-     'report uses the conservative end-of-day New York convention for every release'),
-    (4, 'Caldara-Iacoviello Geopolitical Risk (GPR) index',
-     'www.matteoiacoviello.com is blocked by the proxy (HTTPS CONNECT 403; HTTP "Host not in allowlist"), tested '
-     '2026-10-07; FRED has no GPR series'),
-    (4, 'GDELT event and news database',
-     'api.gdeltproject.org and data.gdeltproject.org are blocked by the proxy (CONNECT 403), tested 2026-10-07; '
-     'the BigQuery copy is not usable (no credentials)'),
-    (4, 'official primary documents on geopolitical and trade actions (Federal Register, OFAC, BIS export '
-        'controls, USTR)',
-     'these hosts are blocked by the proxy (CONNECT 403), tested 2026-10-07: no rank-1 document for any '
-     'geopolitical event is available, so no geopolitical event can be strongly supported'),
+    (3, 'official release times of day for the values in these tables',
+     'the tables date FRED values by their vintage date with the conservative end-of-day New York convention; '
+     'release times of day are given for BLS releases in the catalysts section (BLS release calendar); BEA and '
+     'other agencies\' release times are not collected'),
     (5, 'current University of Michigan consumer sentiment preliminary reading and the source\'s own publication '
         'dates',
      'FRED carries one UMCSENT reading per month, first dated late in that month or early in the next in the stored '
      'vintages (not the mid-month preliminary reading), and its vintage date is not the source\'s publication date; '
      'no other source of the survey is configured'),
     (5, 'official sampling-error bands for labour and consumer statistics',
-     'BLS and BEA technical notes are not reachable (bls.gov and bea.gov blocked by the proxy)'),
+     'NOT IMPLEMENTED: the BLS and BEA technical notes that state sampling errors are not collected or parsed'),
 ]
 
 
@@ -820,6 +806,34 @@ def _revision_record(ctx, res, d, q, revs):
     res.add(_official(q, statement, items, _coverage(d) + series_codes, resolve))
 
 
+def _fomc_in_window(ctx, items):
+    """
+    Sentence on FOMC meetings whose last day falls in the week (s_-5, s_0], from the Federal Reserve Board
+    calendar page version in force at T_c (see catalysts.fomc_schedule); its evidence is appended to `items`.
+    """
+    from .catalysts import CALENDAR_CADENCE, FED_RANK, FED_SOURCE, fomc_schedule
+    tm = ctx.tm
+    sched = fomc_schedule(getattr(ctx, 'db', None), tm.cutoff)
+    if sched is None:
+        return ('Whether an FOMC meeting took place in the window is not established here (no Federal Reserve Board '
+                'calendar page known at the cutoff is stored).')
+    lo = tm.sessions[-WEEK_SESSIONS - 1]
+    held = [m for m in sched['meetings'] if lo < m['end'] <= tm.s0]
+    fetch = sched['fetch']
+    items.append(evidence(tm, FED_SOURCE, FED_RANK,
+                          f"FOMC calendar, page Last Update {sched['last_update']}: meetings ending in "
+                          f"({lo}, {tm.s0}]: " + (', '.join(m['label'] for m in held) or 'none'),
+                          as_of=sched['last_update'], published_at=sched['published_at'],
+                          retrieved_at=fetch['retrieved_at'], fetch_id=fetch['fetch_id'],
+                          fresh=True if sched['confirmed'] else _fresh(ctx, fetch['retrieved_at'][:10],
+                                                                       CALENDAR_CADENCE),
+                          basis='page version in force at the cutoff ("Last Update" date, end of day New York)'))
+    meetings = ', '.join(f"{m['start']} to {m['end']}" for m in held)
+    return (f"The Federal Reserve Board calendar (page version of {sched['last_update']}) lists "
+            + (f'an FOMC meeting ending in the week ({meetings}).' if held else
+               f'no FOMC meeting ending in the week ({lo}, {tm.s0}].'))
+
+
 def _week_ranges(tm):
     s_m5, s_m10 = tm.sessions[-6], tm.sessions[-11]
     return (s_m5, tm.s0), (s_m10, s_m5)
@@ -923,12 +937,13 @@ def _target_range(ctx, res, data):
                         if blind else
                         f'Observations up to {d_cov} (after s_0 = {tm.s0}) are known at T_c, so a decision announced '
                         'on any day of the window would be visible. ')
-                     + 'Whether an FOMC meeting took place is not established here (calendar unavailable).')
+                     )
         changed = False
         if blind:
             resolve = {'PARTIAL_COVERAGE': f'the DFEDTARU / DFEDTARL observations for effective dates after {d_cov} '
-                                           '(published by FRED after T_c) or the FOMC statement (federalreserve.gov '
-                                           'blocked by the proxy)'}
+                                           '(published by FRED after T_c) or the FOMC statement on '
+                                           'federalreserve.gov (not collected)'}
+    statement += ' ' + _fomc_in_window(ctx, items)
     statement += _coverage_text(u if not u['covered'] else l)
     codes = _coverage(u) + _coverage(l) + (['PARTIAL_COVERAGE'] if not changed and blind else [])
     record = _official(3, statement, items, codes, resolve)
@@ -1057,9 +1072,9 @@ def _q4(ctx, res, data, thr, version):
               rows, question=4,
               note=('USEPUINDXD and GEPUCURRENT count newspaper articles about economic-policy uncertainty; they do not '
                     'identify any geopolitical event and are heavily revised (USEPUINDXD: weekly means only, never a '
-                    'single day). Geopolitical event sources (GPR, GDELT, official primary documents) are DATA '
-                    'UNAVAILABLE in this environment; news stories are handled by the news section (aggregator, '
-                    'UNCERTAIN at most). ' + _threshold_note(thr, version, ['USEPUINDXD', 'GEPUCURRENT'])))
+                    'single day). Geopolitical event sources (Federal Register documents, GPR index, GDELT event '
+                    'counts) are reported by the geopolitics section; news stories are handled by the news section '
+                    '(aggregator, UNCERTAIN at most). ' + _threshold_note(thr, version, ['USEPUINDXD', 'GEPUCURRENT'])))
 
 
 # ---------------------------------------------------------------- Q5
@@ -1172,7 +1187,8 @@ def _real_earnings(ctx, res, data):
               ['month', 'average hourly earnings (USD)', 'CPI-U SA (1982-84 = 100)', 'real AHE (1982-84 USD)',
                'change vs prior month %', 'status'], rows, question=5,
               note=('Computed by this report as AHE / CPIAUCSL x 100 with both values of the same month as known at T_c. '
-                    'The BLS Real Earnings release (bls.gov blocked) is the official figure.' + lag))
+                    'The official figure is the BLS Real Earnings release (series CES0500000013, collected by '
+                    '`python main.py collect`; not compared here).' + lag))
     fresh = _fresh(ctx, m, 'monthly')
     items = [_ev(ctx, ahe, f'{m[:7]} = {_fmt(ahe["snap_c"][m])} USD/h as known at T_c', m, _pub_at(ahe, m, 'c'), fresh),
              _ev(ctx, cpi, f'{m[:7]} = {_fmt(cpi["snap_c"][m], 3)} as known at T_c', m, _pub_at(cpi, m, 'c'), fresh)]
@@ -1181,7 +1197,7 @@ def _real_earnings(ctx, res, data):
                  + ('' if pct is None else f', {_sfmt(pct, 2)}% vs {prior[:7]} in the same vintage') + lag + '.')
     res.add(conclude('overall', 5, statement, items, 'official_fact',
                      reason_codes=['ESTIMATE'] + _coverage(ahe) + _coverage(cpi),
-                     resolve='the BLS Real Earnings release (bls.gov blocked by the proxy)'))
+                     resolve='the BLS Real Earnings release (series CES0500000013)'))
 
 
 # ---------------------------------------------------------------- direction by block (interpretation)
@@ -1283,7 +1299,8 @@ def build(ctx, series=None):
                              'An end-of-day value cannot be public before the end of the day it describes, so these '
                              'timestamps are not credible and the versions are not used.')
     res.notes.append('USEPUINDXD and GEPUCURRENT measure economic-policy uncertainty from newspaper coverage; they '
-                     'are not records of geopolitical events. Geopolitical events have no rank-1 source here.')
+                     'are not records of geopolitical events. Official documents on sanctions, export controls, trade '
+                     'and presidential actions (Federal Register, rank 1) are in the geopolitics section.')
     res.notes.append('Macro and socio-economic data are economy-wide: no company-level attribution is made; any link '
                      'with a company or a price move is timing only ("coincided with").')
     res.notes.append(f'Directional block readings use sign convention {DIRECTION_CONVENTION} and are always '

@@ -567,10 +567,9 @@ def build(ctx, tickers=None, include_global=True, http_get=None):
     budget = {'requests': 0, 'reused': 0}
     if include_global:
         _global(ctx, res, http_get, budget)
-    res.add(unavailable('overall', Q_GEO, 'official primary documents and event datasets for geopolitical events',
-                        'not ingested: Federal Register, OFAC, BIS, USTR, GDELT, ACLED and the GPR index were not '
-                        'reachable from this environment when checked on 2026-10-07 (egress proxy CONNECT 403); '
-                        'geopolitical statements here rest on an aggregator only'))
+    res.notes.append('Official primary documents (Federal Register: OFAC, BIS, USTR, presidential documents) and '
+                     'news-based indices (GPR, GDELT) are reported by the geopolitics section; the geopolitical '
+                     'statements of this section rest on a news aggregator only (UNCERTAIN at most).')
     coverage_rows = []
     universe = list(tickers) if tickers is not None else list(ctx.universe)
     for t in universe:

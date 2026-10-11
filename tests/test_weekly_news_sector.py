@@ -501,7 +501,8 @@ def test_news_global_query_dedup_clusters_and_levels(monkeypatch):
     jump = next(c for c in stories if 'G2' in c['statement'] or 'MarketWatch' in c['statement'])
     assert 'jump' not in jump['statement'].lower() and 'headline not quoted' in jump['statement']
     assert_no_causal_wording(out)
-    assert any('official primary documents' in u['item'] for u in out['unavailable'])
+    assert any('reported by the geopolitics section' in n for n in out['notes'])
+    assert not any('official primary documents' in u['item'] for u in out['unavailable'])
     assert any('requests made by this section: 1' in n for n in out['notes'])
 
 

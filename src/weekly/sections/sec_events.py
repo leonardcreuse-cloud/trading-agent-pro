@@ -12,10 +12,12 @@ Inputs (all through the context, point-in-time):
                                         stored Form 4 transactions with availability in (T_p, T_c]
 
 Rules applied here (docs/DATA_POLICY.md, "Evidence levels for conclusions"):
-  - A filing belongs to the week when its conservative published_at is in (T_p, T_c]. A filing
-    whose UTC label is before T_c but whose New York reading is after T_c is not admissible at
-    T_c: it belongs to next week's report and is not mentioned here.
-  - Sessions: the UTC acceptance instant converted to New York time; before 09:30 -> that
+  - A filing belongs to the week when its published_at is in (T_p, T_c]: the true acceptance instant
+    when the feed's label convention is verified on EDGAR index pages (ctx.filings), else the
+    conservative New York reading of the label. In that second case a filing whose label read as UTC
+    is before T_c but whose New York reading is after T_c is not admissible at T_c: it belongs to next
+    week's report and is not mentioned here.
+  - Sessions: the acceptance instant (acceptance_utc) converted to New York time; before 09:30 -> that
     session (pre-open), 09:30-16:00 -> during that session, from 16:00 or on a non-session day
     -> the next session; after the close of s_0 -> next week's session (next report).
     TIMESTAMP_AMBIGUOUS only when the conservative reading changes the session.
@@ -144,7 +146,7 @@ CORE_FIELDS = (('revenue', 'revenue TTM'), ('revenue_growth_pct', 'revenue growt
                ('debt_to_equity', 'debt-to-equity'))
 NCI_EQUITY_TAG = 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'
 
-EVENT_COLUMNS = ('session', 'timing (New York)', 'accepted (UTC label)', 'accepted (New York)',
+EVENT_COLUMNS = ('session', 'timing (New York)', 'accepted (UTC)', 'accepted (New York)',
                  'form', 'items', 'class', 'accession', 'available at (conservative)',
                  'session flag')
 
@@ -202,7 +204,7 @@ def map_session(instant, sessions):
 
 
 def session_of(filing, sessions):
-    """Session mapping of one filing (UTC label) with the ambiguity check (New York reading)."""
+    """Session mapping of one filing (acceptance instant) with the ambiguity check (published_at)."""
     accepted, published = filing.get('acceptance_utc'), filing.get('published_at')
     conservative = map_session(published, sessions)[0] if published else None
     if accepted:
@@ -266,8 +268,8 @@ def _event_row(f, m, classes):
 
 
 def _when(f):
-    return (f"accepted {f['acceptance_utc']} (UTC label, {_ny(f['acceptance_utc']).strftime('%H:%M %Z')} "
-            'New York)' if f.get('acceptance_utc') else f"filed {f.get('filing_date')} (no acceptance time)")
+    return (f"accepted {f['acceptance_utc']} ({_ny(f['acceptance_utc']).strftime('%H:%M %Z')} New York)"
+            if f.get('acceptance_utc') else f"filed {f.get('filing_date')} (no acceptance time)")
 
 
 def _window_filings(ctx, feed):
@@ -337,7 +339,7 @@ def _filing_evidence(ctx, feed, f):
     items = f" items {','.join(f['items'])}" if f.get('items') else ''
     return evidence(ctx.tm, SEC_SOURCE, SEC_RANK,
                     f"{f['form']}{items} accession {f['accession_number']} accepted "
-                    f"{f.get('acceptance_utc') or 'time not provided'} (UTC label)",
+                    f"{f.get('acceptance_utc') or 'time not provided'} (UTC)",
                     as_of=f.get('report_date') or f.get('filing_date'),
                     published_at=f['published_at'], retrieved_at=fetch.get('retrieved_at'),
                     fetch_id=fetch.get('fetch_id'), fresh=_fresh(ctx, f['published_at'], cadence),
@@ -769,17 +771,17 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
         rows = [[f['form'], f.get('acceptance_utc'), f.get('report_date'), f.get('filing_date'),
                  f['accession_number'], f['published_at']] for f in statements + late]
         res.table(f'{t}: new periodic filings available in the window', (
-            'form', 'accepted (UTC label)', 'period (report date)', 'filing date', 'accession',
+            'form', 'accepted (UTC)', 'period (report date)', 'filing date', 'accession',
             'available at (conservative)'), rows, scope=t, question=2,
             note=None if rows else 'none (10-K / 10-Q family, amendments and NT notices checked)')
         for f in statements:
             res.add(conclude(t, 2, f"{t}: {f['form']} for period {f.get('report_date')} accepted "
-                                   f"{f.get('acceptance_utc')} (UTC label), accession {f['accession_number']}: "
+                                   f"{f.get('acceptance_utc')} (UTC), accession {f['accession_number']}: "
                                    'a new periodic financial statement in the window',
                              [_filing_evidence(ctx, feed, f)], 'official_fact'))
         for f in late:
             res.add(conclude(t, 2, f"{t}: {f['form']} (notification of late filing) accepted "
-                                   f"{f.get('acceptance_utc')} (UTC label), accession {f['accession_number']}",
+                                   f"{f.get('acceptance_utc')} (UTC), accession {f['accession_number']}",
                              [_filing_evidence(ctx, feed, f)], 'official_fact'))
         if not statements:
             res.add(conclude(t, 2, f'{t}: no new periodic financial statements accepted in the window '

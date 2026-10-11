@@ -119,9 +119,12 @@ class Context:
 
     def filings(self, ticker):
         """
-        {'status', 'filings': [...], 'fetch', 'reason'}; each filing has form, filing_date,
-        report_date, accession_number, published_at (conservative), acceptance_utc (label read
-        as UTC, for session mapping only), items (8-K item codes) and primary_document.
+        {'status', 'filings': [...], 'fetch', 'reason', 'label_calibration'}; each filing has form,
+        filing_date, report_date, accession_number, published_at, acceptance_utc, items (8-K item codes)
+        and primary_document. When the feed's label convention is verified on EDGAR index pages
+        (SECParser.label_calibration), published_at = acceptance_utc = the true acceptance instant;
+        otherwise published_at is the conservative New York reading and acceptance_utc the label read as
+        UTC (session mapping only; sec_events flags the difference as ambiguous).
         """
         if ticker in self._filings:
             return self._filings[ticker]
@@ -136,17 +139,21 @@ class Context:
                 out = {'status': DATA_UNAVAILABLE, 'filings': [], 'fetch': None, 'reason': self.sec.last_error}
             else:
                 fetch = self.sec.last_fetch[url]
-                rows = self.sec._recent_filings(data)
+                if hasattr(self.sec, 'filing_rows'):
+                    rows, calibration = self.sec.filing_rows(cik, data)
+                else:
+                    rows, calibration = self.sec._recent_filings(data), None
                 recent = (data.get('filings') or {}).get('recent') or {}
                 items = list(recent.get('items') or []) + [None] * len(rows)
                 labels = list(recent.get('acceptanceDateTime') or []) + [None] * len(rows)
                 for row, item, label in zip(rows, items, labels):
                     row['items'] = [x.strip() for x in (item or '').split(',') if x.strip()]
-                    row['acceptance_utc'] = (label.replace('.000Z', '+00:00').replace('Z', '+00:00')
-                                             if label else None)
+                    if not row.get('acceptance_utc'):
+                        row['acceptance_utc'] = (label.replace('.000Z', '+00:00').replace('Z', '+00:00')
+                                                 if label else None)
                 complete = fetch['retrieved_at'] > self.tm.cutoff
                 out = {'status': 'OK', 'filings': rows, 'fetch': fetch, 'reason': None,
-                       'retrieved_after_cutoff': complete,
+                       'retrieved_after_cutoff': complete, 'label_calibration': calibration,
                        # the 'recent' block holds ~1000 filings; older ones are in extra files
                        'truncated': bool((data.get('filings') or {}).get('files')),
                        'sic': data.get('sic'), 'sic_description': data.get('sicDescription'),

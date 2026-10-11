@@ -35,10 +35,21 @@ P0.3 changes (financial statements, efficiency):
 P1.2b: requests go through one process-wide rate limiter (<= 9 requests/s, under the SEC
 fair-access limit of 10/s). prefetch() downloads many documents with a few threads under
 that limiter; logging, raw storage and parsing stay in the calling thread.
+
+P4.2: acceptance label conventions. Compared with the "Accepted" time of the EDGAR filing index page
+(New York wall clock, consistent with the filing-date rules), the feed's acceptanceDateTime labels follow
+one of three conventions, constant within a company's feed on 2026-10-11: the true UTC instant ('utc',
+e.g. MP, RKLB), the true UTC instant + the New York offset ('utc_plus_ny_offset', e.g. AAPL, CRWD, NET;
+about 16 % of filings since a relabelling of 2026-10-07/10) or the New York wall clock ('ny_wall', the
+convention assumed until then). Reading every label as New York time is never early but is 4-10 h late.
+label_calibration() checks the index pages (immutable, downloaded once) of three filings spanning the feed
+(newest, middle, oldest); when they agree, every label of that feed is converted to its true acceptance
+instant. Otherwise the conservative New York reading is kept. The audit re-checks sampled filings.
 """
 
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -95,12 +106,63 @@ def _back_off(response, attempt):
     return delay
 ACCEPTANCE_BASIS = ('SEC acceptanceDateTime read as New York time '
                     '(conservative: >= the UTC reading of the feed)')
+EDGAR_INDEX_URL = 'https://www.sec.gov/Archives/edgar/data/{cik}/{nodash}/{accession}-index.htm'
+LABEL_CONVENTIONS = ('utc', 'utc_plus_ny_offset', 'ny_wall')
+_ACCEPTED_RE = re.compile(r'>Accepted</div>\s*<div class="info">\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*</div>')
 
 
 def acceptance_to_utc(value):
     """acceptanceDateTime -> UTC ISO, reading the wall-clock time as America/New_York."""
     wall = datetime.fromisoformat(value.strip().replace('Z', '')[:19])
     return to_utc_iso(wall.replace(tzinfo=NEW_YORK))
+
+
+def index_accepted(html):
+    """'Accepted' time of an EDGAR filing index page (New York wall clock) as UTC ISO, or None."""
+    m = _ACCEPTED_RE.search(html or '')
+    if not m:
+        return None
+    return to_utc_iso(datetime.strptime(m.group(1), '%Y-%m-%d %H:%M:%S').replace(tzinfo=NEW_YORK))
+
+
+def _ny_offset(instant):
+    """UTC minus New York time at `instant`: 4 h in summer, 5 h in winter."""
+    return -instant.astimezone(NEW_YORK).utcoffset()
+
+
+def label_convention(label, accepted_utc):
+    """Convention of a feed label given the true acceptance instant (index page), or None."""
+    wall = datetime.fromisoformat(label.strip().replace('Z', '')[:19])
+    true = datetime.fromisoformat(accepted_utc)
+    as_utc = wall.replace(tzinfo=timezone.utc)
+    if as_utc == true:
+        return 'utc'
+    if as_utc == true + _ny_offset(true):
+        return 'utc_plus_ny_offset'
+    if wall.replace(tzinfo=NEW_YORK) == true:
+        return 'ny_wall'
+    return None
+
+
+def acceptance_from_label(label, convention):
+    """True acceptance instant (UTC ISO) of a label of a known convention; None when not invertible."""
+    wall = datetime.fromisoformat(label.strip().replace('Z', '')[:19])
+    if convention == 'utc':
+        return to_utc_iso(wall.replace(tzinfo=timezone.utc))
+    if convention == 'ny_wall':
+        return to_utc_iso(wall.replace(tzinfo=NEW_YORK))
+    if convention == 'utc_plus_ny_offset':
+        shifted = wall.replace(tzinfo=timezone.utc)
+        found = [t for t in (shifted - timedelta(hours=4), shifted - timedelta(hours=5))
+                 if _ny_offset(t) == shifted - t]
+        return to_utc_iso(found[0]) if len(found) == 1 else None
+    return None
+
+
+def calibration_basis(calibration):
+    checked = ', '.join(c['accession'] for c in calibration['checked'])
+    return (f"SEC acceptance time: feed label convention '{calibration['convention']}' verified on the EDGAR "
+            f'filing index pages of {checked}')
 
 
 class SECParser:
@@ -222,11 +284,52 @@ class SECParser:
             }
         return self._cik_map.get(ticker.upper())
 
+    def label_calibration(self, cik, data, sample=3):
+        """
+        Label convention of one submissions feed: the EDGAR index pages (immutable, downloaded once) of
+        `sample` filings spanning the 'recent' block (newest, middle, oldest) must all show the same
+        convention. {'convention' (None when not established), 'checked': [...], 'reason'}.
+        """
+        recent = (data or {}).get('filings', {}).get('recent', {})
+        rows = [(a, label) for a, label in zip(recent.get('accessionNumber') or [],
+                                               recent.get('acceptanceDateTime') or []) if a and label]
+        if not rows:
+            return {'convention': None, 'checked': [], 'reason': 'no acceptance label in the feed'}
+        picks = sorted({0, len(rows) // 2, len(rows) - 1})[:sample]
+        checked = []
+        for i in picks:
+            accession, label = rows[i]
+            url = EDGAR_INDEX_URL.format(cik=int(cik), nodash=accession.replace('-', ''), accession=accession)
+            html = self._get(url, as_json=False, max_age=IMMUTABLE)
+            accepted = index_accepted(html)
+            checked.append({'accession': accession, 'label': label, 'accepted': accepted,
+                            'convention': label_convention(label, accepted) if accepted else None,
+                            'fetch_id': (self.last_fetch.get(url) or {}).get('fetch_id')})
+        found = {c['convention'] for c in checked}
+        if len(found) == 1 and None not in found:
+            return {'convention': found.pop(), 'checked': checked, 'reason': None}
+        unread = [c['accession'] for c in checked if not c['accepted']]
+        reason = ('index page not read for ' + ', '.join(unread) if unread else
+                  'conventions differ: ' + ', '.join(f"{c['accession']} {c['convention']}" for c in checked))
+        return {'convention': None, 'checked': checked, 'reason': reason}
+
+    def filing_rows(self, cik, data):
+        """(rows, calibration): feed rows with acceptance times converted by the verified convention."""
+        calibration = self.label_calibration(cik, data)
+        return self._recent_filings(data, calibration), calibration
+
     @staticmethod
-    def _recent_filings(data):
-        """Rows of the 'recent' block: form, dates, accession, primary document, publication."""
+    def _recent_filings(data, calibration=None):
+        """
+        Rows of the 'recent' block: form, dates, accession, primary document, publication.
+        With a verified label convention (label_calibration) published_at and acceptance_utc are the true
+        acceptance instant; otherwise published_at is the conservative New York reading and acceptance_utc
+        is None. acceptance_label is the feed's own value.
+        """
         recent = (data or {}).get('filings', {}).get('recent', {})
         forms = recent.get('form', [])
+        convention = (calibration or {}).get('convention')
+        verified = calibration_basis(calibration) if convention else None
 
         def col(name):
             values = recent.get(name) or []
@@ -236,7 +339,10 @@ class SECParser:
         for form, filed, report, accession, accepted, document in zip(
                 forms, col('filingDate'), col('reportDate'), col('accessionNumber'),
                 col('acceptanceDateTime'), col('primaryDocument')):
-            if accepted:
+            exact = acceptance_from_label(accepted, convention) if accepted and convention else None
+            if exact:
+                published, basis = exact, verified
+            elif accepted:
                 published, basis = acceptance_to_utc(accepted), ACCEPTANCE_BASIS
             elif filed:
                 published, basis = end_of_us_trading_day_utc(filed), \
@@ -246,7 +352,8 @@ class SECParser:
             filings.append({'form': form, 'filing_date': filed or None,
                             'report_date': report or None, 'accession_number': accession,
                             'primary_document': document or None,
-                            'published_at': published, 'published_at_basis': basis})
+                            'published_at': published, 'published_at_basis': basis,
+                            'acceptance_utc': exact, 'acceptance_label': accepted or None})
         return filings
 
     def get_filings(self, ticker, max_age=None):
@@ -264,8 +371,8 @@ class SECParser:
         url = f"{self.SEC_API}/submissions/CIK{cik}.json"
         data = self._get_json(url, max_age=max_age)
         if data:
-            filings = self._recent_filings(data)
             fetch = self.last_fetch[url]
+            filings, calibration = self.filing_rows(cik, data)
             self.db.upsert_observations(fetch, [{
                 'entity': ticker, 'metric': f"filing:{f['form']}",
                 'as_of_date': f['report_date'] or f['filing_date'],
@@ -277,7 +384,7 @@ class SECParser:
             truncated = bool((data.get('filings') or {}).get('files'))
             dates = [f['filing_date'] for f in filings if f['filing_date']]
             self._filings_cache[ticker] = {
-                'raw': data, 'filings': filings, 'fetch': fetch,
+                'raw': data, 'filings': filings, 'fetch': fetch, 'calibration': calibration,
                 'coverage_start': min(dates) if truncated and dates else None}
         return self._filings_cache.get(ticker)
 

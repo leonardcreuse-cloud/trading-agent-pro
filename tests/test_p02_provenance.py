@@ -337,7 +337,13 @@ def test_sec_filings_stored_with_acceptance_time_and_counted_point_in_time(monke
     prov = result['provenance']
     assert prov['source'] == 'SEC EDGAR' and prov['source_rank'] == 1
     assert prov['as_of_date'] == '2026-06-30' and prov['raw_sha256']
-    assert parser.db.count('source_fetches') == 3   # ticker file, submissions, company facts (P0.3)
+    # ticker file, submissions, company facts (P0.3) + 3 EDGAR index pages for the label calibration (P4.2),
+    # unavailable here (404): the labels keep the conservative New York reading
+    with parser.db.connect() as conn:
+        rows = conn.execute('SELECT endpoint, status FROM source_fetches ORDER BY fetch_id').fetchall()
+    assert len(rows) == 6 and sum(r['status'] == 'OK' for r in rows) == 3
+    assert sum(r['endpoint'].endswith('-index.htm') for r in rows) == 3
+    assert parser._filings_cache['MP']['calibration']['convention'] is None
 
 
 def test_fred_vintages_stored_and_current_vintage_displayed(monkeypatch):

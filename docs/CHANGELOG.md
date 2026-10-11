@@ -1,5 +1,15 @@
 # Changelog
 
+## P2.2 — Stage 2 holdout replication (242 new stocks, pre-registered): 0 of 4 confirmed
+
+- `python main.py research --stage 2` on every eligible S&P 500 stock not in stage 1 (242 with data,
+  90,691 stock-dates, 2017-09 → 2026-10), after `--prefetch-insider` downloaded the Form 4 history
+  since 2016-06-01 (one parse failure in the whole download).
+- Confirmatory family (Holm, alpha 0.05): C1 accruals 252d IC +0.026 (t 1.28, Holm p 0.81), C2 accruals
+  120d +0.020 (p 0.90), C3 insider net buying 120d -0.010 (p 1.0), C4 252d -0.009 (p 1.0): **none confirmed**.
+- Exploratory: 225 tests, 0 significant after BH or Bonferroni. Results and limitations (including the SEC
+  acceptance-label change of 2026-10-10) in `docs/research/STAGE2_RESULTS.md`.
+
 ## P3.0 / P3.1 — Weekly analyst report (`python main.py weekly`)
 
 - `src/weekly/`: core contract (cutoff / week time model from observed sessions, evidence records

@@ -718,7 +718,7 @@ def test_catalysts_calendar_retrieved_after_cutoff_is_logged_but_not_admissible(
     reasons = {u['item']: u['reason'] for u in out['unavailable']}
     assert 'no FRED release calendar stored at or before the cutoff' in \
         reasons['Consumer Price Index (FRED release 10): schedule as known at the cutoff']
-    assert 'federalreserve.gov' in reasons['FOMC meetings without a Summary of Economic Projections']
+    assert 'python main.py collect' in reasons['FOMC meetings (Federal Reserve Board calendar) as known at the cutoff']
     assert 'not observed' in reasons['exchange session calendar for the 10 sessions after s_0']
     # an identical request stored < 12 h before G is reused: no new request
     http2 = FredHTTP()
@@ -845,6 +845,97 @@ def test_catalysts_earnings_calendar_empty_or_failing_is_unavailable(monkeypatch
     r = {u['item']: u['reason'] for u in out['unavailable'] if u['scope'] == 'AAA'}
     assert 'retrieved after the cutoff' in r['next earnings date (as known at the cutoff)']
     assert not [c for c in out['conclusions'] if c['scope'] == 'AAA' and 'earnings date' in c['statement'].lower()]
+
+
+FIX = Path(__file__).parent / 'fixtures' / 'external'
+
+
+def store_page(db, source, endpoint, raw, completed_at, raw_ext='html'):
+    isolated_database(db.db_path)                                              # refuses the project database
+    fetch = db.record_fetch(source, endpoint, requested_at=completed_at, status='OK', raw=raw, raw_ext=raw_ext)
+    with db.connect() as conn:
+        conn.execute('UPDATE source_fetches SET requested_at=?, completed_at=? WHERE fetch_id=?',
+                     (completed_at, completed_at, fetch['fetch_id']))
+    return fetch['fetch_id']
+
+
+def calendars_table(out):
+    t = next(t for t in out['tables'] if t['title'].startswith('Official calendars'))
+    return {r[0]: dict(zip(t['columns'], r)) for r in t['rows']}
+
+
+def test_catalysts_fomc_from_the_page_version_in_force_at_the_cutoff():
+    """Real Federal Reserve Board page excerpt (Last Update 2026-10-07, i.e. public after T_c = 10-07 05:00 UTC)."""
+    from src.external_sources import FOMC_URL
+    real = (FIX / 'fomc_calendar_excerpt.html').read_text()
+    db = isolated_database()
+    store_page(db, 'Federal Reserve Board', FOMC_URL, real, '2026-10-07T13:00:00+00:00')
+    out = run_cat(cat_ctx(db=db))
+    reasons = {u['item']: u['reason'] for u in out['unavailable']}
+    assert 'Last Update 2026-10-07, after the cutoff' in \
+        reasons['FOMC meetings (Federal Reserve Board calendar) as known at the cutoff']
+    assert calendars_table(out)['FOMC meeting']['status at T_c'] == UNAVAILABLE
+    # an older version (constructed: same page, earlier Last Update) retrieved after the cutoff was current at T_c
+    older = real.replace('October 07, 2026', 'September 02, 2026')
+    assert older != real
+    store_page(db, 'Federal Reserve Board', FOMC_URL, older, '2026-10-06T20:00:00+00:00')
+    store_page(db, 'Federal Reserve Board', FOMC_URL, older, '2026-10-07T09:00:00+00:00')
+    out = run_cat(cat_ctx(db=db))
+    c = next(c for c in out['conclusions'] if 'FOMC meeting in the horizon' in c['statement'])
+    assert c['level'] == STRONG and c['evidence'][0]['source'] == 'Federal Reserve Board'
+    assert 'next scheduled meeting 2026-10-27 to 2026-10-28' in c['statement']
+    assert c['evidence'][0]['published_at'] == '2026-09-03T05:00:00+00:00'
+    assert c['evidence'][0]['fresh_at_cutoff'] is True                    # retrieved 10-07 09:00 with that version
+    row = calendars_table(out)['FOMC meeting']
+    assert row['dates in horizon (as known at T_c)'] == 'none' and '2026-10-27' in row['reference period / next meeting']
+
+
+def test_catalysts_bls_calendar_admissible_only_when_retrieved_before_the_cutoff():
+    """Real BLS October 2026 calendar excerpt; horizon (2026-10-06, 2026-10-21] lies in October."""
+    from src.external_sources import BLS_MONTH_URL
+    page = (FIX / 'bls_month_2026-10_excerpt.html').read_text()
+    url = BLS_MONTH_URL.format(2026, 10)
+    db = isolated_database()
+    store_page(db, 'BLS', url, page, '2026-10-07T13:00:00+00:00')         # after the cutoff only
+    out = run_cat(cat_ctx(db=db))
+    cpi = calendars_table(out)['Consumer Price Index']
+    assert cpi['status at T_c'] == UNAVAILABLE and cpi['dates in horizon (as known at T_c)'] is None
+    assert cpi['as stored most recently (information only)'] == '2026-10-14 08:30 AM (September 2026)'
+    reasons = {u['item']: u['reason'] for u in out['unavailable']}
+    assert 'retrieved at or before the cutoff' in \
+        reasons['BLS release calendar for 2026-10 (dates and times) as known at the cutoff']
+    assert not [c for c in out['conclusions'] if c['statement'].startswith('BLS ')]
+
+    store_page(db, 'BLS', url, page, '2026-10-05T12:00:00+00:00')         # retrieved before the cutoff
+    out = run_cat(cat_ctx(db=db))
+    by = {c['statement'].split(':')[0]: c for c in out['conclusions'] if c['statement'].startswith('BLS ')}
+    cpi = by['BLS Consumer Price Index for September 2026']
+    assert cpi['level'] == STRONG and 'SCHEDULED on 2026-10-14 at 08:30 AM Eastern Time' in cpi['statement']
+    assert cpi['evidence'][0]['retrieved_at'] == '2026-10-05T12:00:00+00:00'
+    assert 'SCHEDULED on 2026-10-15' in by['BLS Producer Price Index for September 2026']['statement']
+    assert 'no release in the horizon' in by['BLS Employment Situation']['statement']    # 10-02 is before s_0
+    assert 'no release in the horizon' in by['BLS Employment Cost Index']['statement']   # 10-30 after the horizon
+    assert calendars_table(out)['Job Openings and Labor Turnover Survey']['status at T_c'] == 'no date in the horizon'
+    assert not [u for u in out['unavailable'] if u['item'].startswith('BLS release calendar')]
+    for s in all_statements(out):
+        assert not any(w in s.lower() for w in CAUSAL), s
+
+
+def test_catalysts_earnings_date_from_a_snapshot_stored_before_the_cutoff():
+    db = isolated_database()
+    endpoint = 'yfinance.Ticker(AAA).calendar'
+    store_page(db, 'yfinance', endpoint, json.dumps({'Earnings Date': ['2026-10-29']}), '2026-10-06T22:00:00+00:00',
+               raw_ext='json')
+    store_page(db, 'yfinance', endpoint, json.dumps({'Earnings Date': ['2026-10-15']}), '2026-10-07T08:00:00+00:00',
+               raw_ext='json')                                                # after the cutoff: never used
+    out = run_cat(cat_ctx(db=db), calendar_fn=lambda _t: {'Earnings Date': [date(2026, 10, 15)]})
+    c = next(c for c in out['conclusions'] if c['scope'] == 'AAA' and 'earnings date' in c['statement'])
+    assert '2026-10-29, outside the horizon' in c['statement'] and c['level'] == UNCERTAIN
+    assert {'AGGREGATOR_ONLY', 'ESTIMATE'} <= set(c['reason_codes'])
+    t = next(t for t in out['tables'] if t['title'].startswith('AAA — company catalysts'))
+    rows = {r[0]: r for r in t['rows']}
+    assert rows['next earnings date (retrieved at G, information only)'][3] == '2026-10-15'
+    assert not [u for u in out['unavailable'] if u['scope'] == 'AAA' and 'earnings' in u['item']]
 
 
 def test_catalysts_pattern_row_is_an_interpretation_not_a_forecast():

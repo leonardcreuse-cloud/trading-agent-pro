@@ -30,7 +30,8 @@ upsert_observations with an explicit published_at and its basis:
   GDELT (3)                  daily event counts (automated coding   12:00 UTC the day after the file date
                              of news: not a record of events)       (daily file posted early that day)
   yfinance (2)               option chain snapshot per company      unknown (retrieval time); see weekly
-                             (unofficial)                           positioning section for admissibility
+                             (unofficial); earnings calendar        positioning / catalysts sections for
+                             snapshot (date possibly an estimate)   admissibility
 
 Terms of use: CFTC, FINRA, Federal Reserve, BLS and Federal Register publish public data; Cboe and
 Yahoo restrict automated use and redistribution (personal research use only, never redistributed);
@@ -793,6 +794,52 @@ def collect_options(db, tickers, today=None, max_days=60):
                    '; '.join(problems) or None)
 
 
+# ---------------------------------------------------------------- earnings calendar snapshot (yfinance)
+
+EARNINGS_BASIS = 'yfinance calendar snapshot: no publication time (retrieval time); the date may be an estimate'
+
+
+def earnings_dates(value):
+    """ISO dates listed under 'Earnings Date' in a yfinance calendar dict (or its JSON copy)."""
+    raw = value.get('Earnings Date') if isinstance(value, dict) else None
+    out = []
+    for x in raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []:
+        try:
+            out.append(date.fromisoformat(str(x.isoformat() if hasattr(x, 'isoformat') else x)[:10]).isoformat())
+        except ValueError:
+            continue
+    return out
+
+
+def collect_earnings_calendars(db, tickers):
+    """
+    Daily snapshot of yfinance Ticker(t).calendar (rank 2, unofficial), logged with the endpoint and raw format
+    of the weekly catalysts section, so a later report can cite a snapshot retrieved before its cutoff. An
+    empty result is DATA UNAVAILABLE, never "no earnings date".
+    """
+    import yfinance as yf
+    stored, problems = 0, []
+    for t in tickers:
+        endpoint, requested_at = f'yfinance.Ticker({t}).calendar', utc_now_iso()
+        try:
+            value = yf.Ticker(t).calendar
+            error = None if value else 'empty calendar ({}): read as unavailable, not as "no earnings date"'
+        except Exception as e:  # noqa: BLE001 - recorded, surfaced as DATA UNAVAILABLE
+            value, error = None, redact(f'{type(e).__name__}: {e}')[:300]
+        if error:
+            db.record_fetch('yfinance', endpoint, requested_at=requested_at, status=DATA_UNAVAILABLE, error=error)
+            problems.append(f'{t}: {error}')
+            continue
+        fetch = db.record_fetch('yfinance', endpoint, requested_at=requested_at, status='OK',
+                                raw=json.dumps(value, default=str, sort_keys=True))
+        stored += db.upsert_observations(fetch, [
+            {'entity': t, 'metric': 'earnings_date_reported', 'as_of_date': d,
+             'value_text': json.dumps({'earnings_date': d, 'source': 'Yahoo Finance via yfinance'}),
+             'published_at': None, 'published_at_basis': EARNINGS_BASIS} for d in earnings_dates(value)])
+    return _result('earnings_calendar', 'OK' if not problems else DATA_UNAVAILABLE, stored,
+                   '; '.join(problems) or None)
+
+
 # ---------------------------------------------------------------- orchestration
 
 def collect_all(db=None, tickers=None, today=None, history_days=400):
@@ -816,7 +863,8 @@ def collect_all(db=None, tickers=None, today=None, history_days=400):
             ('federal_register', lambda: collect_federal_register(db, today - timedelta(days=60))),
             ('gpr_index', lambda: collect_gpr(db, since)),
             ('gdelt_events', lambda: collect_gdelt(db, recent)),
-            ('options_snapshot', lambda: collect_options(db, tickers))]
+            ('options_snapshot', lambda: collect_options(db, tickers)),
+            ('earnings_calendar', lambda: collect_earnings_calendars(db, tickers))]
     results = []
     for name, job in jobs:
         try:

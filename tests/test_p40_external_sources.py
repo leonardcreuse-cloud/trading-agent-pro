@@ -147,6 +147,22 @@ def test_collect_bls_adds_the_current_month_once(monkeypatch):
     assert ex.collect_bls(db, today=date(2026, 10, 11))['stored'] == 0     # same schedule: nothing new
 
 
+def test_collect_earnings_calendars_snapshot(monkeypatch):
+    """Live yfinance answer of 2026-10-11 for NET (values copied); an empty answer is unavailable."""
+    import yfinance
+    answers = {'NET': {'Earnings Date': [date(2026, 10, 29)], 'Earnings High': 0.37, 'Earnings Low': 0.33541,
+                       'Earnings Average': 0.34308}, 'MP': {}}
+    monkeypatch.setattr(yfinance, 'Ticker', lambda t: type('T', (), {'calendar': answers[t]})())
+    db = Database()
+    res = ex.collect_earnings_calendars(db, ['NET', 'MP'])
+    assert res['status'] == DATA_UNAVAILABLE and res['stored'] == 1 and 'MP: empty calendar' in res['reason']
+    (row,) = db.events('NET', 'earnings_date_reported')
+    assert row['as_of_date'] == '2026-10-29'
+    fetch = db.latest_fetch('yfinance', 'yfinance.Ticker(NET).calendar')
+    assert ex.earnings_dates(json.loads(db.read_raw(fetch['fetch_id']))) == ['2026-10-29']
+    assert ex.collect_earnings_calendars(db, ['NET'])['stored'] == 0          # same snapshot: no new row
+
+
 def test_gdelt_aggregates_on_real_lines():
     agg = ex.gdelt_aggregates((FIX / 'gdelt_20261009_excerpt.tsv').read_text())
     g = agg['GDELT:global']
@@ -279,9 +295,11 @@ def test_collect_all_reports_every_source_without_raising(monkeypatch):
     monkeypatch.setattr(ex, 'requests', Refused())
     monkeypatch.setattr(ex, '_throttle', lambda url: None)
     monkeypatch.setattr(ex, 'collect_options', lambda db, t: ex._result('options_snapshot', DATA_UNAVAILABLE, 0, 'x'))
+    monkeypatch.setattr(ex, 'collect_earnings_calendars',
+                        lambda db, t: ex._result('earnings_calendar', DATA_UNAVAILABLE, 0, 'x'))
     results = ex.collect_all(db, tickers=['CRWD'], today=date(2026, 10, 11))
     assert [r['collector'] for r in results] == ['cftc_cot', 'finra_short_interest', 'cboe_put_call',
                                                  'fed_fomc_calendar', 'bls_schedules', 'bls_api', 'bea_nipa',
                                                  'eia_energy', 'federal_register', 'gpr_index', 'gdelt_events',
-                                                 'options_snapshot']
+                                                 'options_snapshot', 'earnings_calendar']
     assert all(r['status'] == DATA_UNAVAILABLE and r['stored'] == 0 for r in results)

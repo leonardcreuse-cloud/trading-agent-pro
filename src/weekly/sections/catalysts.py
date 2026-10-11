@@ -26,15 +26,26 @@ Macro (overall): FRED release calendar, rank 1, dates only (FRED gives no time o
   from the calendar known at T_c; changes against the calendar known at T_p are reported when both
   are stored.
   FOMC: release 326 (Summary of Economic Projections) gives the meetings WITH projections only (4 of
-  8 per year); the other meetings are DATA UNAVAILABLE (www.federalreserve.gov blocked; FRED release
-  101 lists every calendar day).
+  8 per year); every meeting comes from the Federal Reserve Board calendar below.
+
+Official calendars (overall, phase P4.0, pages stored by `python main.py collect`; never downloaded here)
+  FOMC meetings: Federal Reserve Board calendar page (rank 1). The schedule known at T_c is the page version
+  in force at T_c: the newest stored page whose "Last Update" date (end of day New York) is <= T_c. When
+  that page was retrieved at or after T_c the version was still current at T_c (fresh); otherwise its
+  freshness is judged by its retrieval date. Unscheduled meetings and notation votes are not schedule items.
+  BLS releases (Employment Situation, CPI, PPI, JOLTS, ECI, Real Earnings), with times: the BLS monthly
+  release calendars of the months of the horizon. BLS pages carry no version date relied on, so a month
+  counts as known at T_c only from a page RETRIEVED at or before T_c (freshness by retrieval date); a
+  page retrieved after the cutoff is listed for information only. A release absent from every horizon
+  month known at T_c is "no date in the horizon"; a horizon month without a stored page is DATA UNAVAILABLE.
 
 Company (each ticker of ctx.universe)
-  - next earnings date: yfinance Ticker(t).calendar (rank 2, unofficial) is tried once (logged); an
-    empty result ({}) is DATA UNAVAILABLE, never "no earnings date". In this environment Yahoo's
-    crumb hosts are blocked (HTTP 401) and api.nasdaq.com is blocked; issuer-announced dates in 8-K
-    exhibits are not parsed (NOT IMPLEMENTED). A calendar retrieved at G has no publication time:
-    even when not empty it is listed for information and never becomes a conclusion at T_c.
+  - next earnings date: the newest stored yfinance Ticker(t).calendar snapshot (rank 2, unofficial, possibly
+    an estimate) RETRIEVED at or before T_c (`collect` stores one daily; this section stores one per run) is
+    reported as known at T_c (kind 'aggregator', ESTIMATE: not an issuer announcement). The calendar is also
+    tried once at G (logged): with no publication time it is listed for information only. An empty result
+    ({}) is DATA UNAVAILABLE, never "no earnings date". Issuer-announced dates in 8-K exhibits are not parsed
+    (NOT IMPLEMENTED).
   - PATTERN row (kind 'interpretation', ESTIMATE): from the SEC submissions feed (ctx.filings), the
     periodic filing (10-Q / 10-K) that followed, one year earlier, the year-earlier counterpart of the
     latest periodic filing known at T_c, with the 8-K item 2.02 (results of operations) filed between
@@ -50,7 +61,9 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from ...common import DATA_UNAVAILABLE, redact, secret_env, to_utc_iso
+from ...common import DATA_UNAVAILABLE, end_of_us_trading_day_utc, redact, secret_env, to_utc_iso
+from ...external_sources import (BLS_MONTH_URL, BLS_RELEASES, EARNINGS_BASIS, FOMC_URL, earnings_dates,
+                                 parse_bls_month, parse_fomc)
 from ..core import LookAheadError, SectionResult, conclude, evidence, unavailable
 
 NAME = 'catalysts'
@@ -65,6 +78,8 @@ TIMEOUT = 30
 FRED_SOURCE, FRED_RANK = 'FRED', 1
 SEC_SOURCE, SEC_RANK = 'SEC EDGAR', 1
 YF_SOURCE, YF_RANK = 'yfinance', 2
+FED_SOURCE, FED_RANK = 'Federal Reserve Board', 1
+BLS_SOURCE, BLS_RANK = 'BLS', 1
 RELEASE_DATES_URL = 'https://api.stlouisfed.org/fred/release/dates'
 CALENDAR_CADENCE = 'daily'          # a schedule retrieved more than 7 days before the cutoff is stale
 
@@ -90,12 +105,12 @@ NO_SESSION_CALENDAR = ('future sessions are not observed (the session calendar i
                        'to s_0) and no exchange-calendar library is configured: holidays and early closes '
                        'in the horizon are unknown, so catalysts are given as calendar dates, never as '
                        'session numbers')
-FOMC_OTHER = ('www.federalreserve.gov is blocked by the proxy (CONNECT 403), tested 2026-10-07; FRED release '
-              '101 "FOMC Press Release" lists every calendar day and cannot identify meetings; FRED release '
-              '326 covers only the meetings with a Summary of Economic Projections (4 of 8 per year)')
-EARNINGS_SOURCES = ('Yahoo quoteSummary calendarEvents returns HTTP 401 (Invalid Crumb: fc.yahoo.com and '
-                    'guce.yahoo.com are blocked) and finance.yahoo.com / api.nasdaq.com are blocked (tested '
-                    '2026-10-07); issuer-announced dates in 8-K exhibits are not parsed (NOT IMPLEMENTED)')
+COLLECT_HINT = ('`python main.py collect` stores these pages; run it daily so that a report has pages from before '
+                'its cutoff')
+EARNINGS_SOURCES = ('no official earnings calendar is configured (Nasdaq\'s internal API is deliberately not used); '
+                    'issuer-announced dates in 8-K exhibits are not parsed (NOT IMPLEMENTED); `python main.py '
+                    'collect` stores a daily yfinance calendar snapshot so that a later report can cite one retrieved '
+                    'before its cutoff')
 CORPORATE_ACTIONS = ('dates of shareholder votes, merger closings and other pending corporate actions sit in '
                      'the text of S-4 / 425 / DEFM14A / DEF 14A documents, which are not parsed (NOT IMPLEMENTED)')
 
@@ -443,8 +458,209 @@ def _macro(ctx, res, http_get):
                                 'no FRED calendar of this release (covering the horizon) stored at or before the '
                                 f'previous cutoff {tm.previous_cutoff}: the schedule as known at T_p cannot be '
                                 'reconstructed'))
-    res.add(unavailable('overall', Q, 'FOMC meetings without a Summary of Economic Projections', FOMC_OTHER))
     return pit_any
+
+
+# ---------------------------------------------------------------- official calendars (FOMC, BLS)
+
+def _page_fetches(db, source, endpoint, until=None):
+    """Successful stored fetches of `endpoint` with a raw payload, newest first (retrieved <= until if given)."""
+    if not hasattr(db, 'connect') or not hasattr(db, 'read_raw'):
+        return []
+    sql = ("SELECT fetch_id, completed_at, raw_sha256 FROM source_fetches WHERE source=? AND endpoint=? "
+           "AND status='OK' AND raw_path IS NOT NULL")
+    args = [source, endpoint]
+    if until is not None:
+        sql += ' AND completed_at <= ?'
+        args.append(to_utc_iso(until))
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute(sql + ' ORDER BY completed_at DESC, fetch_id DESC', args)]
+
+
+def _fetch_ref(source, f):
+    return {'fetch_id': f['fetch_id'], 'source': source, 'retrieved_at': f['completed_at'],
+            'raw_sha256': f['raw_sha256']}
+
+
+def fomc_schedule(db, instant=None):
+    """
+    FOMC calendar in force at `instant` (None: the newest stored page): the newest stored page whose "Last
+    Update" date, end of day New York, is <= instant. {'meetings', 'last_update', 'published_at', 'fetch',
+    'confirmed'} or None; confirmed: retrieved at or after `instant` with that version (current at `instant`).
+    """
+    limit = to_utc_iso(instant) if instant else None
+    for f in _page_fetches(db, FED_SOURCE, FOMC_URL):
+        try:
+            last, meetings = parse_fomc(db.read_raw(f['fetch_id']))
+        except (RuntimeError, ValueError, TypeError, OSError):
+            continue
+        if last is None or not meetings:
+            continue
+        pub = end_of_us_trading_day_utc(last)
+        if limit and pub > limit:
+            continue
+        return {'meetings': [m for m in meetings if not m.get('unscheduled') and not m.get('notation_vote')],
+                'last_update': last.isoformat(), 'published_at': pub, 'fetch': _fetch_ref(FED_SOURCE, f),
+                'confirmed': bool(limit) and f['completed_at'] >= limit}
+    return None
+
+
+def bls_month_calendar(db, year, month, until=None):
+    """Newest stored BLS monthly calendar of year-month (retrieved <= until if given): {'rows', 'fetch'} or None."""
+    for f in _page_fetches(db, BLS_SOURCE, BLS_MONTH_URL.format(year, month), until):
+        try:
+            rows = parse_bls_month(db.read_raw(f['fetch_id']), year, month)
+        except (RuntimeError, ValueError, TypeError, OSError):
+            continue
+        if rows:
+            return {'rows': rows, 'fetch': _fetch_ref(BLS_SOURCE, f)}
+    return None
+
+
+def horizon_months(tm):
+    """(year, month) of every calendar month holding a day of the horizon."""
+    lo, hi = horizon(tm)
+    out, d = [], lo + timedelta(days=1)
+    while d <= hi:
+        if (d.year, d.month) not in out:
+            out.append((d.year, d.month))
+        d += timedelta(days=1)
+    return out
+
+
+def _meeting_in_horizon(tm, m):
+    return in_horizon(tm, m['start']) or in_horizon(tm, m['end'])
+
+
+def _meeting_text(m):
+    days = m['start'] if m['start'] == m['end'] else f"{m['start']} to {m['end']}"
+    return days + (' (with a Summary of Economic Projections)' if m.get('sep') else '')
+
+
+def _fomc(ctx, res, rows):
+    tm = ctx.tm
+    lo, hi = horizon(tm)
+    pit, latest = fomc_schedule(ctx.db, tm.cutoff), fomc_schedule(ctx.db)
+    g_info = None
+    if latest:
+        g_in = [m for m in latest['meetings'] if _meeting_in_horizon(tm, m)]
+        g_info = (f"{', '.join(_meeting_text(m) for m in g_in) or 'none'} (page Last Update {latest['last_update']}, "
+                  f"retrieved {latest['fetch']['retrieved_at']})")
+    if pit is None:
+        rows.append(['FOMC meeting', 'Federal Reserve Board (rank 1)', None, 'not on the calendar page', None,
+                     'not established', g_info, DATA_UNAVAILABLE])
+        reason = ('no Federal Reserve Board calendar page whose "Last Update" date is at or before the cutoff is '
+                  'stored' + (f" (newest stored page: Last Update {latest['last_update']}, after the cutoff)"
+                              if latest else '') + f'; {COLLECT_HINT}')
+        res.add(unavailable('overall', Q, 'FOMC meetings (Federal Reserve Board calendar) as known at the cutoff',
+                            reason))
+        return
+    fetch = pit['fetch']
+    fresh = True if pit['confirmed'] else _fresh(ctx, fetch['retrieved_at'], CALENDAR_CADENCE)
+    inside = [m for m in pit['meetings'] if _meeting_in_horizon(tm, m)]
+    nxt = next((m for m in sorted(pit['meetings'], key=lambda m: m['start']) if _d(m['start']) > hi), None)
+    item = evidence(tm, FED_SOURCE, FED_RANK,
+                    f"FOMC calendar, page Last Update {pit['last_update']}: "
+                    + ', '.join(_meeting_text(m) for m in pit['meetings'] if _d(m['end']) > lo)[:400],
+                    as_of=pit['last_update'], published_at=pit['published_at'], retrieved_at=fetch['retrieved_at'],
+                    fetch_id=fetch['fetch_id'], fresh=fresh,
+                    basis='page version in force at the cutoff: its "Last Update" date, end of day New York'
+                          + ('; retrieved at or after the cutoff with that version, so it was current at the cutoff'
+                             if pit['confirmed'] else '; retrieved before the cutoff'))
+    known_from = (f"page Last Update {pit['last_update']}, fetch {fetch['fetch_id']} retrieved {fetch['retrieved_at']}")
+    rows.append(['FOMC meeting', 'Federal Reserve Board (rank 1)',
+                 ', '.join(_meeting_text(m) for m in inside) or 'none', 'not on the calendar page',
+                 _meeting_text(nxt) if nxt else None, known_from, g_info,
+                 'SCHEDULED' if inside else 'no meeting in the horizon'])
+    for m in inside:
+        res.add(conclude('overall', Q, f'FOMC meeting SCHEDULED on {_meeting_text(m)} (Federal Reserve Board '
+                                       f"calendar, page version of {pit['last_update']}). A scheduled meeting is not a "
+                                       'forecast of its decision or of any market reaction.', [item], 'official_fact'))
+    if not inside:
+        if nxt:
+            res.add(conclude('overall', Q, f'No FOMC meeting in the horizon ({lo}, {hi}] on the Federal Reserve Board '
+                                           f"calendar (page version of {pit['last_update']}); next scheduled meeting "
+                                           f'{_meeting_text(nxt)}.', [item], 'official_fact'))
+        else:
+            res.add(unavailable('overall', Q, 'next FOMC meeting',
+                                f"the Federal Reserve Board calendar (page version of {pit['last_update']}) lists no "
+                                f'meeting after {hi}: an empty calendar is not read as "no meeting"'))
+
+
+def _bls(ctx, res, rows):
+    tm = ctx.tm
+    lo, hi = horizon(tm)
+    months = horizon_months(tm)
+    known = {ym: bls_month_calendar(ctx.db, *ym, until=tm.cutoff) for ym in months}
+    latest = {ym: bls_month_calendar(ctx.db, *ym) for ym in months}
+    missing = [f'{y}-{m:02d}' for (y, m), cal in known.items() if cal is None]
+    items = {ym: evidence(tm, BLS_SOURCE, BLS_RANK,
+                          f"BLS release calendar {ym[0]}-{ym[1]:02d} retrieved {cal['fetch']['retrieved_at']}",
+                          as_of=cal['fetch']['retrieved_at'][:10], retrieved_at=cal['fetch']['retrieved_at'],
+                          fetch_id=cal['fetch']['fetch_id'], fresh=_fresh(ctx, cal['fetch']['retrieved_at'],
+                                                                          CALENDAR_CADENCE),
+                          basis='monthly calendar page as stored (retrieved) at or before the cutoff; no version '
+                                'date relied on')
+             for ym, cal in known.items() if cal}
+    def listed(cals, name):
+        """[(row, month of the page it came from)] of `name` in the horizon; a release listed by two pages once."""
+        out = {}
+        for ym, cal in cals.items():
+            for r in (cal or {}).get('rows', []):
+                if r['release'] == name and in_horizon(tm, r['date']):
+                    out.setdefault((r['date'], r['time'], r['reference']), (r, ym))
+        return [out[k] for k in sorted(out)]
+
+    for code, name in BLS_RELEASES.items():
+        pit = [r for r, _ in listed(known, name)]
+        page_of = {r['date']: ym for r, ym in listed(known, name)}
+        g = [r for r, _ in listed(latest, name)]
+        g_info = ('; '.join(f"{r['date']} {r['time']} ({r['reference']})" for r in g) or 'none') \
+            if any(latest.values()) else None
+        status = ('SCHEDULED' if pit else 'no date in the horizon' if not missing else
+                  'PARTIAL (horizon month not stored)' if any(known.values()) else DATA_UNAVAILABLE)
+        rows.append([name, 'BLS (rank 1)',
+                     '; '.join(r['date'] for r in pit) or ('none' if not missing else None),
+                     '; '.join(f"{r['time']} ET" for r in pit) or None,
+                     '; '.join(r['reference'] for r in pit) or None,
+                     ', '.join(f"{y}-{m:02d} calendar fetch {cal['fetch']['fetch_id']} retrieved "
+                               f"{cal['fetch']['retrieved_at']}" for (y, m), cal in known.items() if cal)
+                     or 'not established: no calendar retrieved at or before the cutoff',
+                     g_info, status])
+        for r in pit:
+            ym = page_of[r['date']]
+            res.add(conclude('overall', Q, f"BLS {name} for {r['reference']}: SCHEDULED on {r['date']} at {r['time']} "
+                                           f"Eastern Time (BLS monthly release calendar retrieved "
+                                           f"{known[ym]['fetch']['retrieved_at']}, before the cutoff). A scheduled "
+                                           'release is not a forecast of its content or of any market reaction.',
+                             [items[ym]], 'official_fact'))
+        if not pit and not missing:
+            res.add(conclude('overall', Q, f'BLS {name}: no release in the horizon ({lo}, {hi}] on the BLS monthly '
+                                           f"release calendars of {', '.join(f'{y}-{m:02d}' for y, m in months)} "
+                                           'retrieved before the cutoff.', list(items.values()), 'official_fact'))
+    if missing:
+        res.add(unavailable('overall', Q, f"BLS release calendar for {', '.join(missing)} (dates and times) as known "
+                                          'at the cutoff',
+                            'no BLS monthly calendar page of that month retrieved at or before the cutoff is stored '
+                            '(BLS pages carry no version date relied on, so a page retrieved after the cutoff is '
+                            f'listed for information only); {COLLECT_HINT}'))
+
+
+def _official_calendars(ctx, res):
+    tm = ctx.tm
+    lo, hi = horizon(tm)
+    rows = []
+    _fomc(ctx, res, rows)
+    _bls(ctx, res, rows)
+    res.table(f'Official calendars — FOMC meetings and BLS releases, horizon ({lo}, {hi}]',
+              ['event', 'source', 'dates in horizon (as known at T_c)', 'time (as known at T_c)',
+               'reference period / next meeting', 'known at T_c from', 'as stored most recently (information only)',
+               'status at T_c'],
+              rows, question=Q,
+              note='FOMC: Federal Reserve Board calendar page, version in force at the cutoff ("Last Update" date). '
+                   'BLS: monthly release calendars (times are Eastern Time), admissible only when retrieved at or '
+                   'before the cutoff. For FOMC rows the fifth column is the next meeting after the horizon. Pages '
+                   'come from `python main.py collect` (this section downloads nothing).')
 
 
 # ---------------------------------------------------------------- company
@@ -514,14 +730,53 @@ def filing_pattern(tm, filings, truncated=None):
     return out
 
 
+def stored_earnings(ctx, ticker):
+    """
+    Newest stored yfinance calendar snapshot of `ticker` retrieved at or before the cutoff that lists a date
+    after s_0: {'dates', 'fetch'} or None.
+    """
+    lo = horizon(ctx.tm)[0]
+    for f in _page_fetches(ctx.db, YF_SOURCE, f'yfinance.Ticker({ticker}).calendar', until=ctx.tm.cutoff):
+        try:
+            dates = [d for d in earnings_dates(json.loads(ctx.db.read_raw(f['fetch_id']))) if _d(d) > lo]
+        except (RuntimeError, ValueError, TypeError, OSError):
+            continue
+        if dates:
+            return {'dates': dates, 'fetch': _fetch_ref(YF_SOURCE, f)}
+    return None
+
+
 def _company(ctx, res, t, calendar_fn):
     tm = ctx.tm
     lo, hi = horizon(tm)
     rows = []
-    # next earnings date
+    # next earnings date: a snapshot stored before the cutoff, then the calendar at G (information only)
+    snap = stored_earnings(ctx, t)
+    if snap:
+        fetch, nxt = snap['fetch'], snap['dates'][0]
+        inside = in_horizon(tm, nxt)
+        rows.append(['next earnings date (as known at T_c)', 'REPORTED', 'yfinance (rank 2, unofficial)',
+                     ', '.join(snap['dates']), f"snapshot fetch {fetch['fetch_id']} retrieved {fetch['retrieved_at']}, "
+                                               'before the cutoff; no publication time; may be an estimate'])
+        item = evidence(tm, YF_SOURCE, YF_RANK, f"yfinance calendar of {t}: Earnings Date {', '.join(snap['dates'])}",
+                        as_of=fetch['retrieved_at'][:10], retrieved_at=fetch['retrieved_at'],
+                        fetch_id=fetch['fetch_id'], fresh=_fresh(ctx, fetch['retrieved_at'], CALENDAR_CADENCE),
+                        basis=EARNINGS_BASIS)
+        res.add(conclude(t, Q, f"{t}: next earnings date reported by Yahoo Finance (yfinance, unofficial): {nxt}, "
+                               f"{'inside' if inside else 'outside'} the horizon ({lo}, {hi}] (snapshot retrieved "
+                               f"{fetch['retrieved_at']}, before the cutoff). It may be an estimate and is not an "
+                               'issuer announcement; no direction or impact is implied.',
+                         [item], 'aggregator', reason_codes=['ESTIMATE'],
+                         resolve='an issuer announcement of the date (8-K or press release)'))
     cal = _earnings_calendar(ctx, t, calendar_fn) if calendar_fn else {
         'status': DATA_UNAVAILABLE, 'value': None, 'fetch': None, 'reason': 'yfinance calendar not queried'}
-    if cal['status'] == 'OK':
+    if snap:
+        rows.append(['next earnings date (retrieved at G, information only)',
+                     'REPORTED' if cal['status'] == 'OK' else DATA_UNAVAILABLE, 'yfinance (rank 2, unofficial)',
+                     ', '.join(_calendar_dates(cal['value'])) if cal['status'] == 'OK' else None,
+                     f"retrieved at G ({(cal['fetch'] or {}).get('retrieved_at')})" if cal['status'] == 'OK'
+                     else cal['reason']])
+    elif cal['status'] == 'OK':
         dates = _calendar_dates(cal['value'])
         rows.append(['next earnings date', 'REPORTED (not admissible at T_c)', 'yfinance (rank 2, unofficial)',
                      ', '.join(dates) or json.dumps(cal['value'], default=str)[:200],
@@ -613,6 +868,7 @@ def build(ctx, http_get=None, calendar_fn=yfinance_calendar, tickers=None):
     res.add(unavailable('overall', Q, f'exchange session calendar for the {HORIZON_SESSIONS} sessions after s_0',
                         NO_SESSION_CALENDAR))
     _macro(ctx, res, http_get)
+    _official_calendars(ctx, res)
     for t in (tickers or ctx.universe):
         _company(ctx, res, t, calendar_fn)
     res.add(unavailable('overall', Q, 'pending corporate actions (shareholder votes, merger closings, offerings)',

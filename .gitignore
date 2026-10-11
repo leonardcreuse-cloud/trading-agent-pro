@@ -9,6 +9,7 @@ reports/*.json
 # generated, archived run outputs (weekly reports, analysis / walk-forward history)
 reports/weekly/
 reports/history/
+reports/research_stage*.md
 .pytest_cache/
 data/
 

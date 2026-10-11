@@ -943,7 +943,7 @@ def _target_range(ctx, res, data):
             resolve = {'PARTIAL_COVERAGE': f'the DFEDTARU / DFEDTARL observations for effective dates after {d_cov} '
                                            '(published by FRED after T_c) or the FOMC statement on '
                                            'federalreserve.gov (not collected)'}
-    statement += ' ' + _fomc_in_window(ctx, items)
+    statement = statement.rstrip() + ' ' + _fomc_in_window(ctx, items)
     statement += _coverage_text(u if not u['covered'] else l)
     codes = _coverage(u) + _coverage(l) + (['PARTIAL_COVERAGE'] if not changed and blind else [])
     record = _official(3, statement, items, codes, resolve)

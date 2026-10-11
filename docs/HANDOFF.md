@@ -27,6 +27,10 @@
   prices, weekly stocks, production, refinery utilisation, retail fuel prices, gas storage), run by
   `python main.py collect`. Tested offline on real payload excerpts and live (see the live run above).
 
+- P4.0 phase 2: the new data are wired into the weekly report (sections `catalysts`, new `positioning`,
+  `geopolitics`, `agencies`; SP500 cross-check fixed; stale "blocked" items removed). Live report for the week
+  ending 2026-10-09: `reports/weekly/2026-10-09/weekly_v3.*` (v2 was the same run before a cosmetic fix).
+
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
 validation status of the signal; `reports/weekly/2026-10-09/` is the first weekly report.
@@ -60,13 +64,12 @@ answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA ke
 2. Done: `python main.py collect` run live, parsers and storage fixed (see above). Run `collect` daily: BLS and
    EIA values carry no publication date (retrieval time), so the weekly report only sees a release after a
    collect run that followed it.
-3. P4.0 phase 2 — wire into the weekly report: a `positioning` section (COT, Cboe put/call, FINRA short
-   interest, option IV), FOMC + BLS calendars and earnings dates in `catalysts`, GDP + commodities (FRED)
-   and Federal Register / GPR / GDELT in `macro` Q4; fix the FRED SP500 cross-check (series not in
-   ALFRED: request without realtime parameters); remove the now-resolved DATA UNAVAILABLE items (macro.py
-   STATIC_UNAVAILABLE still says bls.gov / bea.gov / federalreserve.gov / GPR / GDELT / Federal Register are
-   blocked). Use the BLS / BEA / EIA series (entities `BLS:`, `BEA:`, `EIA:`) in macro and commodities; BLS
-   October 2025 does not exist (2025 shutdown), so a 12-month change that needs it is DATA UNAVAILABLE.
+3. Done (P4.0 phase 2): positioning, geopolitics and agencies sections; FOMC / BLS calendars and earnings
+   snapshots in catalysts; SP500 cross-check; stale items removed. Open points: run `python main.py collect`
+   DAILY (BLS, EIA, option and earnings snapshots, BLS calendars and FRED release calendars only count once
+   retrieved before a cutoff; most new DATA UNAVAILABLE items of the 2026-10-09 report come from that); GDP and
+   commodities are read from BEA / EIA (agencies section), not added to the FRED macro tables; BLS October 2025
+   does not exist (2025 shutdown), so a 12-month change that needs it is DATA UNAVAILABLE.
 4. Audit corrections: SEC acceptanceDateTime labels changed on 2026-10-10 (+4/5 h for ~16 % of
    filings) -> single rule, de-duplicate stored facts, audit back to 0 FAIL; refresh calendars daily;
    Form 4 matching; valuation / cash flow / margins in the report.

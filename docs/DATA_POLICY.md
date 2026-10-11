@@ -81,6 +81,16 @@ When in doubt, the later plausible time is used:
 | BLS API v2 (P4.1) | Unknown (`NULL`, retrieval time): the API returns the current revision without a date and the schedule pages list future releases only |
 | BEA NIPA (P4.1) | Table note `LastRevised` date, end of day New York; a value equal to the latest stored version keeps that version's date |
 | EIA API v2 (P4.1) | Unknown (`NULL`, retrieval time): the API gives no publication date |
+| FRED series not kept by ALFRED (SP500) | Requested without real-time parameters; SP500 dated at the end of the business day after the session, New York (FRED posts the close the next day); other such series: retrieval time |
+| CFTC COT (P4.0) | Friday 15:30 New York after the Tuesday report date; next business day when a federal holiday falls Wednesday-Friday |
+| FINRA short interest (P4.0) | 7 business days after the settlement date, end of day New York; a revised row: retrieval time |
+| Cboe put/call (P4.0) | End of day New York of the session |
+| Federal Reserve Board FOMC page (P4.0) | End of the day printed as "Last Update" (page version) |
+| BLS release calendars (P4.0) | Retrieval time (no version date relied on) |
+| Federal Register (P4.0) | Publication date 06:00 New York; a document seen before its publication date: retrieval time |
+| GPR index (P4.0) | HTTP Last-Modified of the file version |
+| GDELT (P4.0) | 12:00 UTC the day after the file date |
+| yfinance option and earnings-calendar snapshots (P4.0) | Retrieval time (no publication time) |
 
 A publication time later than retrieval is clamped to retrieval. A collected value equal to the latest stored
 version keeps that version's `published_at` (`external_sources.keep_stored_publication`): a moved estimate
@@ -89,12 +99,12 @@ Binary raw payloads (zip, xls) are stored byte for byte. Revised values are stor
 versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
 (`data/backups/`) and refilled from the sources.
 
-**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, yfinance 2, NewsAPI 3, S&P 500 list (datasets/s-and-p-500-companies, third-party compilation) 3.
+**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, CFTC 1, FINRA 1, Cboe 1 (Cboe-listed volume only), Federal Reserve Board 1, Federal Register 1, yfinance 2, GPR index 2 (academic, newspaper-based), NewsAPI 3, GDELT 3 (automated coding of news), S&P 500 list (datasets/s-and-p-500-companies, third-party compilation) 3.
 BLS, BEA and EIA (keyed APIs, `src/agency_apis.py`) are rank 1; their values are stored as published, entity
 `BLS:<series id>`, `BEA:<series code>`, `EIA:<series>`, metric `value`. A value the agency marks unavailable
 (e.g. BLS `-` for October 2025, "lapse in appropriations") is not stored.
 **Freshness**: `FRESH` if the age of `as_of_date` (publication date for filings) is within the cadence (weekly series: 14 days)
-limit: market sessions 5 days, daily series 7, monthly series 80, 10-K/10-Q 120, news 7.
+limit: market sessions 5 days, daily series 7, short interest (semi-monthly) 30, monthly series 80, 10-K/10-Q 120, news 7.
 
 ## SEC financials and insider activity (P0.3)
 
@@ -139,6 +149,10 @@ heuristics, never fitted, and every crossing carries the `HEURISTIC_THRESHOLD` r
 | Historical vintages | an item "as known at T_p" has its freshness evaluated at T_p; a FRED revision is a publication event dated by its vintage date (cadence `event`, 14 days) |
 | End-of-day series | for daily end-of-day FRED series, a version whose vintage date is earlier than its own observation date is not used, and snapshots stop at s_0 (T_c) and s_-5 (T_p) |
 | Target range | "no change" covers effective dates after d_p up to the last date known at T_c; FRED dates changes by their effective date, so a decision announced on s_0 is not ruled out (`PARTIAL_COVERAGE`) |
+| Positioning (P4.0) | CFTC net positions, Cboe put/call weekly means, FINRA short interest: "large" when \|change\| > 1 sample sd of past changes between consecutive observations known at T_p, at least 26 changes; otherwise not assessed (`HEURISTIC_THRESHOLD`, interpretation) |
+| Official calendars (P4.0) | FOMC: the Federal Reserve Board page version in force at the cutoff; BLS: monthly calendars retrieved at or before the cutoff (later pages are information only); next earnings date: newest yfinance snapshot retrieved before the cutoff (aggregator, `ESTIMATE`) |
+| Federal Register (P4.0) | documents published in the window are official facts; "no document" only when a search retrieved after the cutoff covers the window in one page of results, else `PARTIAL_COVERAGE` |
+| Agency data (P4.1) | a period is "new" only when the series was already collected before T_p; for BLS and EIA (no publication time) it was first retrieved in the window, which does not establish its release date |
 | Geopolitical news | pre-declared topics `geo-topics-v1-2026-10-07`: sanctions, export controls, tariffs, armed conflict, elections, government shutdown; syndicated copies count once (canonical URL, normalized title, token-set Jaccard >= 0.6); news is always `UNCERTAIN` (aggregator) |
 
 **Synthetic data**: synthetic values exist only inside `tests/` with the isolated data directory of

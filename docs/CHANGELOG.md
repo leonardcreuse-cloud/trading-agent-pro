@@ -1,5 +1,28 @@
 # Changelog
 
+## P4.0 phase 2 — New data wired into the weekly report
+
+- Catalysts (Q9): FOMC meetings from the Federal Reserve Board calendar (page version in force at the
+  cutoff); BLS releases with times from the monthly calendars retrieved before the cutoff; next earnings
+  date from the newest yfinance snapshot retrieved before the cutoff (aggregator, ESTIMATE). `collect`
+  now stores a daily earnings-calendar snapshot.
+- New section `positioning` (Q1, Q8): CFTC net positions by trader group, Cboe put/call weekly means,
+  FINRA short interest per company, option implied volatility from snapshots retrieved before the
+  cutoff; "large" = beyond 1 sd of past changes (heuristic, interpretation).
+- New section `geopolitics` (Q4): Federal Register documents of OFAC, BIS, USTR and presidential
+  documents published in the window (official facts; "no document" only with a covering search
+  retrieved after the cutoff), GPR index and GDELT conflict counts (aggregators).
+- New section `agencies` (Q3, Q5): BLS, BEA and EIA series read directly; a period is new only when the
+  series was collected before T_p, and a BLS / EIA first retrieval never dates a release.
+- Market (Q1): the SPY vs FRED SP500 cross-check works again (SP500 is not in ALFRED: requested without
+  real-time parameters, dated the business day after the session).
+- Removed the "host blocked by the proxy" items (FOMC calendar, GPR, GDELT, Federal Register, release
+  times, implied volatility, short interest); the target-range statement cites the FOMC calendar.
+- Live report for the week ending 2026-10-09 (v2): 71 strongly supported (61 in v1), 143 uncertain, 45
+  data unavailable; 15 items of v1 resolved. The new unavailable items come from this session's fresh
+  database (everything retrieved after the cutoff) and resolve with a daily `collect`.
+- Tests 436 → 455.
+
 ## P4.0 — Live collection (`python main.py collect`, 2026-10-11)
 
 - First live run of the 12 collectors into the project database: all OK, 7,553 values (CFTC, FINRA, Cboe,

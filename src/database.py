@@ -48,6 +48,16 @@ SOURCES = {
     'NewsAPI': {'rank': 3, 'kind': 'news aggregator (not a primary source)'},
     'S&P 500 list (datasets/s-and-p-500-companies)': {
         'rank': 3, 'kind': 'third-party compiled list of current S&P 500 members (GitHub)'},
+    # P4.0 external sources (src/external_sources.py)
+    'CFTC': {'rank': 1, 'kind': 'official statistics (U.S. Commodity Futures Trading Commission, COT)'},
+    'FINRA': {'rank': 1, 'kind': 'self-regulatory organisation data (FINRA equity short interest)'},
+    'Cboe': {'rank': 1, 'kind': 'exchange operator statistics (Cboe-listed volume only)'},
+    'Federal Reserve Board': {'rank': 1, 'kind': 'official central bank publication (FOMC calendar)'},
+    'BLS': {'rank': 1, 'kind': 'official statistics agency (U.S. Bureau of Labor Statistics)'},
+    'Federal Register': {'rank': 1, 'kind': 'official journal of the U.S. federal government'},
+    'GPR index (Caldara-Iacoviello)': {
+        'rank': 2, 'kind': 'academic index built from newspaper text (not a record of events)'},
+    'GDELT': {'rank': 3, 'kind': 'automated coding of news reports (not a record of events)'},
 }
 
 # Maximum age (days) of as_of_date for a value to count as FRESH, per update cadence.

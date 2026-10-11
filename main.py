@@ -57,6 +57,9 @@ def main():
             study.prefetch_insider()
         else:
             study.run(rebuild='--rebuild' in sys.argv)
+    elif command == 'collect':
+        from src.external_sources import collect_all, print_results
+        print_results(collect_all())
     elif command == 'audit':
         from src.pipeline_audit import PipelineAudit
         report = PipelineAudit().run([t.upper() for t in sys.argv[2:]] or None)
@@ -75,6 +78,8 @@ def print_menu():
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
     print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] - Predictive-edge study")
     print("  python main.py weekly [--cutoff ISO] - Weekly analyst report (source-verified)")
+    print("  python main.py collect   - Download external sources (CFTC, FINRA, Cboe, Fed, BLS,")
+    print("                              Federal Register, GPR, GDELT, options); run it daily")
     print("  python main.py status    - Show configuration status")
 
 

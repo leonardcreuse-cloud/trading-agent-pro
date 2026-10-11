@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / 'scheduler_config.json'
 
 
-SECRET_ENV_VARS = ('FRED_API_KEY', 'NEWSAPI_KEY')
+SECRET_ENV_VARS = ('FRED_API_KEY', 'NEWSAPI_KEY', 'BLS_API_KEY', 'BEA_API_KEY', 'EIA_API_KEY')
 REDACTED = '***REDACTED***'
 _SECRET_PARAM_RE = re.compile(r'((?:api_?key|apikey|token|access_token)=)[^&\s\'"]+', re.IGNORECASE)
 

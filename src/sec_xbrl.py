@@ -36,6 +36,15 @@ Definitions (documented, not calibrated):
 - Debt / equity at the latest balance-sheet date where both debt and equity are reported
   (some filers tag debt only in the 10-K), at most MAX_BALANCE_AGE_DAYS before the latest
   equity date; unavailable when equity <= 0 (ratio not meaningful).
+
+P4.2 profitability, cash flow and dilution (same period end E as revenue TTM, one tag per item, TTM by the
+same rule; a missing item is None, never 0):
+- gross profit: GrossProfit, else revenue TTM - cost of revenue (COST_OF_REVENUE_TAGS, derived);
+- operating income: OperatingIncomeLoss; net income: NetIncomeLoss (attributable to the parent);
+- operating cash flow: NetCashProvidedByUsedInOperatingActivities; capital expenditure: CAPEX_TAGS;
+  free cash flow = operating cash flow - capital expenditure (both required);
+- margins = item / revenue TTM; diluted shares: WeightedAverageNumberOfDilutedSharesOutstanding of the
+  3-month (else 12-month) period ending E, vs the same period one year earlier (dilution).
 """
 
 from datetime import date, timedelta
@@ -65,7 +74,16 @@ DEBT_DEFINITIONS = (
 )
 DEBT_TAGS = tuple(dict.fromkeys([t for d in DEBT_DEFINITIONS for t in d[1] + d[2]] + list(SHORT_TERM_TAGS)))
 INSTANT_TAGS = EQUITY_TAGS + DEBT_TAGS
-DURATION_TAGS = REVENUE_TAGS
+GROSS_PROFIT_TAGS = ('GrossProfit',)
+COST_OF_REVENUE_TAGS = ('CostOfRevenue', 'CostOfGoodsAndServicesSold')
+OPERATING_INCOME_TAGS = ('OperatingIncomeLoss',)
+NET_INCOME_TAGS = ('NetIncomeLoss',)
+OPERATING_CASH_FLOW_TAGS = ('NetCashProvidedByUsedInOperatingActivities',)
+CAPEX_TAGS = ('PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets')
+PROFIT_TAGS = (GROSS_PROFIT_TAGS + COST_OF_REVENUE_TAGS + OPERATING_INCOME_TAGS + NET_INCOME_TAGS
+               + OPERATING_CASH_FLOW_TAGS + CAPEX_TAGS)
+DILUTED_SHARES_TAGS = ('WeightedAverageNumberOfDilutedSharesOutstanding',)      # unit 'shares'
+DURATION_TAGS = REVENUE_TAGS + PROFIT_TAGS
 PERIODIC_FORMS = ('10-K', '10-Q', '10-K/A', '10-Q/A', '10-KT', '10-QT')
 DURATION_MONTHS = (3, 6, 9, 12)
 DATE_TOLERANCE_DAYS = 10     # 52/53-week fiscal years shift period ends by a few days

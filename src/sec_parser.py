@@ -53,7 +53,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -61,9 +61,10 @@ import requests
 from .common import (end_of_us_trading_day_utc, redact, to_utc_iso, unavailable, utc_now_iso,
                      DATA_UNAVAILABLE)
 from .database import Database
-from .sec_xbrl import (DEBT_TAGS, DURATION_MONTHS, EQUITY_TAGS, MAX_BALANCE_AGE_DAYS, REVENUE_TAGS,
-                       balance_sheet,
-                       facts_to_observations, latest_ttm)
+from .sec_xbrl import (CAPEX_TAGS, COST_OF_REVENUE_TAGS, DEBT_TAGS, DILUTED_SHARES_TAGS, DURATION_MONTHS,
+                       EQUITY_TAGS, GROSS_PROFIT_TAGS, MAX_BALANCE_AGE_DAYS, NET_INCOME_TAGS,
+                       OPERATING_CASH_FLOW_TAGS, OPERATING_INCOME_TAGS, REVENUE_TAGS, _near, balance_sheet,
+                       facts_to_observations, latest_ttm, ttm_at)
 
 SEC_SOURCE = 'SEC EDGAR'
 PERIODIC_FORMS = ('10-K', '10-Q')
@@ -431,7 +432,10 @@ class SECParser:
         acceptance = {f['accession_number']: (f['published_at'], f['published_at_basis'])
                       for f in (filings or {}).get('filings', [])
                       if f['accession_number'] and f['published_at']}
-        self.db.upsert_observations(fetch, facts_to_observations(ticker, data, acceptance))
+        rows = facts_to_observations(ticker, data, acceptance)
+        rows += facts_to_observations(ticker, data, acceptance, instant_tags=(), duration_tags=DILUTED_SHARES_TAGS,
+                                      unit='shares')
+        self.db.upsert_observations(fetch, rows)
         self._facts_fetch[ticker] = fetch
         return fetch
 
@@ -439,6 +443,75 @@ class SECParser:
         with self.db.connect() as conn:
             return conn.execute("SELECT 1 FROM observations WHERE source=? AND entity=? AND metric "
                                 "LIKE 'xbrl:%' LIMIT 1", (SEC_SOURCE, ticker)).fetchone() is not None
+
+    def _durations(self, ticker, tag, known_at):
+        return {m: dict(self.db.series(ticker, f'xbrl:{tag}:{m}M', known_at=known_at, source=SEC_SOURCE))
+                for m in DURATION_MONTHS}
+
+    def _flow_ttm(self, ticker, tags, end, known_at):
+        """TTM of the first tag of `tags` computable at period end `end`: {'tag', 'value', 'method', 'inputs'}."""
+        for tag in tags:
+            ttm = ttm_at(self._durations(ticker, tag, known_at), end)
+            if ttm:
+                return dict(ttm, tag=tag)
+        return None
+
+    def profitability(self, ticker, end, revenue, known_at):
+        """Margins, cash flow and diluted shares at revenue period end `end` (see sec_xbrl docstring)."""
+        out = {'profitability_period_end': None, 'profitability_tags': None, 'profitability_published_at': None,
+               'gross_profit_ttm': None, 'gross_profit_method': None, 'gross_margin_pct': None,
+               'operating_income_ttm': None, 'operating_margin_pct': None, 'net_income_ttm': None,
+               'net_margin_pct': None, 'operating_cash_flow_ttm': None, 'capex_ttm': None,
+               'free_cash_flow_ttm': None, 'fcf_margin_pct': None, 'diluted_shares': None,
+               'diluted_shares_prior_year': None, 'diluted_shares_change_pct': None,
+               'diluted_shares_period_end': None, 'diluted_shares_published_at': None}
+        if not end or not revenue:
+            return out
+        gross = self._flow_ttm(ticker, GROSS_PROFIT_TAGS, end, known_at)
+        if gross is None:
+            cost = self._flow_ttm(ticker, COST_OF_REVENUE_TAGS, end, known_at)
+            if cost:
+                gross = dict(cost, value=revenue - cost['value'], method=f"revenue TTM - {cost['tag']} TTM (derived)")
+        items = {'gross': gross, 'operating': self._flow_ttm(ticker, OPERATING_INCOME_TAGS, end, known_at),
+                 'net': self._flow_ttm(ticker, NET_INCOME_TAGS, end, known_at),
+                 'ocf': self._flow_ttm(ticker, OPERATING_CASH_FLOW_TAGS, end, known_at),
+                 'capex': self._flow_ttm(ticker, CAPEX_TAGS, end, known_at)}
+        found = {k: v for k, v in items.items() if v}
+        if found:
+            out['profitability_period_end'] = end
+            out['profitability_tags'] = sorted({v['tag'] for v in found.values()})
+            out['profitability_published_at'] = max((r['published_at'] for v in found.values()
+                                                      for r in v['inputs'] if r.get('published_at')), default=None)
+
+        def pct(v):
+            return round(v / revenue * 100, 2) if v is not None and revenue else None
+        if gross:
+            out.update(gross_profit_ttm=gross['value'], gross_profit_method=gross.get('method'),
+                       gross_margin_pct=pct(gross['value']))
+        if items['operating']:
+            out.update(operating_income_ttm=items['operating']['value'],
+                       operating_margin_pct=pct(items['operating']['value']))
+        if items['net']:
+            out.update(net_income_ttm=items['net']['value'], net_margin_pct=pct(items['net']['value']))
+        if items['ocf']:
+            out['operating_cash_flow_ttm'] = items['ocf']['value']
+        if items['capex']:
+            out['capex_ttm'] = items['capex']['value']
+        if items['ocf'] and items['capex']:
+            fcf = items['ocf']['value'] - items['capex']['value']
+            out.update(free_cash_flow_ttm=fcf, fcf_margin_pct=pct(fcf))
+        shares = self._durations(ticker, DILUTED_SHARES_TAGS[0], known_at)
+        for months in (3, 12):
+            row = shares.get(months, {}).get(end)
+            if row:
+                prior = _near(shares.get(months, {}), date.fromisoformat(end) - timedelta(days=365))
+                out.update(diluted_shares=row['value'], diluted_shares_period_end=end,
+                           diluted_shares_published_at=row.get('published_at'))
+                if prior and prior[1]['value']:
+                    out.update(diluted_shares_prior_year=prior[1]['value'],
+                               diluted_shares_change_pct=round((row['value'] / prior[1]['value'] - 1) * 100, 2))
+                break
+        return out
 
     def _instants(self, ticker, tags, known_at):
         return {tag: dict(self.db.series(ticker, f'xbrl:{tag}', known_at=known_at,
@@ -513,6 +586,8 @@ class SECParser:
             'debt_includes_finance_leases': debt['includes_finance_leases'] if debt else None,
             'debt_to_equity': de_ratio,
             'revenue_published_at': latest_pub,
+            **self.profitability(ticker, revenue['current']['end'] if revenue else None,
+                                 revenue['current']['value'] if revenue else None, known),
             'fetch': fetch,
             'reason': '; '.join(reasons) or None,
         }

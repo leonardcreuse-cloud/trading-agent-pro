@@ -124,6 +124,10 @@ REVENUE_KEYS = ('revenue', 'revenue_period_end', 'revenue_growth_pct', 'revenue_
                 'revenue_tag', 'revenue_method')
 BALANCE_KEYS = ('debt', 'debt_definition', 'debt_tags', 'equity', 'equity_tag', 'debt_to_equity',
                 'balance_sheet_date', 'latest_equity_date', 'debt_includes_finance_leases')
+PROFIT_KEYS = ('profitability_period_end', 'gross_profit_ttm', 'gross_margin_pct', 'gross_profit_method',
+               'operating_income_ttm', 'operating_margin_pct', 'net_income_ttm', 'net_margin_pct',
+               'operating_cash_flow_ttm', 'capex_ttm', 'free_cash_flow_ttm', 'fcf_margin_pct', 'profitability_tags')
+SHARE_KEYS = ('diluted_shares', 'diluted_shares_prior_year', 'diluted_shares_change_pct', 'diluted_shares_period_end')
 TABLE_FIELDS = (   # (key, label, kind)
     ('revenue', 'revenue TTM (USD m)', 'usd'),
     ('revenue_period_end', 'revenue TTM period end', 'date'),
@@ -140,6 +144,18 @@ TABLE_FIELDS = (   # (key, label, kind)
     ('debt_to_equity', 'debt / equity', 'ratio'),
     ('balance_sheet_date', 'balance sheet date', 'date'),
     ('latest_equity_date', 'latest equity date', 'date'),
+    ('profitability_period_end', 'profitability / cash flow TTM period end', 'date'),
+    ('gross_margin_pct', 'gross margin TTM (%)', 'pct'),
+    ('gross_profit_method', 'gross profit method', 'text'),
+    ('operating_margin_pct', 'operating margin TTM (%)', 'pct'),
+    ('net_margin_pct', 'net margin TTM (%)', 'pct'),
+    ('operating_cash_flow_ttm', 'operating cash flow TTM (USD m)', 'usd'),
+    ('capex_ttm', 'capital expenditure TTM (USD m)', 'usd'),
+    ('free_cash_flow_ttm', 'free cash flow TTM (USD m)', 'usd'),
+    ('fcf_margin_pct', 'free cash flow margin TTM (%)', 'pct'),
+    ('profitability_tags', 'profitability / cash flow XBRL tags', 'text'),
+    ('diluted_shares', 'diluted weighted shares, latest period (m)', 'usd'),
+    ('diluted_shares_change_pct', 'diluted shares vs one year earlier (%)', 'pct'),
 )
 CORE_FIELDS = (('revenue', 'revenue TTM'), ('revenue_growth_pct', 'revenue growth'),
                ('debt', 'debt'), ('equity', 'stockholders equity'),
@@ -738,6 +754,88 @@ def _describe_balance(F):
     return f"{debt}, {equity}, {ratio} at balance-sheet date {F['balance_sheet_date']}"
 
 
+def _describe_profit(F):
+    if not F.get('profitability_period_end'):
+        return 'profitability and cash flow not computable'
+
+    def margin(key, label):
+        return f'{label} {F[key]} %' if F.get(key) is not None else f'{label} not reported'
+    fcf = (f"free cash flow {_usd(F['free_cash_flow_ttm'])}" if F.get('free_cash_flow_ttm') is not None
+           else 'free cash flow not computable')
+    return (f"TTM to {F['profitability_period_end']}: " + ', '.join(
+        [margin('gross_margin_pct', 'gross margin'), margin('operating_margin_pct', 'operating margin'),
+         margin('net_margin_pct', 'net margin'), fcf]))
+
+
+def _describe_shares(F):
+    if F.get('diluted_shares') is None:
+        return 'diluted share count not reported'
+    change = (f", {F['diluted_shares_change_pct']:+.2f} % vs one year earlier"
+              if F.get('diluted_shares_change_pct') is not None else ', no count one year earlier')
+    return (f"diluted weighted shares {F['diluted_shares'] / 1e6:,.1f} M for the period ending "
+            f"{F.get('diluted_shares_period_end')}{change}")
+
+
+def _multiples(price, F):
+    """{'market_value', 'ps', 'pe', 'pfcf'} from a close and fundamentals (None where not meaningful)."""
+    shares = F.get('diluted_shares')
+    if price is None or not shares:
+        return None
+    mv = price * shares
+
+    def ratio(den):
+        return round(mv / den, 1) if den is not None and den > 0 else None
+    return {'market_value': mv, 'ps': ratio(F.get('revenue')), 'pe': ratio(F.get('net_income_ttm')),
+            'pfcf': ratio(F.get('free_cash_flow_ttm'))}
+
+
+def _valuation(ctx, res, t, F_p, F_c, sec_item):
+    """Derived multiples at the close of s_-5 (T_p view) and s_0 (T_c view): market_fact + ESTIMATE."""
+    from .market import WEEK, prices_aligned, price_evidence, value
+    tm = ctx.tm
+    if not hasattr(ctx, 'prices'):
+        res.add(unavailable(t, 2, 'valuation multiples', 'no price accessor in this context'))
+        return
+    px = prices_aligned(ctx, t)
+    if px.get('status') != 'OK':
+        res.add(unavailable(t, 2, 'valuation multiples', f"prices unavailable: {px.get('reason')}"))
+        return
+    close_c, close_p = value(px['frame'], 'close_raw', -1), value(px['frame'], 'close_raw', -1 - WEEK)
+    m_c, m_p = _multiples(close_c, F_c), _multiples(close_p, F_p)
+    if not m_c:
+        res.add(unavailable(t, 2, 'valuation multiples', 'no close at s_0 or no diluted share count known at T_c'))
+        return
+
+    def x(v):
+        return f'{v:.1f}x' if v is not None else 'n/m'
+
+    def cell(m, key):
+        if not m:
+            return None
+        return _shown('usd', m[key]) if key == 'market_value' else x(m[key])
+    rows = [[label, cell(m_p, key), cell(m_c, key)]
+            for key, label in (('market_value', 'market value (USD m, close x diluted weighted shares)'),
+                               ('ps', 'price / sales TTM'), ('pe', 'price / earnings TTM'),
+                               ('pfcf', 'price / free cash flow TTM'))]
+    res.table(f'{t}: valuation multiples (derived, approximate)', (
+        'measure', f'close of {tm.previous_week[-1]} with fundamentals known at T_p',
+        f'close of {tm.s0} with fundamentals known at T_c'), rows, scope=t, question=2,
+        note='Market value = unadjusted close (yfinance, rank 2) x diluted weighted-average shares of the latest '
+             'reported period (an approximation of shares outstanding; cash and debt are ignored). n/m: the '
+             'denominator is not positive or not available. Multiples are descriptive: no "cheap" or "expensive" '
+             'judgement is made.')
+    price_item = price_evidence(ctx, t, px, f'close {close_c} on {tm.s0}', as_of=tm.s0)
+    res.add(conclude(t, 2, f"{t}: derived valuation at the close of {tm.s0}: market value about "
+                           f"{_usd(m_c['market_value'])} (close x diluted weighted shares of the period ending "
+                           f"{F_c.get('diluted_shares_period_end')}), price / sales {x(m_c['ps'])}, price / earnings "
+                           f"{x(m_c['pe'])}, price / free cash flow {x(m_c['pfcf'])}"
+                           + (f"; at the close of {tm.previous_week[-1]} with fundamentals known at T_p: price / sales "
+                              f"{x(m_p['ps'])}, price / earnings {x(m_p['pe'])}, price / free cash flow "
+                              f"{x(m_p['pfcf'])}" if m_p else '') + '. Descriptive only, no valuation judgement.',
+                     [price_item] + ([sec_item] if sec_item else []), 'market_fact', reason_codes=['ESTIMATE'],
+                     resolve='a second price source and the shares outstanding of the cover page'))
+
+
 def _delta(kind, p, c):
     if p is None or c is None:
         return None
@@ -817,6 +915,10 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
     pubs = {
         ('revenue', 'T_p'): to_utc_iso(F_p.get('revenue_published_at')),
         ('revenue', 'T_c'): to_utc_iso(F_c.get('revenue_published_at')),
+        ('profit', 'T_p'): to_utc_iso(F_p.get('profitability_published_at')),
+        ('profit', 'T_c'): to_utc_iso(F_c.get('profitability_published_at')),
+        ('shares', 'T_p'): to_utc_iso(F_p.get('diluted_shares_published_at')),
+        ('shares', 'T_c'): to_utc_iso(F_c.get('diluted_shares_published_at')),
         ('balance', 'T_p'): _balance_published(ctx, t, F_p, T_p),
         ('balance', 'T_c'): _balance_published(ctx, t, F_c, T_c),
     }
@@ -837,25 +939,32 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
               f"{F_c['fetch'].get('fetch_id')} retrieved {facts_after}."
               + (' Coverage: ' + '; '.join(coverage_note) + '.' if coverage_note else '')))
 
-    revision_rows, compared = [], False
-    for group, keys, comparability, describe, has in (
-            ('revenue', REVENUE_KEYS, ('revenue_tag',), _describe_revenue,
+    revision_rows, compared, profit_item = [], False, None
+    for group, short, as_of_key, keys, comparability, describe, has in (
+            ('revenue', 'revenue', 'revenue_period_end', REVENUE_KEYS, ('revenue_tag',), _describe_revenue,
              lambda F: F.get('revenue') is not None),
-            ('balance sheet', BALANCE_KEYS, ('debt_definition', 'equity_tag'), _describe_balance,
-             lambda F: bool(F.get('balance_sheet_date')))):
-        short = 'revenue' if group == 'revenue' else 'balance'
+            ('balance sheet', 'balance', 'balance_sheet_date', BALANCE_KEYS, ('debt_definition', 'equity_tag'),
+             _describe_balance, lambda F: bool(F.get('balance_sheet_date'))),
+            ('profitability and cash flow', 'profit', 'profitability_period_end', PROFIT_KEYS,
+             ('profitability_tags', 'gross_profit_method'), _describe_profit,
+             lambda F: bool(F.get('profitability_period_end'))),
+            ('diluted share count', 'shares', 'diluted_shares_period_end', SHARE_KEYS, (), _describe_shares,
+             lambda F: F.get('diluted_shares') is not None)):
         p_has, c_has = has(F_p), has(F_c)
         changed = any(_differs(F_p.get(k), F_c.get(k)) for k in keys)
         summary[f'{short}_changed'] = changed
         if not p_has and not c_has:
             continue                        # reported below as DATA UNAVAILABLE
         compared = True
-        as_of = (lambda F: F.get('revenue_period_end')) if short == 'revenue' else \
-            (lambda F: F.get('balance_sheet_date'))
+
+        def as_of(F, key=as_of_key):
+            return F.get(key)
         ev_p = _fact_evidence(ctx, F_p, f'{t} {describe(F_p)} (as known at T_p)', pubs[(short, 'T_p')],
                               as_of(F_p), T_p, 'T_p') if p_has else None
         ev_c = _fact_evidence(ctx, F_c, f'{t} {describe(F_c)} (as known at T_c)', pubs[(short, 'T_c')],
                               as_of(F_c), T_c, 'T_c') if c_has else None
+        if short == 'profit':
+            profit_item = ev_c
         codes = [] if complete_q2 else ['PARTIAL_COVERAGE']
         resolve_q2 = None
         statement_pubs = {to_utc_iso(f['published_at']) for f in statements or []}
@@ -897,6 +1006,7 @@ def _q2_company(ctx, res, t, feed, window, complete, problem):
                                           'no periodic statement accepted in the window'])
         res.add(conclude(t, 2, statement, items, 'official_fact', codes, resolve=resolve_q2))
 
+    _valuation(ctx, res, t, F_p, F_c, profit_item)
     # revisions are determinable only with the submissions feed (was a statement accepted?)
     summary['revisions'] = len(revision_rows) if statements is not None and compared else None
     res.table(f'{t}: revisions / restatements (fundamentals changed without a periodic filing)', (
@@ -987,10 +1097,11 @@ def build(ctx):
     overall.append(res.tables.pop())
     res.tables = overall + res.tables
 
-    res.add(unavailable('overall', 2, 'margins, cash flow, EPS, shares outstanding (dilution), guidance, '
-                                      'analyst estimates',
-                        'NOT IMPLEMENTED: not ingested from XBRL company facts (only revenue, debt and '
-                        'equity are stored); analyst estimates have no free point-in-time source'))
+    res.add(unavailable('overall', 2, 'reported EPS, shares outstanding of the cover page, guidance, analyst '
+                                      'estimates',
+                        'NOT IMPLEMENTED: EPS as reported is not used (net income TTM and diluted weighted shares '
+                        'are); the cover-page share count (dei) has no recent facts in the company facts tested; '
+                        'guidance is not machine-readable; analyst estimates have no free point-in-time source'))
     res.add(unavailable('overall', 7, 'content of filings beyond form and item codes (exhibit text), '
                                       'earnings-call transcripts, analyst rating changes',
                         'NOT IMPLEMENTED: exhibits and transcripts are not parsed; analyst actions have '

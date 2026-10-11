@@ -581,7 +581,8 @@ def test_unreported_ratio_is_unavailable_never_zero():
         return view(debt_to_equity=None, equity=-2e8,
                     reason='stockholders equity <= 0: debt-to-equity not meaningful')
     r = build(FakeCtx({'AAA': feed([])}, {'AAA': views})).as_dict()
-    u = [u for u in r['unavailable'] if u['scope'] == 'AAA' and u['question'] == 2]
+    u = [u for u in r['unavailable'] if u['scope'] == 'AAA' and u['question'] == 2
+         and u['item'] != 'valuation multiples']                         # no price accessor in this fake
     assert len(u) == 1 and u[0]['item'] == 'debt-to-equity as known at T_p and T_c'
     assert 'equity <= 0' in u[0]['reason']
     fund = {row[0]: row for row in table(r, 'AAA: SEC XBRL fundamentals')['rows']}
@@ -642,3 +643,38 @@ def test_no_system_output_no_causal_wording_and_admissible_evidence():
         text = json.dumps(r['notes']) + json.dumps([t['note'] for t in r['tables']])
         assert not CAUSAL.search(text)
     assert sec_events.NAME == 'sec_events' and sec_events.QUESTIONS == [2, 7]
+
+
+def test_profitability_dilution_and_derived_valuation():
+    """P4.2: profitability / cash flow and diluted shares are compared like revenue; valuation is derived from a
+    rank-2 close and an approximate share count (market_fact + ESTIMATE). Values are synthetic."""
+    prof = dict(profitability_period_end='2026-06-30', gross_profit_ttm=7e8, gross_margin_pct=70.0,
+                gross_profit_method='annual (12M) fact', operating_income_ttm=1e8, operating_margin_pct=10.0,
+                net_income_ttm=5e7, net_margin_pct=5.0, operating_cash_flow_ttm=3e8, capex_ttm=1e8,
+                free_cash_flow_ttm=2e8, fcf_margin_pct=20.0,
+                profitability_tags=['GrossProfit', 'NetIncomeLoss', 'OperatingIncomeLoss'],
+                profitability_published_at='2026-08-05T20:00:00+00:00', diluted_shares=1e8,
+                diluted_shares_prior_year=9.5e7, diluted_shares_change_pct=5.26,
+                diluted_shares_period_end='2026-06-30', diluted_shares_published_at='2026-08-05T20:00:00+00:00')
+
+    class Ctx(FakeCtx):
+        def prices(self, ticker):
+            days = [s for s in SESSIONS if s <= self.tm.s0]
+            close = [50.0] * (len(days) - 1) + [60.0]
+            frame = pd.DataFrame({'close': close, 'close_raw': close, 'volume': 1e6}, index=pd.to_datetime(days))
+            return {'status': 'OK', 'frame': frame, 'fetch': {'fetch_id': 1, 'retrieved_at': '2026-10-07T13:00:00+00:00'},
+                    'reason': None}
+
+    r = build(Ctx({'AAA': feed([])}, {'AAA': lambda _k: view(**prof)})).as_dict()
+    profit = find(r, 'AAA', 2, r'^AAA: profitability and cash flow')
+    assert 'gross margin 70.0 %' in profit['statement'] and 'free cash flow 200.0 M USD' in profit['statement']
+    shares = find(r, 'AAA', 2, r'^AAA: diluted share count')
+    assert '+5.26 % vs one year earlier' in shares['statement']
+    val = find(r, 'AAA', 2, r'^AAA: derived valuation')
+    assert val['kind'] == 'market_fact' and val['level'] == UNCERTAIN and 'ESTIMATE' in val['reason_codes']
+    assert 'market value about 6,000.0 M USD' in val['statement']
+    assert 'price / sales 6.0x, price / earnings 120.0x, price / free cash flow 30.0x' in val['statement']
+    assert 'at the close of 2026-09-29 with fundamentals known at T_p: price / sales 5.0x' in val['statement']
+    fund = {row[0]: row for row in table(r, 'AAA: SEC XBRL fundamentals')['rows']}
+    assert fund['gross margin TTM (%)'][1:3] == [70.0, 70.0]
+    assert not any(w in val['statement'].lower() for w in ('cheap', 'expensive', 'undervalued', 'overvalued'))

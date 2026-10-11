@@ -123,3 +123,100 @@ def test_mixed_conventions_are_not_converted(monkeypatch, labels):
                                    '0000950103-20-024040': index_page('2020-06-01 21:00:00')})
     cal = SECParser().get_filings('CRWD')['calibration']
     assert cal['convention'] is None and cal['reason'].startswith('conventions differ')
+
+
+# ---------------------------------------------------------------- redundant versions (dedupe) and the audit
+
+def store(db, rows, retrieved):
+    fetch = dict(db.record_fetch('SEC EDGAR', f'test:{retrieved}', status='OK'), retrieved_at=retrieved)
+    db.upsert_observations(fetch, rows)
+
+
+def fact(metric, value, published, as_of='2026-06-30', **kw):
+    return {'entity': 'AAA', 'metric': metric, 'as_of_date': as_of, 'value': value, 'published_at': published,
+            'published_at_basis': 'test', **kw}
+
+
+def test_redundant_versions_only_when_the_earlier_version_dominates():
+    from src.database import Database
+    db = Database()
+    # re-stored later with a later label (old SEC behaviour): redundant
+    store(db, [fact('xbrl:Revenues', 100.0, '2026-08-01T00:00:00+00:00')], '2026-08-02T00:00:00+00:00')
+    store(db, [fact('xbrl:Revenues', 100.0, '2026-08-01T04:00:00+00:00')], '2026-10-11T00:00:00+00:00')
+    # calibrated (earlier) time retrieved later: neither dominates, both kept
+    store(db, [fact('xbrl:Assets', 5.0, '2026-08-01T04:00:00+00:00')], '2026-08-02T00:00:00+00:00')
+    store(db, [fact('xbrl:Assets', 5.0, '2026-08-01T00:00:00+00:00')], '2026-10-11T00:00:00+00:00')
+    # A, B, A: the last A restores a value, it is not redundant
+    for i, v in enumerate((1.0, 2.0, 1.0)):
+        store(db, [fact('xbrl:Debt', v, f'2026-08-0{i + 1}T00:00:00+00:00')], f'2026-08-0{i + 1}T01:00:00+00:00')
+    # same value, other unit: kept
+    store(db, [fact('xbrl:Cash', 7.0, '2026-08-01T00:00:00+00:00', unit='USD')], '2026-08-02T00:00:00+00:00')
+    store(db, [fact('xbrl:Cash', 7.0, '2026-08-02T00:00:00+00:00', unit='EUR')], '2026-08-03T00:00:00+00:00')
+    # an event seen again later: redundant
+    event = {'entity': 'AAA', 'metric': 'filing:4', 'as_of_date': '2026-08-01', 'value_text': '0001-26-000001',
+             'published_at_basis': 'test'}
+    store(db, [dict(event, published_at='2026-08-01T20:00:00+00:00')], '2026-08-02T00:00:00+00:00')
+    store(db, [dict(event, published_at='2026-08-02T00:00:00+00:00')], '2026-08-03T00:00:00+00:00')
+
+    redundant = db.redundant_versions()
+    with db.connect() as conn:
+        metrics = sorted(r[0] for r in conn.execute(f"SELECT metric FROM observations WHERE obs_id IN "
+                                                    f"({','.join(str(i) for i, _ in redundant)})"))
+    assert metrics == ['filing:4', 'xbrl:Revenues']
+
+    probes = ['2026-08-01T02:00:00+00:00', '2026-08-02T12:00:00+00:00', '2026-10-12T00:00:00+00:00']
+    before = {(m, t, s): [(d, r['value']) for d, r in db.series('AAA', m, known_at=t, strict_vintage=s)]
+              for m in ('xbrl:Revenues', 'xbrl:Assets', 'xbrl:Debt') for t in probes for s in (False, True)}
+    out = db.remove_redundant_versions()
+    assert out['removed'] == 2 and out['by_source'] == {'SEC EDGAR': 2} and Path(out['backup']).exists()
+    after = {(m, t, s): [(d, r['value']) for d, r in db.series('AAA', m, known_at=t, strict_vintage=s)]
+             for m in ('xbrl:Revenues', 'xbrl:Assets', 'xbrl:Debt') for t in probes for s in (False, True)}
+    assert after == before
+    assert db.events('AAA', 'filing:4')[0]['available_at'] == '2026-08-01T20:00:00+00:00'
+    assert db.redundant_versions() == [] and db.remove_redundant_versions()['removed'] == 0
+
+
+def five_filing_feed(monkeypatch, sampled_accepted):
+    """Five CRWD-like Form 4 labelled UTC + 4 h; calibration reads filings 0, 2, 4, the audit samples 1 and 3."""
+    monkeypatch.setenv('SEC_USER_AGENT', 'TestAgent test@example.com')
+    accessions = [f'0001778564-26-00010{i}' for i in range(5)]
+    accepted = ['2026-10-08 20:00:07', '2026-09-08 16:10:00', '2026-08-03 17:00:00', '2026-07-01 18:00:00',
+                '2026-06-01 15:00:00']
+    # label = true UTC + 4 h (EDT) = New York wall clock + 8 h
+    labels = ['2026-10-09T04:00:07.000Z', '2026-09-09T00:10:00.000Z', '2026-08-04T01:00:00.000Z',
+              '2026-07-02T02:00:00.000Z', '2026-06-01T23:00:00.000Z']
+    pages = {a: index_page(accepted[i]) for i, a in enumerate(accessions)}
+    pages.update({accessions[i]: index_page(v) for i, v in sampled_accepted.items()})
+    feed = {'filings': {'recent': {'form': ['4'] * 5, 'filingDate': [x[:10] for x in accepted],
+                                   'reportDate': [''] * 5, 'accessionNumber': accessions,
+                                   'acceptanceDateTime': labels, 'primaryDocument': ['a.xml'] * 5}}}
+
+    def get(self, url, timeout=None):
+        if url.endswith('company_tickers.json'):
+            return Page(payload={'0': {'cik_str': 1535527, 'ticker': 'CRWD', 'title': 'CrowdStrike'}})
+        if url.endswith('CIK0001535527.json'):
+            return Page(payload=feed)
+        acc = next((a for a in accessions if url.endswith(f'{a}-index.htm')), None)
+        return Page(text=pages[acc]) if acc else Page(text='', status=404)
+    monkeypatch.setattr('requests.Session.get', get)
+    monkeypatch.setattr('src.sec_parser.time.sleep', lambda s: None)
+
+
+def audit_labels(monkeypatch, sampled_accepted):
+    from src.pipeline_audit import PipelineAudit
+    five_filing_feed(monkeypatch, sampled_accepted)
+    audit = PipelineAudit()
+    feed = audit.sec.get_filings('CRWD')
+    assert feed['calibration']['convention'] == 'utc_plus_ny_offset'
+    return audit.label_checks('CRWD')[0]
+
+
+def test_audit_label_check_passes_when_sampled_filings_match(monkeypatch):
+    c = audit_labels(monkeypatch, {})
+    assert c['status'] == 'PASS' and '2 sampled filing(s) equal to the EDGAR index page' in c['detail']
+
+
+def test_audit_label_check_fails_when_a_sampled_filing_breaks_the_convention(monkeypatch):
+    # filing 3 was really accepted 4 h later than its label implies: the converted time would be early
+    c = audit_labels(monkeypatch, {3: '2026-07-01 22:00:00'})
+    assert c['status'] == 'FAIL' and '1 filing(s) dated before acceptance' in c['detail']

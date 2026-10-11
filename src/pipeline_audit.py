@@ -30,12 +30,13 @@ from .common import DATA_UNAVAILABLE, SECRET_ENV_VARS, redact, reports_dir, utc_
 from .database import Database
 from .insider_tracker import FORM4_METRIC, InsiderTracker
 from .market_data import PriceFeed, session_close_utc
-from .sec_parser import SEC_SOURCE, SECParser
+from .sec_parser import EDGAR_INDEX_URL, IMMUTABLE, SEC_SOURCE, SECParser, index_accepted
 
 PASS, WARN, FAIL = 'PASS', 'WARN', 'FAIL'
 MAX_DAILY_MOVE = 0.40
 MAX_GAP_DAYS = 7
 RAW_SAMPLE = 60
+LABEL_SAMPLE = 2          # filings per ticker whose acceptance time is re-checked on the EDGAR index page
 
 
 def check(name, status, detail, evidence=None):
@@ -90,6 +91,10 @@ class PipelineAudit:
                 continue
             if any(s.encode('utf-8') in (data or b'') for s in secrets):
                 leaked.append(f'fetch {fetch_id}')
+        redundant = self.db.redundant_versions()
+        out.append(check('redundant observation versions (same value re-stored later)', WARN if redundant else PASS,
+                         f'{len(redundant)} rows' + ('; remove them with `python main.py dedupe` (the database is '
+                                                     'backed up first)' if redundant else '')))
         out.append(check(f'raw payload SHA-256 ({len(sample)} sampled)', FAIL if broken else PASS,
                          f'{len(broken)} unreadable / mismatched', broken[:10]))
         out.append(check('secrets in raw payloads (sample)', FAIL if leaked else PASS,
@@ -183,6 +188,44 @@ class PipelineAudit:
                              + ')'))
         return out
 
+    def label_checks(self, ticker):
+        """
+        Acceptance times of LABEL_SAMPLE filings (seeded by ticker and day, not those used by the calibration)
+        against their EDGAR index pages: FAIL when a filing is dated before its true acceptance (look-ahead)
+        or, for a verified convention, differs from it; WARN when the convention is not verified.
+        """
+        feed = self.sec._filings_cache.get(ticker) or {}
+        calibration = feed.get('calibration') or {}
+        used = {c['accession'] for c in calibration.get('checked') or []}
+        rows = [f for f in feed.get('filings') or [] if f.get('acceptance_label') and f['accession_number'] not in used]
+        name = 'SEC acceptance times vs EDGAR index pages (sampled)'
+        if not rows:
+            return [check(name, WARN, 'no filing with an acceptance label to sample')]
+        cik = self.sec.get_cik(ticker)
+        seed = f'{ticker}:{utc_now_iso()[:10]}'
+        early, differ, read = [], [], 0
+        for f in random.Random(seed).sample(rows, min(LABEL_SAMPLE, len(rows))):
+            acc = f['accession_number']
+            url = EDGAR_INDEX_URL.format(cik=int(cik), nodash=acc.replace('-', ''), accession=acc)
+            accepted = index_accepted(self.sec._get(url, as_json=False, max_age=IMMUTABLE))
+            if not accepted:
+                continue
+            read += 1
+            if f['published_at'] < accepted:
+                early.append(f"{acc}: published_at {f['published_at']} < accepted {accepted}")
+            elif f.get('acceptance_utc') and f['published_at'] != accepted:
+                differ.append(f"{acc}: {f['published_at']} != accepted {accepted}")
+        if early or differ:
+            return [check(name, FAIL, f'{len(early)} filing(s) dated before acceptance, {len(differ)} converted '
+                                      'time(s) different from the index page', early + differ)]
+        if not read:
+            return [check(name, WARN, 'no sampled index page could be read')]
+        if not calibration.get('convention'):
+            return [check(name, WARN, f"label convention not verified ({calibration.get('reason')}): acceptance "
+                                      f'times read conservatively (late); {read} sampled filing(s) not early')]
+        return [check(name, PASS, f"{read} sampled filing(s) equal to the EDGAR index page (convention "
+                                  f"{calibration['convention']})")]
+
     # ------------------------------------------------------------------ insider
 
     def insider_checks(self, ticker):
@@ -228,7 +271,7 @@ class PipelineAudit:
         for n, ticker in enumerate(universe, 1):
             checks = []
             for name, func in (('prices', self.price_checks), ('sec', self.sec_checks),
-                               ('insider', self.insider_checks)):
+                               ('sec labels', self.label_checks), ('insider', self.insider_checks)):
                 try:
                     checks += [dict(c, group=name) for c in func(ticker)]
                 except Exception as e:  # noqa: BLE001 - an audit crash is itself a failure

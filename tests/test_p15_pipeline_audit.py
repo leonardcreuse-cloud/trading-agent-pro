@@ -46,7 +46,7 @@ def test_audit_without_sec_reports_warnings_not_crashes(monkeypatch):
     report = PipelineAudit().run(['MP'])
     assert report['summary']['FAIL'] == 0 and report['status'] == 'WARN'
     groups = {c['group'] for c in report['tickers']['MP']}
-    assert groups == {'prices', 'sec', 'insider'}
+    assert groups == {'prices', 'sec', 'sec labels', 'insider'}
 
 
 def test_audit_flags_backdated_and_keyless_fred_rows():

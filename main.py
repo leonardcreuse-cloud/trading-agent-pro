@@ -65,6 +65,11 @@ def main():
         results = collect_all()
         print_results(results)
         sys.exit(0 if all(r['status'] == 'OK' for r in results) else 2)    # 2: some source unavailable
+    elif command == 'dedupe':
+        from src.database import Database
+        out = Database().remove_redundant_versions()
+        print(f"[DEDUPE] {out['removed']} redundant observation versions removed {out['by_source']}"
+              + (f"; backup: {out['backup']}" if out['backup'] else ''))
     elif command == 'audit':
         from src.pipeline_audit import PipelineAudit
         report = PipelineAudit().run([t.upper() for t in sys.argv[2:]] or None)
@@ -86,6 +91,7 @@ def print_menu():
     print("  python main.py collect   - Download external sources (CFTC, FINRA, Cboe, Fed, BLS,")
     print("                              BEA, EIA, Federal Register, GPR, GDELT, options); run it daily")
     print("                              (exit code 2 when a source is unavailable; see docs/LOCAL_RUN.md)")
+    print("  python main.py dedupe    - Remove observation versions that repeat an earlier one (backup first)")
     print("  python main.py status    - Show configuration status")
 
 

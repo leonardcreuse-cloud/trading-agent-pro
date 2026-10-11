@@ -457,6 +457,47 @@ class Database:
                  for n in new])
         return len(new)
 
+    _REDUNDANT_SQL = '''
+        SELECT obs_id, source FROM (
+            SELECT obs_id, source, value, value_text, unit, value_revisable, retrieved_at,
+                   LAG(obs_id) OVER w AS p_id, LAG(value) OVER w AS p_value, LAG(value_text) OVER w AS p_text,
+                   LAG(unit) OVER w AS p_unit, LAG(value_revisable) OVER w AS p_rev,
+                   LAG(retrieved_at) OVER w AS p_retrieved
+            FROM observations
+            WINDOW w AS (PARTITION BY source, entity, metric, as_of_date,
+                         CASE WHEN value IS NULL THEN value_text ELSE '' END
+                         ORDER BY COALESCE(published_at, retrieved_at), retrieved_at, obs_id))
+        WHERE p_id IS NOT NULL AND value IS p_value AND value_text IS p_text AND unit IS p_unit
+          AND value_revisable = p_rev AND p_retrieved <= retrieved_at'''
+
+    def redundant_versions(self):
+        """
+        [(obs_id, source)] of versions that repeat the previous version of the same fact (same source,
+        entity, metric, as_of_date and, for events, text) with the same value, text, unit and revisability,
+        available AND retrieved no earlier than it. Deleting them changes no point-in-time read, including
+        strict_vintage reads: the previous version gives the same value from earlier on. Typical cause: a
+        source re-dated a value already stored (an SEC acceptance label moved later, a clamp to retrieval).
+        """
+        with self.connect() as conn:
+            return [(r[0], r[1]) for r in conn.execute(self._REDUNDANT_SQL)]
+
+    def remove_redundant_versions(self):
+        """Back up the database, then delete redundant_versions(); {'removed', 'by_source', 'backup'}."""
+        found = self.redundant_versions()
+        if not found:
+            return {'removed': 0, 'by_source': {}, 'backup': None}
+        backup = self.backup('dedupe')
+        by_source = {}
+        for _, source in found:
+            by_source[source] = by_source.get(source, 0) + 1
+        with self.connect() as conn:
+            conn.execute('CREATE TEMP TABLE IF NOT EXISTS redundant_ids (id INTEGER PRIMARY KEY)')
+            conn.execute('DELETE FROM redundant_ids')
+            conn.executemany('INSERT INTO redundant_ids (id) VALUES (?)', [(i,) for i, _ in found])
+            conn.execute('DELETE FROM observations WHERE obs_id IN (SELECT id FROM redundant_ids)')
+            conn.execute('DROP TABLE redundant_ids')
+        return {'removed': len(found), 'by_source': by_source, 'backup': backup.get('db')}
+
     @staticmethod
     def _known_filter(known_at, strict_vintage):
         sql, args = '', []

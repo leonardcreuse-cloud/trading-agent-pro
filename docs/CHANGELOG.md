@@ -1,5 +1,19 @@
 # Changelog
 
+## P4.0 — Live collection (`python main.py collect`, 2026-10-11)
+
+- First live run of the 12 collectors into the project database: all OK, 7,553 values (CFTC, FINRA, Cboe,
+  FOMC, BLS schedules and API, BEA, EIA, Federal Register, GPR, GDELT, options). A third run stored 0 rows;
+  storage audit PASS.
+- Fixes from the real responses: binary raw payloads (GDELT zip, GPR xls) were decoded as UTF-8 and stored
+  corrupted, now kept byte for byte (`Database.read_raw_bytes`, audit reads bytes); the BLS per-release
+  schedule pages omit the current month's releases (CPI 2026-10-14, PPI 10-15), so the monthly calendars of
+  this month and the next are collected too (same rows, stored once); a value equal to the stored version
+  keeps its publication date (GPR served two Last-Modified values for one file, Federal Register documents
+  dated in the future were clamped to each retrieval: both re-stored every value at each run); a dropped
+  connection or timeout is retried once (never a proxy refusal).
+- Tests 430 → 435.
+
 ## P4.1 — Keyed agency APIs: BLS v2, BEA, EIA (`python main.py collect`)
 
 - `src/agency_apis.py`, run by `collect_all`: 15 BLS series (CPI-U headline / core SA and NSA, shelter,

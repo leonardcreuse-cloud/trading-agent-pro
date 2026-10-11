@@ -21,8 +21,8 @@ upsert_observations with an explicit published_at and its basis:
                              volume only, not the whole market)
   Federal Reserve Board (1)  FOMC meeting calendar                  end of the day printed as "Last Update" on
                                                                     the page (version date)
-  BLS (1)                    release schedules with times           unknown (retrieval time): the page has no
-                                                                    version date
+  BLS (1)                    release schedules with times (per-     unknown (retrieval time): no version date
+                             release pages + monthly calendars)     relied on
   Federal Register (1)       documents of BIS, OFAC, USTR and       publication date 06:00 New York (documents
                              presidential documents                 on public inspection: retrieval time)
   GPR index (2)              Caldara-Iacoviello daily geopolitical  HTTP Last-Modified of the file version
@@ -50,12 +50,14 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import requests
+from requests.exceptions import ConnectionError as RequestsConnectionError, ProxyError, Timeout
 
 from .common import DATA_UNAVAILABLE, end_of_us_trading_day_utc, redact, to_utc_iso, utc_now_iso
 from .database import Database
 
 NEW_YORK = ZoneInfo('America/New_York')
 DEFAULT_TIMEOUT = 45
+RETRY_PAUSE = 2.0                 # seconds before the single retry of a dropped connection
 MIN_INTERVAL = {'publicreporting.cftc.gov': 1.0, 'api.finra.org': 1.0, 'www.cboe.com': 1.0,
                 'data.gdeltproject.org': 2.0, 'www.bls.gov': 1.0, 'api.bls.gov': 1.0, 'apps.bea.gov': 1.0}
 _LAST_CALL = {}
@@ -128,6 +130,21 @@ def endpoint_of(url, params=None, body=None):
     return out + ('#' + json.dumps(body, sort_keys=True) if body is not None else '')
 
 
+def _request(http, url, params, body, hdrs):
+    """One GET / POST, retried once after a dropped connection or a timeout (never after a proxy refusal)."""
+    for attempt in range(2):
+        _throttle(url)
+        try:
+            if body is not None:
+                return http.post(url, json=body, headers={**hdrs, 'Accept': 'application/json'},
+                                 timeout=DEFAULT_TIMEOUT)
+            return http.get(url, params=params, headers=hdrs, timeout=DEFAULT_TIMEOUT)
+        except (RequestsConnectionError, Timeout) as e:
+            if attempt or isinstance(e, ProxyError):
+                raise
+            time.sleep(RETRY_PAUSE)
+
+
 def http_fetch(db, source, url, *, params=None, body=None, binary=False, raw_ext='json', raw=None,
                session=None, headers=None):
     """
@@ -141,12 +158,7 @@ def http_fetch(db, source, url, *, params=None, body=None, binary=False, raw_ext
     hdrs = {'User-Agent': user_agent(), 'Accept': '*/*', **(headers or {})}
     response = None
     try:
-        _throttle(url)
-        if body is not None:
-            response = http.post(url, json=body, headers={**hdrs, 'Accept': 'application/json'},
-                                 timeout=DEFAULT_TIMEOUT)
-        else:
-            response = http.get(url, params=params, headers=hdrs, timeout=DEFAULT_TIMEOUT)
+        response = _request(http, url, params, body, hdrs)
         if response.status_code != 200:
             raise RuntimeError(f'HTTP {response.status_code}')
     except Exception as e:  # noqa: BLE001 - recorded, surfaced as DATA UNAVAILABLE
@@ -162,6 +174,30 @@ def http_fetch(db, source, url, *, params=None, body=None, binary=False, raw_ext
                             http_status=response.status_code, raw=payload, raw_ext=raw_ext)
     return {'status': 'OK', 'content': content, 'fetch': fetch, 'reason': None,
             'headers': dict(response.headers)}
+
+
+def keep_stored_publication(db, source, rows):
+    """
+    A row equal to the latest stored version of the same observation (same value; for an event, same text)
+    keeps that version's publication time and basis, so it is not stored again when only the publication
+    estimate moved: a file served with another Last-Modified, a document dated in the future and clamped to
+    each retrieval, a table re-dated by a later release. Rows are updated in place and returned.
+    """
+    latest = {}
+    with db.connect() as conn:
+        for key in {(r['entity'], r['metric']) for r in rows}:
+            for row in conn.execute('''SELECT as_of_date, value, value_text, published_at, published_at_basis
+                                       FROM observations WHERE source=? AND entity=? AND metric=?
+                                       ORDER BY retrieved_at, fetch_id''', (source, *key)):
+                event = row['value_text'] if row['value'] is None else ''
+                latest[(*key, row['as_of_date'], event)] = dict(row)
+    for r in rows:
+        value = r.get('value')
+        event = r.get('value_text') if value is None else ''
+        prev = latest.get((r['entity'], r['metric'], str(r['as_of_date'])[:10], event))
+        if prev is not None and (value is None or prev['value'] == float(value)):
+            r['published_at'], r['published_at_basis'] = prev['published_at'], prev['published_at_basis']
+    return rows
 
 
 def _num(value):
@@ -406,7 +442,8 @@ def collect_fomc(db):
              else 'page without a version date: retrieval time')
     rows = [{'entity': 'FOMC', 'metric': 'meeting', 'as_of_date': m['end'], 'value_text': json.dumps(m),
              'published_at': pub, 'published_at_basis': basis} for m in meetings]
-    return _result('fed_fomc_calendar', 'OK', db.upsert_observations(got['fetch'], rows),
+    stored = db.upsert_observations(got['fetch'], keep_stored_publication(db, FED_SOURCE, rows))
+    return _result('fed_fomc_calendar', 'OK', stored,
                    meetings=len(meetings), last_update=last and last.isoformat())
 
 
@@ -414,9 +451,13 @@ def collect_fomc(db):
 
 BLS_SOURCE = 'BLS'
 BLS_SCHEDULE_URL = 'https://www.bls.gov/schedule/news_release/{}.htm'
+BLS_MONTH_URL = 'https://www.bls.gov/schedule/{}/{:02d}_sched.htm'
 BLS_RELEASES = {'empsit': 'Employment Situation', 'cpi': 'Consumer Price Index',
                 'ppi': 'Producer Price Index', 'jolts': 'Job Openings and Labor Turnover Survey',
                 'eci': 'Employment Cost Index', 'realer': 'Real Earnings'}
+BLS_CODES = {name: code for code, name in BLS_RELEASES.items()}
+BLS_SCHEDULE_BASIS = 'BLS schedule page has no version date: retrieval time'
+BLS_MONTH_BASIS = 'BLS monthly release calendar, as retrieved (its Last Modified date is not relied on): retrieval time'
 
 
 def parse_bls_schedule(html):
@@ -436,19 +477,57 @@ def parse_bls_schedule(html):
     return out
 
 
-def collect_bls(db):
+def parse_bls_month(html, year, month):
+    """
+    [{'release', 'reference', 'date', 'time'}] from a BLS monthly release calendar (month view) of year-month.
+    Cells of the adjacent months (December before a January page, January after a December page) are dated
+    in their own year.
+    """
+    out = []
+    for mmdd, cell in re.findall(r'<td[^>]*\bid="d(\d{4})"[^>]*>(.*?)</td>', html, re.S):
+        m, d = int(mmdd[:2]), int(mmdd[2:])
+        y = year - 1 if (month == 1 and m == 12) else year + 1 if (month == 12 and m == 1) else year
+        for name, ref, tm in re.findall(r'<strong>([^<]+)<br\s*/?>\s*</strong>([^<]*)<br\s*/?>([^<]*)</p>', cell):
+            out.append({'release': name.strip(), 'reference': ref.strip(), 'date': date(y, m, d).isoformat(),
+                        'time': tm.strip()})
+    return out
+
+
+def _bls_release_row(code, r, basis):
+    """One schedule row; the same release from either page gives the same value_text (stored once)."""
+    return {'entity': f'BLS:{code}', 'metric': 'release', 'as_of_date': r['date'],
+            'value_text': json.dumps({'reference': r['reference'], 'date': r['date'], 'time': r['time'],
+                                      'release': BLS_RELEASES[code]}),
+            'published_at': None, 'published_at_basis': basis}
+
+
+def collect_bls(db, today=None):
+    """
+    Per-release schedule pages, plus the monthly calendars of this month and the next: on 2026-10-11 the
+    per-release pages omitted the releases of the current month (CPI and Real Earnings on 10-14, PPI on 10-15).
+    """
+    today = today or datetime.now(NEW_YORK).date()
     stored, problems = 0, []
-    for code, name in BLS_RELEASES.items():
+    for code in BLS_RELEASES:
         got = http_fetch(db, BLS_SOURCE, BLS_SCHEDULE_URL.format(code), raw_ext='html')
         if got['status'] != 'OK':
             problems.append(f'{code}: {got["reason"]}')
             continue
-        rows = [{'entity': f'BLS:{code}', 'metric': 'release', 'as_of_date': r['date'],
-                 'value_text': json.dumps({**r, 'release': name}), 'published_at': None,
-                 'published_at_basis': 'BLS schedule page has no version date: retrieval time'}
-                for r in parse_bls_schedule(got['content'])]
+        rows = [_bls_release_row(code, r, BLS_SCHEDULE_BASIS) for r in parse_bls_schedule(got['content'])]
         if not rows:
             problems.append(f'{code}: no schedule row parsed (layout changed?)')
+        stored += db.upsert_observations(got['fetch'], rows)
+    first = today.replace(day=1)
+    for month in (first, (first + timedelta(days=32)).replace(day=1)):
+        got = http_fetch(db, BLS_SOURCE, BLS_MONTH_URL.format(month.year, month.month), raw_ext='html')
+        if got['status'] != 'OK':
+            problems.append(f'{month:%Y-%m} calendar: {got["reason"]}')
+            continue
+        found = parse_bls_month(got['content'], month.year, month.month)
+        if not found:
+            problems.append(f'{month:%Y-%m} calendar: no release parsed (layout changed?)')
+        rows = [_bls_release_row(BLS_CODES[r['release']], r, BLS_MONTH_BASIS)
+                for r in found if r['release'] in BLS_CODES]
         stored += db.upsert_observations(got['fetch'], rows)
     return _result('bls_schedules', 'OK' if not problems else DATA_UNAVAILABLE, stored, '; '.join(problems) or None)
 
@@ -498,7 +577,8 @@ def collect_federal_register(db, since):
             continue
         if payload.get('total_pages', 1) > 1:
             problems.append(f'{entity}: more than 200 documents since {since}; only the first page stored')
-        stored += db.upsert_observations(got['fetch'], fr_rows(entity, payload.get('results') or []))
+        rows = keep_stored_publication(db, FR_SOURCE, fr_rows(entity, payload.get('results') or []))
+        stored += db.upsert_observations(got['fetch'], rows)
     return _result('federal_register', 'OK' if not problems else DATA_UNAVAILABLE, stored,
                    '; '.join(problems) or None)
 
@@ -547,7 +627,8 @@ def collect_gpr(db, since):
         rows = gpr_rows(got['content'], pub, since)
     except Exception as e:  # noqa: BLE001 - unreadable file
         return _result('gpr_index', DATA_UNAVAILABLE, 0, f'file not readable: {type(e).__name__}: {e}')
-    return _result('gpr_index', 'OK', db.upsert_observations(got['fetch'], rows), file_version=pub)
+    stored = db.upsert_observations(got['fetch'], keep_stored_publication(db, GPR_SOURCE, rows))
+    return _result('gpr_index', 'OK', stored, file_version=pub)
 
 
 # ---------------------------------------------------------------- GDELT daily events
@@ -728,7 +809,7 @@ def collect_all(db=None, tickers=None, today=None, history_days=400):
             ('finra_short_interest', lambda: collect_finra(db, tickers)),
             ('cboe_put_call', lambda: collect_cboe(db, cboe_days)),
             ('fed_fomc_calendar', lambda: collect_fomc(db)),
-            ('bls_schedules', lambda: collect_bls(db)),
+            ('bls_schedules', lambda: collect_bls(db, today)),
             ('bls_api', lambda: collect_bls_api(db, since.year, today.year)),
             ('bea_nipa', lambda: collect_bea(db, range(since.year, today.year + 1))),
             ('eia_energy', lambda: collect_eia(db, since)),

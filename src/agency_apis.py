@@ -34,7 +34,7 @@ from datetime import date, datetime
 from urllib.parse import urlencode
 
 from .common import DATA_UNAVAILABLE, end_of_us_trading_day_utc, redact, secret_env
-from .external_sources import _num, _result, http_fetch
+from .external_sources import _num, _result, http_fetch, keep_stored_publication
 
 # ---------------------------------------------------------------- BLS Public Data API v2
 
@@ -180,22 +180,6 @@ def bea_rows(table, payload):
     return rows, revised, problems
 
 
-def keep_unchanged_publication(db, source, rows):
-    """
-    A value equal to the latest stored version of the same observation keeps that version's publication
-    time and basis (a newer table date only shows it was still current), so it is not stored again.
-    """
-    stored = {}
-    for r in rows:
-        key = (r['entity'], r['metric'])
-        if key not in stored:
-            stored[key] = dict(db.series(r['entity'], r['metric'], source=source))
-        prev = stored[key].get(r['as_of_date'])
-        if prev is not None and prev['value'] == r['value']:
-            r['published_at'], r['published_at_basis'] = prev['published_at'], prev['published_at_basis']
-    return rows
-
-
 def collect_bea(db, years):
     key, problem = secret_env('BEA_API_KEY')
     if problem:
@@ -219,7 +203,7 @@ def collect_bea(db, years):
             continue
         rows, revised[table], table_problems = bea_rows(table, payload)
         problems += [f'{table}: {p}' for p in table_problems]
-        stored += db.upsert_observations(got['fetch'], keep_unchanged_publication(db, BEA_SOURCE, rows))
+        stored += db.upsert_observations(got['fetch'], keep_stored_publication(db, BEA_SOURCE, rows))
     return _result('bea_nipa', 'OK' if not problems else DATA_UNAVAILABLE, stored, '; '.join(problems) or None,
                    last_revised={t: d and d.isoformat() for t, d in revised.items()})
 

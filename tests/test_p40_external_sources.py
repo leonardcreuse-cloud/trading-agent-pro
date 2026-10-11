@@ -108,6 +108,45 @@ def test_bls_schedule_excerpt():
     assert all(r['time'].endswith('AM') for r in rows)
 
 
+def test_bls_month_calendar_excerpt():
+    rows = ex.parse_bls_month((FIX / 'bls_month_2026-10_excerpt.html').read_text(), 2026, 10)
+    assert {'release': 'Consumer Price Index', 'reference': 'September 2026', 'date': '2026-10-14',
+            'time': '08:30 AM'} in rows                       # missing from the per-release page on 2026-10-11
+    assert {'release': 'Producer Price Index', 'reference': 'September 2026', 'date': '2026-10-15',
+            'time': '08:30 AM'} in rows
+    jolts = [r for r in rows if r['release'] == 'Job Openings and Labor Turnover Survey']
+    assert jolts == [{'release': 'Job Openings and Labor Turnover Survey', 'reference': 'August 2026',
+                      'date': '2026-09-29', 'time': '10:00 AM'}]     # adjacent-month cell
+    assert 'Columbus Day' in {r['release'] for r in rows}             # holiday: not a declared release
+    # constructed cell (logic test): December days on a January page belong to the previous year
+    cell = ('<td class="other-month" id="d1229"><p class="day">29</p><p><strong>Employment Situation<br>'
+            '</strong>November 2026<br>08:30 AM</p></td>')
+    assert ex.parse_bls_month(cell, 2027, 1)[0]['date'] == '2026-12-29'
+
+
+def test_collect_bls_adds_the_current_month_once(monkeypatch):
+    pages = {'news_release': (FIX / 'bls_empsit_schedule_excerpt.html').read_text(),
+             'sched': (FIX / 'bls_month_2026-10_excerpt.html').read_text()}
+
+    class Router(FakeHTTP):
+        def get(self, url, **kw):
+            self.calls.append((url, kw))
+            return Resp(pages['news_release'] if '/news_release/' in url else pages['sched'])
+    fake = Router(None)
+    monkeypatch.setattr(ex, 'requests', fake)
+    monkeypatch.setattr(ex, '_throttle', lambda url: None)
+    db = Database()
+    res = ex.collect_bls(db, today=date(2026, 10, 11))
+    assert res['status'] == 'OK'
+    assert [u for u, _ in fake.calls if '_sched' in u] == ['https://www.bls.gov/schedule/2026/10_sched.htm',
+                                                           'https://www.bls.gov/schedule/2026/11_sched.htm']
+    cpi = [json.loads(e['value_text']) for e in db.events('BLS:cpi', 'release')]
+    assert {'reference': 'September 2026', 'date': '2026-10-14', 'time': '08:30 AM',
+            'release': 'Consumer Price Index'} in cpi
+    assert len([e for e in cpi if e['date'] == '2026-10-14']) == 1
+    assert ex.collect_bls(db, today=date(2026, 10, 11))['stored'] == 0     # same schedule: nothing new
+
+
 def test_gdelt_aggregates_on_real_lines():
     agg = ex.gdelt_aggregates((FIX / 'gdelt_20261009_excerpt.tsv').read_text())
     g = agg['GDELT:global']
@@ -165,6 +204,53 @@ def test_refused_host_is_logged_unavailable(tmp_path):
     got = ex.http_fetch(db, 'CFTC', 'https://publicreporting.cftc.gov/resource/x.json', session=Refused())
     assert got['status'] == DATA_UNAVAILABLE and 'network policy' in got['reason']
     assert db.get_fetch(got['fetch']['fetch_id'])['status'] == DATA_UNAVAILABLE
+
+
+def test_dropped_connection_is_retried_once_but_not_a_proxy_refusal(monkeypatch):
+    import requests
+    monkeypatch.setattr(ex, 'RETRY_PAUSE', 0)
+    monkeypatch.setattr(ex, '_throttle', lambda url: None)
+    db = Database()
+
+    class Flaky:
+        def __init__(self, error):
+            self.error, self.calls = error, 0
+
+        def get(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1 or isinstance(self.error, requests.exceptions.ProxyError):
+                raise self.error
+            return Resp('{}')
+    reset = Flaky(requests.exceptions.ConnectionError("('Connection aborted.', ConnectionResetError(104))"))
+    assert ex.http_fetch(db, 'EIA', 'https://api.eia.gov/v2/x', session=reset)['status'] == 'OK'
+    assert reset.calls == 2
+    proxy = Flaky(requests.exceptions.ProxyError('Tunnel connection failed: 403 Forbidden'))
+    got = ex.http_fetch(db, 'EIA', 'https://api.eia.gov/v2/x', session=proxy)
+    assert got['status'] == DATA_UNAVAILABLE and proxy.calls == 1 and 'network policy' in got['reason']
+
+
+def test_unchanged_values_keep_their_stored_publication():
+    """Live 2026-10-11: the same GPR file came with two Last-Modified values, and Federal Register documents
+    dated in the future were clamped to each retrieval; neither may create a new version."""
+    db = Database()
+    gpr = lambda pub, v: [{'entity': 'GPR', 'metric': 'gpr_daily', 'as_of_date': '2026-10-05', 'value': v,
+                           'published_at': pub, 'published_at_basis': 'HTTP Last-Modified'}]
+    first = db.record_fetch(ex.GPR_SOURCE, 'gpr', status='OK')
+    assert db.upsert_observations(first, gpr('2026-10-05T13:43:09+00:00', 141.491577)) == 1
+    again = db.record_fetch(ex.GPR_SOURCE, 'gpr', status='OK')
+    rows = ex.keep_stored_publication(db, ex.GPR_SOURCE, gpr('2026-10-05T13:42:20+00:00', 141.491577))
+    assert rows[0]['published_at'] == '2026-10-05T13:43:09+00:00'
+    assert db.upsert_observations(again, rows) == 0
+    revised = ex.keep_stored_publication(db, ex.GPR_SOURCE, gpr('2026-10-06T13:00:00+00:00', 142.0))
+    assert revised[0]['published_at'] == '2026-10-06T13:00:00+00:00'      # a new value keeps its own date
+
+    doc = [{'publication_date': '2099-01-02', 'document_number': '2099-00001', 'title': 'Future notice'}]
+    f1 = db.record_fetch(ex.FR_SOURCE, 'fr', status='OK')
+    assert db.upsert_observations(f1, ex.keep_stored_publication(db, ex.FR_SOURCE, ex.fr_rows('FR:x', doc))) == 1
+    f2 = db.record_fetch(ex.FR_SOURCE, 'fr', status='OK')
+    assert db.upsert_observations(f2, ex.keep_stored_publication(db, ex.FR_SOURCE, ex.fr_rows('FR:x', doc))) == 0
+    other = [{**doc[0], 'document_number': '2099-00002'}]                  # same day, another document: stored
+    assert db.upsert_observations(f2, ex.keep_stored_publication(db, ex.FR_SOURCE, ex.fr_rows('FR:x', other))) == 1
 
 
 def test_collect_cboe_stores_excerpt_and_values(monkeypatch):

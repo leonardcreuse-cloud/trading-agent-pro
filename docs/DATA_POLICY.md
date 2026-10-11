@@ -82,7 +82,10 @@ When in doubt, the later plausible time is used:
 | BEA NIPA (P4.1) | Table note `LastRevised` date, end of day New York; a value equal to the latest stored version keeps that version's date |
 | EIA API v2 (P4.1) | Unknown (`NULL`, retrieval time): the API gives no publication date |
 
-A publication time later than retrieval is clamped to retrieval. Revised values are stored as new
+A publication time later than retrieval is clamped to retrieval. A collected value equal to the latest stored
+version keeps that version's `published_at` (`external_sources.keep_stored_publication`): a moved estimate
+(another HTTP Last-Modified for the same file, a later clamp, a later table date) never creates a new version.
+Binary raw payloads (zip, xls) are stored byte for byte. Revised values are stored as new
 versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
 (`data/backups/`) and refilled from the sources.
 

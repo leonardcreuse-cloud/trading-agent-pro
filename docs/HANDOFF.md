@@ -10,19 +10,29 @@
 - Weekly analyst report `python main.py weekly` (first report: `reports/weekly/2026-10-09/`).
 - P4.0 phase 1: `python main.py collect` (src/external_sources.py): CFTC COT, FINRA short interest,
   Cboe put/call, Fed FOMC calendar, BLS release schedules, Federal Register (BIS, OFAC, USTR,
-  presidential documents), GPR index, GDELT daily events, yfinance option snapshots. Tested offline on
-  real payload excerpts; NOT yet run live (the hosts were refused by the network policy at the time).
+  presidential documents), GPR index, GDELT daily events, yfinance option snapshots.
+- P4.0 live run (2026-10-11, project database `data/`, ~93 MB): all 12 collectors OK. First run 7,553 values
+  (CFTC 1,653 - 57 weekly reports x 8 contracts; FINRA 1,827 - history since 2019-20; Cboe 384 - 64 sessions;
+  FOMC 57 meetings 2021-2027; BLS schedules 62; BLS API 293; BEA 112; EIA 1,317; Federal Register 122; GPR
+  1,185; GDELT 525 - 15 days; options 16). Fixed from the live responses: binary raw payloads (GDELT zip, GPR
+  xls) were stored corrupted (UTF-8 decoding) -> now byte for byte; BLS per-release schedule pages omit the
+  current month's releases (CPI 10-14, PPI 10-15) -> monthly calendars added; GPR (two Last-Modified values for
+  the same file) and Federal Register (future-dated documents clamped to each retrieval) re-stored unchanged
+  values at every run -> an unchanged value keeps its stored publication date; one transient connection reset
+  (EIA) -> one retry, never after a proxy refusal. Third run: 0 new rows; storage audit PASS. The second run
+  left 1,185 GPR and 4 Federal Register duplicate versions (same values, real header / retrieval dates): kept,
+  harmless (history is never deleted).
 - P4.1: keyed agency APIs `src/agency_apis.py` (BLS v2: 15 series - CPI, PPI, jobs, earnings, JOLTS; BEA:
   NIPA tables 1.1.1 / 2.8.4 / 2.6 - GDP, PCE, PCE prices, income, saving rate; EIA: 12 series - oil and gas spot
   prices, weekly stocks, production, refinery utilisation, retail fuel prices, gas storage), run by
-  `python main.py collect`. Tested offline on real payload excerpts and live into a scratch database (293 BLS,
-  112 BEA, 1,317 EIA values; second run stored none; storage audit PASS). The project database was not touched.
+  `python main.py collect`. Tested offline on real payload excerpts and live (see the live run above).
 
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
 validation status of the signal; `reports/weekly/2026-10-09/` is the first weekly report.
 The SQLite database (`data/`, ~550 MB) is NOT in git: a new session rebuilds it on the first runs
-(`python main.py analyze`, then `python main.py weekly`; SEC requests are throttled).
+(`python main.py analyze`, then `python main.py weekly`; SEC requests are throttled). In this session `data/`
+holds only the `collect` sources (~93 MB; GDELT raw zips ~6 MB per day): `analyze` / `weekly` not yet re-run.
 
 ## Environment checklist (owner)
 - Environment variables, one per line `NAME=value`: `FRED_API_KEY`, `NEWSAPI_KEY`, `SEC_USER_AGENT`,
@@ -47,9 +57,9 @@ answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA ke
 
 ## Next (agreed: "voie 1" — a real weekly financial-analysis assistant, no prediction claims)
 1. Done (P4.1): keys verified live; BLS v2 / BEA / EIA clients in `src/agency_apis.py`.
-2. Run `python main.py collect` live (now also BLS API, BEA, EIA); fix any parser against the real responses.
-   BLS and EIA values carry no publication date (retrieval time): run `collect` daily so the weekly report
-   sees a release before its cutoff.
+2. Done: `python main.py collect` run live, parsers and storage fixed (see above). Run `collect` daily: BLS and
+   EIA values carry no publication date (retrieval time), so the weekly report only sees a release after a
+   collect run that followed it.
 3. P4.0 phase 2 — wire into the weekly report: a `positioning` section (COT, Cboe put/call, FINRA short
    interest, option IV), FOMC + BLS calendars and earnings dates in `catalysts`, GDP + commodities (FRED)
    and Federal Register / GPR / GDELT in `macro` Q4; fix the FRED SP500 cross-check (series not in

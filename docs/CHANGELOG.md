@@ -1,5 +1,24 @@
 # Changelog
 
+## P4.2 — Audit corrections (step 4 of the handoff)
+
+- SEC acceptance times: against the EDGAR filing index pages, the feed's `acceptanceDateTime` labels follow
+  one convention per company (true UTC for MP and RKLB; true UTC + the New York offset for AAPL, CRWD and
+  NET, the same from 2015 to 2026). Each feed is calibrated on three index pages (immutable, downloaded
+  once) and converted to the true acceptance instant; otherwise the conservative New York reading is kept.
+  The audit re-checks two sampled filings per ticker (live: PASS for 40 tickers). Weekly sessions and
+  windows now use the true times (they were 4-10 h late for some companies).
+- Redundant versions: `Database.redundant_versions()` (same value re-stored later, dominated in
+  availability and retrieval), counted by the audit; `python main.py dedupe` removes them after a full
+  backup (live: 72,028 rows, mostly conservative SEC times superseded by calibrated ones).
+- Form 4: each document read leaves a `form4:document` marker, so derivative-only filings no longer make
+  the insider coverage partial; ingestion reaches back 90 + 21 days.
+- Calendars: `collect` stores the FRED release calendars daily (with FOMC and BLS already daily).
+- Fundamentals: margins, operating and free cash flow, dilution (Q2, official facts) and a derived
+  valuation (P/S, P/E, P/FCF; market_fact + ESTIMATE). Live report: 86 strongly supported conclusions
+  (71 before).
+- Tests 460 → 473.
+
 ## P4.0 phase 2 — New data wired into the weekly report
 
 - Catalysts (Q9): FOMC meetings from the Federal Reserve Board calendar (page version in force at the

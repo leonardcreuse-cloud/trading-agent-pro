@@ -35,6 +35,10 @@ shows it as DATA UNAVAILABLE.
    (option `-Time 23:30`). It runs for the current user, without administrator rights.
 6. Check it: `Start-ScheduledTask -TaskName "TradingAgentPro daily"`, then
    `Get-ScheduledTaskInfo -TaskName "TradingAgentPro daily"` (LastTaskResult 0 = success).
+7. Once, after the first run on the updated code: `venv\Scripts\python main.py dedupe` (removes the old
+   SEC versions made redundant by the calibrated acceptance times; it backs the database up first into
+   `data\backups\`, so keep free disk space of about twice the database size), then
+   `venv\Scripts\python main.py audit` (expected: 0 FAIL).
 
 ## Good to know
 

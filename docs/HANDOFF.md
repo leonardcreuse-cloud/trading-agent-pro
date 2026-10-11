@@ -76,7 +76,10 @@ answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA ke
    report come from their absence; GDP and
    commodities are read from BEA / EIA (agencies section), not added to the FRED macro tables; BLS October 2025
    does not exist (2025 shutdown), so a 12-month change that needs it is DATA UNAVAILABLE.
-4. Audit corrections: SEC acceptanceDateTime labels changed on 2026-10-10 (+4/5 h for ~16 % of
-   filings) -> single rule, de-duplicate stored facts, audit back to 0 FAIL; refresh calendars daily;
-   Form 4 matching; valuation / cash flow / margins in the report.
+4. Done (P4.2): SEC label conventions verified on EDGAR index pages and converted to true acceptance times;
+   `python main.py dedupe` for redundant versions (audit: 0 FAIL, 441 PASS on the cloud database); Form 4
+   document markers; FRED release calendars collected daily; margins / cash flow / dilution / derived
+   valuation in Q2. On the owner's PC, once after pulling: `python main.py analyze`, then
+   `python main.py dedupe` (it backs the whole database up first: free disk space about twice its size),
+   then `python main.py audit`.
 5. Later ("voie 2"): prospective weekly record of pre-declared signals vs realised returns (paper only).

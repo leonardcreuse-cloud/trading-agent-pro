@@ -74,7 +74,7 @@ When in doubt, the later plausible time is used:
 
 | Source | `published_at` |
 |---|---|
-| SEC EDGAR | `acceptanceDateTime` read as New York time (>= the feed's UTC label); else end of filing date |
+| SEC EDGAR | True acceptance instant when the feed's `acceptanceDateTime` convention is verified on the EDGAR filing index pages of three filings spanning the feed (P4.2); otherwise the label read as New York time (never early, up to 10 h late); else end of filing date |
 | FRED | Vintage date (`realtime_start`), end of day New York |
 | yfinance | Session date 21:00 UTC; adjusted prices are `value_revisable` (use `strict_vintage`) |
 | NewsAPI | Article `publishedAt` |
@@ -95,7 +95,7 @@ When in doubt, the later plausible time is used:
 A publication time later than retrieval is clamped to retrieval. A collected value equal to the latest stored
 version keeps that version's `published_at` (`external_sources.keep_stored_publication`): a moved estimate
 (another HTTP Last-Modified for the same file, a later clamp, a later table date) never creates a new version.
-Binary raw payloads (zip, xls) are stored byte for byte. Revised values are stored as new
+Binary raw payloads (zip, xls) are stored byte for byte. A version that repeats the previous version of the same fact with the same value and is available and retrieved no earlier than it is redundant (no point-in-time read depends on it): the audit counts them and `python main.py dedupe` deletes them after a full backup. Revised values are stored as new
 versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
 (`data/backups/`) and refilled from the sources.
 
@@ -114,6 +114,10 @@ limit: market sessions 5 days, daily series 7, short interest (semi-monthly) 30,
 | Revenue growth | Revenue TTM / revenue TTM one year earlier − 1 |
 | Debt | First reported definition: `LongTermDebt`; else non-current + current long-term debt; else convertible debt. Leases excluded |
 | Debt / equity | Debt / `StockholdersEquity` at the same balance-sheet date; unavailable if equity ≤ 0 or no debt tag |
+| Margins, cash flow (P4.2) | TTM at the revenue period end, one XBRL tag per item: gross profit (`GrossProfit`, else revenue - cost of revenue, derived), operating income, net income (parent), operating cash flow, capital expenditure; free cash flow = operating cash flow - capital expenditure; margin = item / revenue TTM; a missing item is unavailable, never 0 |
+| Dilution (P4.2) | Diluted weighted-average shares of the latest 3-month (else 12-month) period vs the same period one year earlier |
+| Valuation (P4.2) | Unadjusted close (yfinance, rank 2) x diluted weighted shares (approximation of shares outstanding; cash and debt ignored) -> P/S, P/E, P/FCF; `n/m` when the denominator is not positive; `market_fact` + `ESTIMATE`, never a cheap / expensive judgement |
+| Form 4 coverage (P4.2) | every document read is stored as a `form4:document` event (possibly with 0 non-derivative transactions); a Form 4 listed by SEC in a window without that marker is "not ingested" |
 | Insider score | Heuristic 0–100 from open-market Form 4 purchases (P) and discretionary sales (S) over 90 days; 10b5-1 planned sales, grants, exercises and tax withholding are not scored |
 
 An insider score of 50 is computed ("no informative transaction observed"); it is not a default:

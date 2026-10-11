@@ -35,7 +35,7 @@ QUESTIONS = {
     13: 'Which conclusions are strongly supported by data?',
     14: 'Which conclusions remain uncertain?',
 }
-SECTIONS = ('market', 'sec_events', 'macro', 'geopolitics', 'news', 'sector', 'catalysts', 'risks', 'positioning', 'quant')
+SECTIONS = ('market', 'sec_events', 'macro', 'agencies', 'geopolitics', 'news', 'sector', 'catalysts', 'risks', 'positioning', 'quant')
 
 # Structural blind spots of the quantitative signal (kept in sync with the code by a test).
 BLIND_SPOTS = [

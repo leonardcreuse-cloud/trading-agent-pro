@@ -31,6 +31,11 @@ missing data: when SEC cannot be reached the score is None.
 
 P1.6: distinct insiders = distinct primary reporting owners: a Form 4 jointly filed by
 several affiliated entities is one insider (it was counted once per entity).
+
+P4.2: every Form 4 document read is also stored as a 'form4:document' event (accession, number of
+non-derivative transactions, possibly 0), so a derivative-only filing is distinguishable from a document
+that was never ingested. run() ingests LOOKBACK_DAYS + INGEST_MARGIN_DAYS so that the 90-day windows ending
+at the previous weekly cutoff are covered too.
 """
 
 import json
@@ -42,6 +47,8 @@ from .sec_parser import IMMUTABLE, SEC_SOURCE, SECParser
 
 LOOKBACK_DAYS = 90
 FORM4_METRIC = 'form4:transaction'
+FORM4_DOC_METRIC = 'form4:document'
+INGEST_MARGIN_DAYS = 21
 SCORED_CODES = {'P': 'open-market purchase', 'S': 'open-market sale'}
 
 
@@ -161,7 +168,12 @@ class InsiderTracker:
                                  'published_at': filing['published_at'],
                                  'reason': f'XML parse error: {e}'})
                 continue
-            rows = []
+            rows = [{'entity': ticker, 'metric': FORM4_DOC_METRIC,
+                     'as_of_date': filing['filing_date'] or filing['published_at'][:10],
+                     'value_text': json.dumps({'accession': filing['accession_number'],
+                                               'nonderivative_transactions': len(doc['transactions'])},
+                                              sort_keys=True),
+                     'published_at': filing['published_at'], 'published_at_basis': filing['published_at_basis']}]
             for i, txn in enumerate(doc['transactions']):
                 if not txn['date']:
                     continue
@@ -221,7 +233,7 @@ class InsiderTracker:
         print(f"\n[INSIDER TRACKER] {ticker}")
         print("=" * 60)
         self.sec.last_error = None
-        ingested = self.ingest(ticker, known_at)
+        ingested = self.ingest(ticker, known_at, days=LOOKBACK_DAYS + INGEST_MARGIN_DAYS)
         if ingested is None:
             reason = f'SEC filings unavailable: {self.sec.last_error}'
             print(f"  {DATA_UNAVAILABLE} ({reason})")
@@ -245,7 +257,7 @@ class InsiderTracker:
         signal = 'POSITIVE' if score >= 60 else 'NEGATIVE' if score <= 40 else 'NEUTRAL'
         status = 'PROVISIONAL' if failures else 'OK'
         filings = self.sec._filings_cache.get(ticker) or {}
-        print(f"  Form 4 filings ({LOOKBACK_DAYS}d): {n_filings} (parsed {n_parsed})")
+        print(f"  Form 4 filings ingested ({LOOKBACK_DAYS + INGEST_MARGIN_DAYS}d): {n_filings} (parsed {n_parsed})")
         print(f"  Open-market buys:  {summary['insider_buys']} "
               f"({summary['distinct_buyers']} insiders, {summary['buy_value_usd']:,.0f} USD)")
         print(f"  Open-market sells: {summary['insider_sells']} "

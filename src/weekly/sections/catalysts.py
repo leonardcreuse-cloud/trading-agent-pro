@@ -191,14 +191,22 @@ def fetch_calendar(ctx, release_id, http_get=None):
     request was stored < REUSE_HOURS before G). {'status', 'dates', 'fetch', 'reason', 'reused',
     'requested'}.
     """
-    tm, db = ctx.tm, ctx.db
-    start = tm.s0
+    since = to_utc_iso(datetime.fromisoformat(ctx.tm.generated_at) - timedelta(hours=REUSE_HOURS))
+    return request_calendar(ctx.db, release_id, ctx.tm.s0, since, http_get)
+
+
+def request_calendar(db, release_id, start, reuse_since=None, http_get=None):
+    """
+    The FRED calendar of `release_id` from `start` (ISO date) onward, logged as the catalysts section reads it
+    back (stored_calendar); an identical request stored after `reuse_since` is reused. Also used by the daily
+    `collect` (external_sources.collect_fred_calendars), so that a report finds calendars retrieved before its
+    cutoff.
+    """
     endpoint = calendar_endpoint(release_id, start)
     out = {'status': DATA_UNAVAILABLE, 'dates': None, 'fetch': None, 'reason': None, 'reused': False,
            'requested': False}
-    if hasattr(db, 'latest_fetch') and hasattr(db, 'read_raw'):
-        since = to_utc_iso(datetime.fromisoformat(tm.generated_at) - timedelta(hours=REUSE_HOURS))
-        stored = db.latest_fetch(FRED_SOURCE, endpoint, since=since)
+    if reuse_since and hasattr(db, 'latest_fetch') and hasattr(db, 'read_raw'):
+        stored = db.latest_fetch(FRED_SOURCE, endpoint, since=reuse_since)
         if stored:
             try:
                 dates = _parse_dates(json.loads(db.read_raw(stored['fetch_id'])))

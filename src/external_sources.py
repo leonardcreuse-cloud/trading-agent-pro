@@ -794,6 +794,26 @@ def collect_options(db, tickers, today=None, max_days=60):
                    '; '.join(problems) or None)
 
 
+# ---------------------------------------------------------------- FRED release calendars
+
+def collect_fred_calendars(db, today):
+    """
+    The FRED release calendars of the weekly catalysts section (weekly.sections.catalysts.RELEASES) from
+    `today` onward, stored as that section reads them: a weekly report admits a calendar only when it was
+    retrieved before its cutoff, so they are refreshed daily here.
+    """
+    from .weekly.sections.catalysts import RELEASES, request_calendar
+    stored, problems = 0, []
+    for rid, name, _ in RELEASES:
+        got = request_calendar(db, rid, today.isoformat())
+        if got['status'] != 'OK':
+            problems.append(f'release {rid}: {got["reason"]}')
+        else:
+            stored += 1
+    return _result('fred_release_calendars', 'OK' if not problems else DATA_UNAVAILABLE, stored,
+                   '; '.join(problems) or None)
+
+
 # ---------------------------------------------------------------- earnings calendar snapshot (yfinance)
 
 EARNINGS_BASIS = 'yfinance calendar snapshot: no publication time (retrieval time); the date may be an estimate'
@@ -863,6 +883,7 @@ def collect_all(db=None, tickers=None, today=None, history_days=400):
             ('federal_register', lambda: collect_federal_register(db, today - timedelta(days=60))),
             ('gpr_index', lambda: collect_gpr(db, since)),
             ('gdelt_events', lambda: collect_gdelt(db, recent)),
+            ('fred_release_calendars', lambda: collect_fred_calendars(db, today)),
             ('options_snapshot', lambda: collect_options(db, tickers)),
             ('earnings_calendar', lambda: collect_earnings_calendars(db, tickers))]
     results = []

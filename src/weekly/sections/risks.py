@@ -55,6 +55,7 @@ Q = 8
 SEC_SOURCE, SEC_RANK = 'SEC EDGAR', 1
 FRED_SOURCE, FRED_RANK = 'FRED', 1
 FORM4_METRIC = 'form4:transaction'
+FORM4_DOC_METRIC = 'form4:document'          # one marker per Form 4 document read (insider_tracker, P4.2)
 INSIDER_DAYS = 90
 SIGMA_WINDOW = 20
 DRAWDOWN_WINDOW = 252
@@ -385,10 +386,27 @@ def _insider_window(ctx, ticker, end):
             'n_txns': len(txns)}
 
 
+def _ingested_documents(ctx, ticker):
+    """Accessions of the Form 4 documents read by the insider ingestion ('form4:document' markers), or None
+    when no marker is stored (data ingested before P4.2: coverage judged from the transactions only)."""
+    if not hasattr(ctx.db, 'events'):
+        return None
+    marks = ctx.db.events(ticker, FORM4_DOC_METRIC, source=SEC_SOURCE)
+    out = set()
+    for m in marks:
+        try:
+            out.add(json.loads(m.get('value_text') or '{}').get('accession'))
+        except (TypeError, ValueError):
+            continue
+    out.discard(None)
+    return out or None
+
+
 def _insider_rows(ctx, res, ticker, thr, feed):
     tm = ctx.tm
     names = ('discretionary insider sales, 90 days (USD)', 'distinct discretionary sellers, 90 days')
     stored = ctx.db.events(ticker, FORM4_METRIC, source=SEC_SOURCE)
+    documents = _ingested_documents(ctx, ticker)
     if not stored:
         for n in names:
             res.add(unavailable(ticker, Q, n, f'no Form 4 transaction stored for {ticker}: not ingested'))
@@ -398,7 +416,7 @@ def _insider_rows(ctx, res, ticker, thr, feed):
     w_p = _insider_window(ctx, ticker, tm.previous_cutoff)
     codes, notes = [], []
     for label, w in (('T_p', w_p), ('T_c', w_c)):
-        if w['start'] < earliest:
+        if documents is None and w['start'] < earliest:
             codes.append('PARTIAL_COVERAGE')
             notes.append(f'the 90-day window ending {label} starts {w["start"]}, before the earliest stored '
                          f'transaction ({earliest})')
@@ -416,10 +434,17 @@ def _insider_rows(ctx, res, ticker, thr, feed):
         for label, w in (('T_p', w_p), ('T_c', w_c)):
             f4 = {f['accession_number'] for f in listed if f.get('form') == '4'
                   and w['start'] < f['published_at'] <= w['end']}
-            unmatched = f4 - w['accessions']
             if oldest is None or oldest > w['start']:
                 codes.append('PARTIAL_COVERAGE')
                 notes.append(f'the SEC submissions feed does not reach back to the start of the window ending {label}')
+            if documents is not None:
+                missing = f4 - documents
+                if missing:
+                    codes.append('PARTIAL_COVERAGE')
+                    notes.append(f'{len(missing)} of {len(f4)} Form 4 filings listed by SEC in the window ending '
+                                 f'{label} were not ingested')
+                continue
+            unmatched = f4 - w['accessions']
             if unmatched:
                 codes.append('PARTIAL_COVERAGE')
                 notes.append(f'{len(unmatched)} of {len(f4)} Form 4 filings listed by SEC in the window ending '

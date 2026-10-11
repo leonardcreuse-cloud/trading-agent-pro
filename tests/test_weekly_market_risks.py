@@ -461,6 +461,26 @@ def test_risks_insider_coverage_gap_and_complete_coverage():
     assert 'PARTIAL_COVERAGE' in c['reason_codes'] and '1 of' in c['statement']
 
 
+def document_markers(accessions):
+    return [{'as_of_date': '2026-01-01', 'available_at': '2026-01-01T00:00:00+00:00',
+             'value_text': json.dumps({'accession': a, 'nonderivative_transactions': 0})} for a in accessions]
+
+
+def test_risks_insider_coverage_from_document_markers():
+    """P4.2: 'form4:document' markers tell a derivative-only filing from a document never ingested."""
+    ctx = risks_ctx()
+    late = [e for e in ctx.db._events[('AAA', 'form4:transaction')] if e['available_at'] >= '2026-09-01']
+    ctx.db._events[('AAA', 'form4:transaction')] = late                  # earliest transaction after T_p - 90 d
+    ctx._filings['AAA']['filings'].append(filing('4', '2026-09-20T12:00:00+00:00', acc='X9'))  # derivative only
+    ctx.db._events[('AAA', 'form4:document')] = document_markers(['A1', 'B1', 'C1', 'D1', 'E1', 'F1', 'X9'])
+    c = next(c for c in risks.build(ctx).as_dict()['conclusions'] if 'discretionary open-market' in c['statement'])
+    assert c['reason_codes'] == [] and c['level'] == STRONG              # every listed filing was read
+    assert 'earliest stored transaction' not in c['statement']
+    ctx.db._events[('AAA', 'form4:document')] = document_markers(['A1', 'B1', 'C1', 'D1', 'E1', 'F1'])
+    c = next(c for c in risks.build(ctx).as_dict()['conclusions'] if 'discretionary open-market' in c['statement'])
+    assert 'PARTIAL_COVERAGE' in c['reason_codes'] and 'were not ingested' in c['statement']
+
+
 def test_risks_insider_unverified_when_the_sec_feed_is_unavailable():
     ctx = risks_ctx(filings={})
     c = next(c for c in risks.build(ctx).as_dict()['conclusions'] if 'discretionary open-market' in c['statement'])

@@ -5,6 +5,7 @@ Payloads are small synthetic SEC documents shaped like the real endpoints; they 
 check parsing and calculation logic and never reach a report outside tmp_path.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -304,9 +305,12 @@ def test_insider_buys_by_two_insiders_score_bullish(sec):
         ('a-2', 10, form4_xml([('P', '2026-08-25', 500, 21.0)], plan=False, owner='B')),
         ('a-3', 200, form4_xml([('S', '2026-03-01', 9999, 20.0)], plan=False, owner='C')),  # outside window
     ])
-    result = InsiderTracker().run('MP')
+    tracker = InsiderTracker()
+    result = tracker.run('MP')
     assert result['status'] == 'OK'
     assert result['form4_filings_window'] == 2
+    marks = sorted(json.loads(e['value_text'])['accession'] for e in tracker.db.events('MP', 'form4:document'))
+    assert marks == ['a-1', 'a-2']                                   # one marker per document read (P4.2)
     assert result['insider_buys'] == 2 and result['distinct_buyers'] == 2
     assert result['buy_value_usd'] == 30_500.0 and result['insider_sells'] == 0
     assert result['insider_score'] == 70 and result['signal'] == 'POSITIVE'

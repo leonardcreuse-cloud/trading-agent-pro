@@ -301,5 +301,27 @@ def test_collect_all_reports_every_source_without_raising(monkeypatch):
     assert [r['collector'] for r in results] == ['cftc_cot', 'finra_short_interest', 'cboe_put_call',
                                                  'fed_fomc_calendar', 'bls_schedules', 'bls_api', 'bea_nipa',
                                                  'eia_energy', 'federal_register', 'gpr_index', 'gdelt_events',
-                                                 'options_snapshot', 'earnings_calendar']
+                                                 'fred_release_calendars', 'options_snapshot', 'earnings_calendar']
     assert all(r['status'] == DATA_UNAVAILABLE and r['stored'] == 0 for r in results)
+
+
+def test_daily_fred_calendars_are_read_back_by_the_catalysts_section(monkeypatch):
+    from types import SimpleNamespace
+    from src.weekly.sections import catalysts
+    from tests.conftest import FakeResponse
+    monkeypatch.setenv('FRED_API_KEY', 'testkey-abcdef123')
+    calls = []
+
+    def get(url, params=None, timeout=None):
+        calls.append(params)
+        return FakeResponse({'release_dates': [{'release_id': params['release_id'], 'date': '2026-10-14'}]})
+    monkeypatch.setattr('requests.get', get)
+    db = Database()
+    res = ex.collect_fred_calendars(db, date(2026, 10, 9))
+    assert res['status'] == 'OK' and res['stored'] == len(catalysts.RELEASES) == len(calls)
+    assert all(c['realtime_start'] == '2026-10-09' and c['api_key'] == 'testkey-abcdef123' for c in calls)
+    ctx = SimpleNamespace(db=db)
+    found = catalysts.stored_calendar(ctx, 10, '2099-01-01T00:00:00+00:00', '2026-10-10')
+    assert found['dates'] == ['2026-10-14'] and found['realtime_start'] == '2026-10-09'
+    with db.connect() as conn:
+        assert 'testkey' not in json.dumps([dict(r) for r in conn.execute('SELECT * FROM source_fetches')])

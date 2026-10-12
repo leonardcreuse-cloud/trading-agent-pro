@@ -49,6 +49,8 @@ class Dashboard:
                 f'out-of-sample skill)</span></div>'
                 f'<div>Prediction confidence: NOT CALIBRATED <span class="small">(no calibrated model: no '
                 f'probability is produced)</span></div>'
+                f'<div>Predicted probability: NOT CALIBRATED <span class="small">(the 0-100 score is not a '
+                f'probability)</span></div>'
                 f'<div>Risk score: NOT IMPLEMENTED <span class="small">(no validated global risk score; see the '
                 f'risk section of the weekly report)</span></div>'
                 f'<div class="small">Unavailable: {escape(", ".join(missing) or "none")}</div>'

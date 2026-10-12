@@ -155,6 +155,10 @@ def not_implemented_fields(walk_forward=None):
         'prediction_confidence': {
             'status': NOT_IMPLEMENTED,
             'reason': 'No calibrated model: no probability or confidence is produced.'},
+        'predicted_probability': {
+            'status': 'NOT CALIBRATED',
+            'reason': ('No model probability has been evaluated and calibrated out of sample; a 0-100 heuristic score '
+                       'is never read as a probability.')},
         'risk_score': {'status': NOT_IMPLEMENTED, 'reason': 'Risk engine not built yet (phase P3.1).'},
     }
 

@@ -35,6 +35,7 @@ from ..common import data_dir, redact, reports_dir, utc_now_iso
 from ..database import Database
 from .factors import (CONFIRMATORY, CONFIRMATORY_ALPHA, FEATURES, HORIZONS, UNAVAILABLE_GROUPS,
                       features_for)
+from .metrics import brier, calibration, confusion
 from .panel import STEP, PanelBuilder, check_features
 from .stats import (MIN_STOCKS, correct, daily_ics, mean_test, nw_lags, quintile_portfolios,
                     spearman)
@@ -202,6 +203,11 @@ def walk_forward_models(rows, horizon, calendar, benchmark, names, features=FEAT
             'oos_period': [min(oos_dates), max(oos_dates)],
             'ic': ic_test(oos_dates, lambda r: r['model_score'], horizon),
             'auc': round(float(roc_auc_score(y_true, y_score)), 4) if len(set(y_true)) == 2 else None,
+            # master mission P3 (runs after 2026-10-12): the model outputs are probabilities of beating the
+            # cross-sectional median, so precision / recall / F1 at 0.5, Brier score and calibration apply
+            'classification_at_0_5': confusion([p >= 0.5 for p in y_score], [bool(y) for y in y_true]),
+            'brier': brier(y_score, y_true),
+            'calibration': calibration(y_score, y_true),
             'portfolio': portfolio(oos_dates, lambda r: r['model_score'], horizon, oos_calendar, benchmark),
             'baseline_all_groups_same_dates': ic_test(oos_dates, lambda r: r['composites']['all_groups'],
                                                       horizon),

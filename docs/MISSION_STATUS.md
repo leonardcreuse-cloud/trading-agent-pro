@@ -219,3 +219,53 @@ is kept.
 - Option skew is only measured from snapshots taken while quotes are live (the evening run).
 - A second independent price source (Stooq, Alpha Vantage) is blocked: only the SPY / FRED SP500
   cross-check exists.
+
+## P3 — Quantitative models (2026-10-12)
+
+### State
+- **Stage 1** (148 stocks) and **stage 2** (242-stock holdout, 0 of 4 pre-registered hypotheses confirmed) are
+  finished and preserved. The results files can no longer be overwritten (P0).
+- **Stage 3** (prospective) has started.
+- The research code already provides:
+  - rank-IC tests with Newey-West t-statistics, 95% intervals, and Holm / Benjamini-Hochberg / Bonferroni
+    corrections;
+  - purged walk-forward models (training only on outcomes known before each test fold);
+  - out-of-sample periods and AUC;
+  - non-overlapping quintile portfolios, gross and net of 10 bps per unit of turnover, with Sharpe, Sortino,
+    max drawdown, turnover, an equal-weight universe benchmark and SPY.
+
+### Added
+- `src/research/metrics.py`: AUC (Mann-Whitney), precision / recall / F1 with undefined ratios left as None,
+  Brier score (probabilities only), calibration bins and expected calibration error.
+- Research model tests (future runs or labelled recalculations) now also report precision / recall / F1 at 0.5,
+  Brier and calibration of the model probabilities. The original stage 1 / 2 files are unchanged.
+- `python main.py evaluate-heuristic` (`src/heuristic_evaluation.py`): metrics of the heuristic on the existing
+  walk-forward sample. Classification against positive returns and against the cross-sectional median;
+  top-quintile, long-short and benchmark portfolios net of costs. Descriptive, no new hypothesis. Output:
+  `docs/research/HEURISTIC_EVALUATION.md`.
+- A "predicted probability: NOT CALIBRATED" field next to "prediction confidence".
+
+### Live results (`docs/research/HEURISTIC_EVALUATION.md`: 40 tickers, 8,800 observations, 2022-05 → 2026-09)
+
+| Horizon | Top quintile net Sharpe | Equal-weight Sharpe | SPY Sharpe | Long-short net | Top quintile vs equal weight |
+|---|---|---|---|---|---|
+| 5 sessions | 0.97 | 1.32 | 1.12 | −3.2% a year | −2.9% a year |
+| 20 sessions | 1.07 | 1.31 | 1.19 | −5.3% a year | −1.9% a year |
+
+- AUC against beating the median: 0.507 (5 sessions) and 0.508 (20 sessions).
+- POSITIVE label precision: 0.540 against a 0.532 base rate (5 sessions); 0.533 against 0.552 (20 sessions).
+- Reading: in this sample the heuristic adds nothing over holding the universe; it does slightly worse after
+  costs. This matches the walk-forward validation status: NOT DEMONSTRATED.
+
+### Not done, and why
+- No new factor or combination was tested. Each new test without pre-registration adds to the multiple-testing
+  burden.
+- Untested factor groups need a pre-registered stage first, like stage 2:
+  - sector and macro factors;
+  - events;
+  - sentiment: no history;
+  - analyst revisions: no source.
+- No stage 2 recalculation: the panel cache is not in this container (rebuilding needs hours of SEC / yfinance
+  downloads), and the original result cannot change by protocol.
+- Survivorship: prices of delisted companies are not available from the allowed sources. Every study states
+  the bias, since its universe is current members.

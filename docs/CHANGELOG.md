@@ -1,5 +1,12 @@
 # Changelog
 
+## M-P3 — Master mission, phase P3: quantitative metrics (2026-10-12)
+
+- `src/research/metrics.py` (AUC, precision / recall / F1, Brier, calibration) wired into future research model
+  tests; `python main.py evaluate-heuristic` adds classification and net-of-cost portfolio metrics of the heuristic
+  on the walk-forward sample (descriptive): top quintile Sharpe 0.97 vs equal-weight 1.32 (5 sessions), AUC 0.51.
+- `predicted_probability: NOT CALIBRATED` reported next to prediction confidence. Tests 530 → 537.
+
 ## M-P2 — Master mission, phase P2: technical analysis and sentiment (2026-10-12)
 
 Details and live results: `docs/MISSION_STATUS.md`.

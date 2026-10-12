@@ -7,6 +7,10 @@ Everything is read as known at the cutoff (entries and files whose own timestamp
                 the mean realised return of the top 8 vs the other scored tickers per horizon (descriptive)
   paper PT1     reports/paper/transactions.jsonl: the latest 'mark' created <= T_c: equity, total return, drawdown,
                 benchmarks (SPY, equal-weight universe), positions, stops, costs; interim and descriptive
+  PT1 risk      at that mark (report part 18): volatility, downside deviation, beta vs SPY and pairwise correlations of
+                the current weights over the risk window (src/risk.py, adjusted closes up to the mark session), largest
+                position and sector (SEC SIC major group recorded at the fill) shares, and days to exit at the
+                participation limit (20-session mean volume); no global risk score (NOT IMPLEMENTED)
   backtest      reports/history/heuristic_evaluation_<stamp>.json computed <= T_c (python main.py evaluate-heuristic):
                 descriptive metrics on the walk-forward sample, always shown apart from the prospective figures
 The pre-registered tests are in docs/research (stage 3, PT1); nothing here is a test. Kind: system_output.
@@ -15,9 +19,13 @@ Sections never write files.
 
 import json
 
+import pandas as pd
+
 from ...common import history_dir, stamp, to_utc_iso
 from ...journal import Journal
+from ...risk import RISK_SCORE_STATUS, days_to_exit, portfolio_metrics, settings
 from ..core import SectionResult, conclude, evidence, unavailable
+from .market import prices_aligned
 
 NAME = 'track_record'
 QUESTIONS = [11]
@@ -98,6 +106,65 @@ def _paper(ctx, res, base):
                                     f"{bench.get('spy_return_pct')}%, equal-weight universe {bench.get('ew_return_pct')}%), "
                                     f'maximum drawdown {mdd * 100:.2f}%, {stops} stop(s). Interim and descriptive.',
                      [_item(tm, f"PT1 mark {m['session']}", to_utc_iso(m['created_at']))], 'system_output'))
+    _paper_risk(ctx, res, m, entries)
+
+
+def _closes_to(ctx, ticker, session):
+    p = prices_aligned(ctx, ticker)
+    if p['status'] != 'OK':
+        return None
+    f = p['frame']
+    return f[[d <= session for d in f.index]]
+
+
+def _paper_risk(ctx, res, m, entries):
+    """Risk of the PT1 holdings at mark m (prices up to the mark session only)."""
+    if not m['positions']:
+        return
+    s, _ = settings(getattr(ctx, 'config', None))
+    bench = (getattr(ctx, 'weekly', None) or {}).get('benchmark', 'SPY')
+    weights = {t: h['shares'] * h['close'] / m['equity'] for t, h in m['positions'].items()}
+    closes, exits, missing = {}, {}, []
+    for t, h in m['positions'].items():
+        f = _closes_to(ctx, t, m['session'])
+        if f is None or f['close'].dropna().empty:
+            missing.append(t)
+            continue
+        closes[t] = f['close']
+        vol = f['volume'].dropna().iloc[-20:]
+        exits[t] = days_to_exit(h['shares'], float(vol.mean()) if len(vol) else None, s)
+    b = _closes_to(ctx, bench, m['session'])
+    metrics = portfolio_metrics(weights, pd.DataFrame(closes), None if b is None else b['close'], s['metrics_window'])
+    sectors = {}
+    for e in entries:
+        if e['type'] == 'fill' and e['side'] == 'buy' and e['session'] <= m['session']:
+            sectors[e['ticker']] = e.get('sector') or 'unknown'
+    by_sector = {}
+    for t, w in weights.items():
+        by_sector[sectors.get(t, 'unknown')] = by_sector.get(sectors.get(t, 'unknown'), 0) + w
+    top_t = max(weights, key=weights.get)
+    top_s = max(by_sector, key=by_sector.get)
+    known_exits = {t: d for t, d in exits.items() if d is not None}
+    slow = max(known_exits, key=known_exits.get) if known_exits else None
+    ok = metrics.get('status') == 'OK'
+    rows = [['annualised volatility (%)', metrics.get('volatility_ann_pct') if ok else metrics.get('reason')],
+            ['annualised downside deviation (%)', metrics.get('downside_dev_ann_pct')],
+            [f'beta vs {bench}', metrics.get('beta')],
+            ['mean / max pairwise correlation', f"{metrics.get('mean_pairwise_correlation')} / "
+                                                f"{metrics.get('max_pairwise_correlation')}" if ok else None],
+            ['largest position (% of equity)', f'{top_t} {weights[top_t] * 100:.2f}'],
+            ['largest sector, SIC major group (% of equity)', f'{top_s} {by_sector[top_s] * 100:.2f}'],
+            ['longest exit (sessions at the participation limit)', f'{slow} {known_exits[slow]}' if slow else None],
+            ['holdings without price history', ', '.join(missing) or 'none'],
+            ['global risk score', RISK_SCORE_STATUS]]
+    res.table(f"Paper strategy PT1 — portfolio risk at the mark of {m['session']} (paper only)", ['measure', 'value'],
+              rows, question=11, note=f"src/risk.py over {s['metrics_window']} sessions of adjusted closes up to the "
+                                      'mark session; limits from config risk (max position '
+                                      f"{s['max_position_pct']}%, max sector {s['max_sector_pct']}%). Volume is "
+                                      'split-adjusted while shares are as traded: days to exit are approximate around '
+                                      'a split. Descriptive; no limit here is a forecast of loss.')
+    if not ok:
+        res.add(unavailable('overall', 11, 'PT1 portfolio risk metrics', metrics.get('reason')))
 
 
 def _backtest(ctx, res):

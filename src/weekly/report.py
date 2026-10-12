@@ -56,6 +56,8 @@ SIMPLE_PARTS = {'market': 2, 'regime': 3, 'commodities': 7, 'sector': 8, 'techni
 def part_of(section, question, text, kind=None):
     """Report part (1-22) of a table / conclusion / unavailable item (rules above; first match)."""
     low = (text or '').lower()
+    if section == 'track_record' and 'portfolio risk' in low:
+        return 18
     if section in SIMPLE_PARTS:
         return SIMPLE_PARTS[section]
     if section == 'synthesis':

@@ -125,8 +125,11 @@ def test_track_record_is_point_in_time(monkeypatch, tmp_path):
                    'recorded_at': '2026-10-09T22:00:00+00:00'}])
     tx = Journal('transactions')
     tx.append([{'type': 'start', 'capital': 100000.0, 'created_at': '2026-10-03T12:00:00+00:00'},
+               {'type': 'fill', 'side': 'buy', 'ticker': 'AAA', 'session': '2026-10-05', 'sector': '35',
+                'created_at': '2026-10-05T22:00:00+00:00', 'costs': 8.0},
                {'type': 'mark', 'session': '2026-10-06', 'created_at': '2026-10-06T22:00:00+00:00', 'equity': 101000.0,
-                'cash': 1000.0, 'positions_value': 100000.0, 'gross_exposure_pct': 99.0, 'positions': {'AAA': {}},
+                'cash': 1000.0, 'positions_value': 100000.0, 'gross_exposure_pct': 99.0,
+                'positions': {'AAA': {'shares': 500, 'close': 158.0, 'stop': 150.0}},
                 'bench_state': {'spy_return_pct': 0.5, 'ew_return_pct': 0.7}},
                {'type': 'mark', 'session': '2026-10-12', 'created_at': '2026-10-12T22:00:00+00:00', 'equity': 90000.0,
                 'cash': 1000.0, 'positions_value': 89000.0, 'gross_exposure_pct': 99.0, 'positions': {'AAA': {}},
@@ -136,6 +139,15 @@ def test_track_record_is_point_in_time(monkeypatch, tmp_path):
     assert '1 prediction(s) over 1 week(s)' in texts and '1 realised outcome(s)' in texts     # p2 after the cutoff
     assert 'mark of 2026-10-06: equity 101,000.00 USD (+1.00% since the start' in texts         # later mark excluded
     assert any(u['item'] == 'descriptive backtest of the heuristic' for u in out['unavailable'])
+    from src.weekly.report import part_of
+    risk = next(t for t in out['tables'] if 'portfolio risk' in t['title'])
+    assert part_of('track_record', 11, risk['title']) == 18
+    rows = {r[0]: r[1] for r in risk['rows']}
+    assert rows['beta vs SPY'] == 0.782       # same series as the benchmark, 78.22% invested (cash has beta 0)
+    assert rows['largest position (% of equity)'] == 'AAA 78.22'         # 500 x 158 / 101,000
+    assert rows['largest sector, SIC major group (% of equity)'] == '35 78.22'
+    assert rows['longest exit (sessions at the participation limit)'] == 'AAA 0.05'   # 500 / (1e6 x 1%)
+    assert rows['global risk score'].startswith('NOT IMPLEMENTED')
 
 
 def test_synthesis_pillars_questions_and_scenarios():

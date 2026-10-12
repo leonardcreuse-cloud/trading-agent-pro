@@ -64,3 +64,87 @@ This file is updated at the end of every phase with what was actually run and ob
   Gold (LBMA, removed from FRED) and the ISM PMI (proprietary) have no allowed official source.
 - The owner's PC database still holds the redundant versions created by the older code: `python main.py dedupe`
   once after pulling (already listed in `docs/HANDOFF.md`).
+
+## P1 — Fundamental and macroeconomic analysis (2026-10-12)
+
+### Files
+- New: `src/fundamentals_ext.py`, `src/valuation.py`, `src/intrinsic.py`, `src/weekly/sections/valuation.py`,
+  `src/weekly/sections/commodities.py`, `tests/test_p61_fundamentals_ext.py`.
+- Changed: `src/sec_xbrl.py`, `src/sec_parser.py` (extended XBRL concepts stored),
+  `src/weekly/sections/macro.py`, `catalysts.py` and `geopolitics.py`, `src/weekly/report.py` (2 sections),
+  `scheduler_config.json` (explicit DCF assumptions).
+
+### Regression risk handled
+The stage 3 signal reads revenue, revenue growth and debt / equity through `src/sec_xbrl.py`. Those
+definitions are unchanged; a test pins them. Extended concepts go into separate groups, used only by the
+descriptive analysis.
+
+### What exists now (all point-in-time, sourced, formulas in the module docstrings)
+
+**Company fundamentals** (SEC XBRL, official):
+- TTM and quarterly revenue with year-on-year growth;
+- gross, operating, net and FCF margins, with their change over a year;
+- diluted EPS: exact from a 12-month fact; otherwise approximate, refused across a suspected split or when
+  its sign contradicts net income;
+- cash, short-term investments, net debt, current ratio, EBITDA, interest coverage, R&D share;
+- cash conversion (only above a 2% net margin); cash runway when free cash flow is negative;
+- cover-page shares and their one-year change.
+
+Company guidance is NOT IMPLEMENTED (unstructured text).
+
+**Valuation** (yfinance close + SEC):
+- Ratios: market cap, EV, P/E, P/B, ROE, P/S, P/FCF, EV/sales, EV/EBITDA, FCF yield.
+- Not meaningful: a denominator that is not positive, or an earnings multiple whose denominator is under 2%
+  of revenue.
+- History: quarterly points over 5 years, each with the fundamentals known then. It stops at a suspected
+  split rather than mixing split-adjusted prices with as-reported share counts.
+- Peers: comparison with the medians of the pre-declared peers.
+
+**Intrinsic value**:
+- A two-stage FCF model with bear, base and bull scenarios.
+- Sourced inputs: risk-free rate (FRED DGS10 at the cutoff), beta (weekly returns vs SPY), revenue growth
+  (3-year CAGR, SEC).
+- Assumptions in config, labelled as such: equity risk premium 5%, terminal growth 2.5%, 5 years.
+- Also: a sensitivity grid and a reverse DCF (growth implied by the price).
+- Reliability is never higher than ASSUMPTION-DRIVEN. FCF ≤ 0 → NOT RELIABLE, no value.
+
+**Macro**: added the 10-year real yield, the 10-year breakeven, the ECB deposit rate, the IG credit spread,
+EUR/USD, core PCE, industrial production and capacity utilisation. PMI: DATA UNAVAILABLE (proprietary).
+
+**Commodities** (new section):
+- Official sources: EIA oil and gas, IMF metals and agricultural prices, BLS steel and gold price indexes.
+- Secondary source: COMEX/NYMEX front-month futures via yfinance, with the roll caveat.
+- Unavailable with reasons: rare earths, lithium, cobalt, LBMA gold.
+- A pre-declared company exposure map, marked as interpretation, with no estimated sensitivity.
+
+**Calendar**: added PPI, industrial production, JOLTS, housing starts and trade (12 FRED release calendars in
+total), plus a cross-check of the yfinance earnings date against the anniversary of last year's 8-K item 2.02.
+
+**Geopolitics**: each Federal Register document of the window gets the seven points: what was published,
+source and date, exposed sectors and companies, mechanism, horizon, evidence, uncertainties. Themes come from
+a pre-declared keyword map (interpretation); no headline becomes a signal.
+
+### Tests and live results
+- Tests: 514 passed (13 new).
+- Live examples (cloud database, close of 2026-10-09):
+
+  | Ticker | Key result |
+  |---|---|
+  | MSFT | P/E 29.8, EV/EBITDA 20.3 (D&A $39B = Depreciation + AmortizationOfIntangibleAssets), ROE 34% |
+  | NVDA | P/E 29.0, EV/EBITDA 27.5 |
+  | CRWD | 4:1 split detected (yfinance split of 2026-07-02 matches the SEC cover counts 254.6M → 1,024M); EPS on a consistent share basis; P/E not meaningful (net margin 0.8%) |
+  | PANW | GAAP P/E 1,047, which is genuine: FY to 2026-07-31 diluted EPS $0.40 |
+  | XOM | Revenue and DE total debt unavailable: company-specific XBRL tags, outside the standard taxonomy |
+
+- DCF base cases are far below market prices for growth companies (e.g. MSFT $159 against $535). That is
+  what a 5-year fade to 2.5% at an 11% cost of equity gives. The reverse DCF shows the growth the price
+  implies instead. These are never presented as fair values.
+- Weekly report v6 for 2026-10-09: 102 strongly supported (86 before), 171 uncertain, 63 data unavailable.
+  No section error.
+
+### Remaining after P1
+- Gold (LBMA) and PMI have no allowed official source.
+- Several official hosts are blocked by the network policy (see P0).
+- Company guidance and issuer-announced earnings dates in 8-K exhibits are not parsed.
+- EV excludes minority interests, preferred stock and leases.
+- The DCF treats FCF as free cash flow to equity and ignores net borrowing.

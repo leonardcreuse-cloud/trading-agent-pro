@@ -1,5 +1,16 @@
 # Changelog
 
+## M-P1 — Master mission, phase P1: fundamentals, valuation, macro, commodities (2026-10-12)
+
+Details and live results: `docs/MISSION_STATUS.md`.
+- Extended fundamentals (`src/fundamentals_ext.py`), valuation ratios with history and peers
+  (`src/valuation.py`), two-stage FCF scenarios with a reverse DCF (`src/intrinsic.py`); new weekly sections
+  `valuation` and `commodities`.
+- Macro: real yields, breakevens, ECB rate, IG spread, EUR/USD, core PCE, industrial production, capacity
+  utilisation; PMI unavailable with reason. Calendar: 5 more FRED release calendars; earnings-date cross-check.
+- Geopolitics: seven-point event analysis of Federal Register documents (pre-declared keyword themes).
+- The frozen stage 3 signal definitions are unchanged and pinned by a test. Tests 495 → 514.
+
 ## M-P0 — Master mission, phase P0: integrity and calculation safety (2026-10-12)
 
 Details, live results and remaining points: `docs/MISSION_STATUS.md`.

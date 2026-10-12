@@ -19,7 +19,7 @@ write files.
 import json
 from datetime import datetime, timedelta
 
-from ..common import DATA_UNAVAILABLE, load_config, tickers
+from ..common import DATA_UNAVAILABLE, load_config, redact, tickers
 from ..database import Database, freshness
 from ..macro_fred import FredError, MacroFRED
 from ..market_data import PriceFeed
@@ -48,7 +48,7 @@ class Context:
                                f'({spy["reason"]})')
         sessions = [d.date().isoformat() for d in spy['close'].index]
         self.tm = TimeModel(sessions, requested_cutoff, generated_at)
-        self._prices, self._fred, self._filings = {}, {}, {}
+        self._prices, self._fred, self._filings, self._splits = {}, {}, {}, {}
 
     # ------------------------------------------------------------------ prices
 
@@ -64,6 +64,25 @@ class Context:
                                     'reason': p.get('reason') or (None if frame is not None and len(frame)
                                                                   else 'no session up to s_0')}
         return self._prices[ticker]
+
+    def splits(self, ticker):
+        """
+        {'status', 'splits': {ex-date: ratio} dated <= s_0, 'fetch', 'reason'}: yfinance split events (rank 2,
+        logged). A split is public on its ex-date; events after s_0 are dropped.
+        """
+        if ticker not in self._splits:
+            try:
+                import yfinance as yf
+                events = yf.Ticker(ticker).splits
+                got = {d.date().isoformat(): float(r) for d, r in events.items()} if events is not None else {}
+                fetch = self.db.record_fetch('yfinance', f'yfinance.Ticker({ticker}).splits', status='OK',
+                                             raw=json.dumps(got, sort_keys=True), raw_ext='json', n_records=len(got))
+                self._splits[ticker] = {'status': 'OK', 'splits': {d: r for d, r in got.items() if d <= self.tm.s0},
+                                        'fetch': fetch, 'reason': None}
+            except Exception as e:  # noqa: BLE001 - reported, never filled
+                self._splits[ticker] = {'status': DATA_UNAVAILABLE, 'splits': None, 'fetch': None,
+                                        'reason': redact(f'yfinance splits: {type(e).__name__}: {e}')}
+        return self._splits[ticker]
 
     # ------------------------------------------------------------------ FRED
 

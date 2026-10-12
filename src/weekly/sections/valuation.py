@@ -27,7 +27,8 @@ from ...intrinsic import MIN_BETA_WEEKS, dcf, settings
 from ...intrinsic import beta as beta_of
 from ...market_data import session_close_utc
 from ...sec_parser import SEC_SOURCE
-from ...valuation import FORMULAS, LABELS, RATIOS, history_points, peer_medians, percentile, ratios, shares_for
+from ...valuation import (FORMULAS, LABELS, RATIOS, SHARE_COUNT_SUSPECT, history_points, peer_medians, percentile,
+                          ratios, shares_for, split_explained)
 from ..core import SectionResult, conclude, evidence, unavailable
 
 NAME = 'valuation'
@@ -168,6 +169,19 @@ def _ratios_table(t, R, title_suffix):
     return rows, (f"{t}: valuation ratios {title_suffix}", ['ratio', 'formula', 'value', 'not computed because'])
 
 
+def _split_note(ctx, ticker, X, R):
+    """For a share count flagged SHARE_COUNT_SUSPECT: whether a split in the price data explains it (noted in flags)."""
+    if not any(SHARE_COUNT_SUSPECT in f for f in R['flags']):
+        return None
+    sp = ctx.splits(ticker) if hasattr(ctx, 'splits') else {'splits': None, 'reason': 'no split accessor'}
+    ok = split_explained(X, sp.get('splits'))
+    R['flags'].append('the change matches the split(s) in the price data (yfinance): market cap on one basis'
+                      if ok else 'no split of that ratio in the price data (yfinance): share count and price may '
+                                 'be on different bases' if ok is False else
+                      f"split data unavailable ({sp.get('reason') or 'no prior count'})")
+    return ok
+
+
 def build(ctx, tickers=None, history=True):
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
@@ -208,6 +222,7 @@ def build(ctx, tickers=None, history=True):
         from .market import price_evidence
         p_item = price_evidence(ctx, t, px, f'unadjusted close {close:.2f} on {day}', as_of=day)
         R = ratios(X, close, day)
+        _split_note(ctx, t, X, R)
         rows, (title, cols) = _ratios_table(t, R, f'at the close of {day} (fundamentals known at T_c)')
         res.table(title, cols, rows, scope=t, question=2,
                   note=f"Shares: {R['shares_basis']}. " + ' '.join(R['flags']) + ' Enterprise value excludes '
@@ -256,11 +271,17 @@ def build(ctx, tickers=None, history=True):
         # peers
         peers = peers_cfg.get(t) or []
         if peers:
-            computed = []
+            computed, explained = [], {}
             for peer in peers:
                 pc, pday, _ = _close(ctx, peer)
-                computed.append((peer, None if pc is None else ratios(ext(peer, tm.cutoff), pc, pday)))
-            medians, excluded = peer_medians([(peer, PR) for peer, PR in computed if PR is not None])
+                if pc is None:
+                    computed.append((peer, None))
+                    continue
+                PX = ext(peer, tm.cutoff)
+                PR = ratios(PX, pc, pday)
+                explained[peer] = _split_note(ctx, peer, PX, PR)
+                computed.append((peer, PR))
+            medians, excluded = peer_medians([(peer, PR) for peer, PR in computed if PR is not None], explained)
             peer_rows = [[peer] + [None] * len(HISTORY_KEYS) + ['no close at s_0'] if PR is None else
                          [peer] + [_fmt(PR[k]['value']) for k in HISTORY_KEYS] + ['; '.join(PR['flags']) or None]
                          for peer, PR in computed]

@@ -73,8 +73,28 @@ def _div(num, den, name, revenue=None, per_share=None):
 
 
 # flag of a share count that moved by SPLIT_SUSPECT_PCT or more in a year: the market-cap-based ratios may mix pre- and
-# post-split figures (or sources that disagree on a split); such a peer is shown but left out of peer medians
+# post-split figures, or the share count and the price data may disagree on a split; unless the change is explained
+# by a split in the price data (split_explained), such a peer is shown but left out of peer medians
 SHARE_COUNT_SUSPECT = 'possible split or large issuance'
+SPLIT_MATCH_TOL = 0.15          # split ratio vs share-count ratio (issuance / buybacks in between), as in the audit
+
+
+def split_explained(X, splits):
+    """
+    True when the yearly change of the cover-page share count in X equals (within SPLIT_MATCH_TOL) the product of
+    the splits dated after the prior count and no later than the latest count's cover date or publication (a
+    filing made after a split reports the post-split count); False when it does not; None when unknown.
+    """
+    change, lo, hi = (X.get('shares_outstanding_change_pct'), X.get('shares_outstanding_prior_date'),
+                      X.get('shares_outstanding_date'))
+    if change is None or not lo or not hi or splits is None or change <= -100:
+        return None
+    hi = max(hi, (X.get('shares_outstanding_published_at') or hi)[:10])
+    product = 1.0
+    for d, r in splits.items():
+        if lo < d <= hi and r:
+            product *= r
+    return product != 1.0 and abs(product / (1 + change / 100) - 1) <= SPLIT_MATCH_TOL
 
 
 def shares_for(X, close_date):
@@ -193,14 +213,15 @@ def peer_median(values):
     return (xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2), n
 
 
-def peer_medians(peer_ratios):
+def peer_medians(peer_ratios, explained=None):
     """
-    peer_ratios: [(ticker, ratios(...) output)]. Returns ({ratio key: (median, n)}, [excluded tickers]); a peer whose
-    share count is flagged SHARE_COUNT_SUSPECT is left out of every median (and marked in its flags).
+    peer_ratios: [(ticker, ratios(...) output)]; explained: {ticker: split_explained(...)}. Returns
+    ({ratio key: (median, n)}, [excluded tickers]); a peer whose share count is flagged SHARE_COUNT_SUSPECT is left
+    out of every median (and marked in its flags) unless a split in the price data explains the change.
     """
     kept, excluded = [], []
     for ticker, R in peer_ratios:
-        if any(SHARE_COUNT_SUSPECT in f for f in R['flags']):
+        if any(SHARE_COUNT_SUSPECT in f for f in R['flags']) and not (explained or {}).get(ticker):
             excluded.append(ticker)
             R['flags'].append('left out of the peer median')
         else:

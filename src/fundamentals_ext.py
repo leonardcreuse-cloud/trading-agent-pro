@@ -155,11 +155,13 @@ def extended(sec, ticker, known_at=None, base=None):
                     'shares_outstanding_note': row.get('value_text'),
                     'shares_outstanding_published_at': row.get('published_at'),
                     'shares_outstanding_prior_year': prior[1]['value'] if prior else None,
+                    'shares_outstanding_prior_date': prior[0] if prior else None,
                     'shares_outstanding_change_pct': _pct(row['value'] - prior[1]['value'], prior[1]['value'])
                     if prior else None})
     else:
         out.update({'shares_outstanding': None, 'shares_outstanding_date': None, 'shares_outstanding_note': None,
                     'shares_outstanding_published_at': None, 'shares_outstanding_prior_year': None,
+                    'shares_outstanding_prior_date': None,
                     'shares_outstanding_change_pct': None})
         reasons.append('cover-page shares outstanding not reported (several share classes, or not tagged)')
     # EPS, D&A / EBITDA, interest, R&D (TTM at E)

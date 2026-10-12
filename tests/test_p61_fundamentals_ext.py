@@ -162,6 +162,22 @@ def test_peer_medians_leave_out_a_split_suspect_peer(sec):
     medians, excluded = peer_medians([('A', ok[0]), ('B', ok[1]), ('C', ok[2]), ('H', suspect)])
     assert excluded == ['H'] and suspect['flags'][-1] == 'left out of the peer median'
     assert medians['pb'] == (4.0, 3)                                           # 2, 4, 6; H (P/B 20) left out
+    again = ratios(dict(X, shares_outstanding_change_pct=-50.0), 100.0, '2026-09-01')
+    medians, excluded = peer_medians([('A', ok[0]), ('H', again)], explained={'H': True})
+    assert excluded == [] and medians['pb'] == (11.0, 2)                       # a split explains it: kept
+
+
+def test_split_explained_by_the_price_data():
+    from src.valuation import split_explained
+    X = {'shares_outstanding_change_pct': 308.0, 'shares_outstanding_prior_date': '2025-05-29',
+         'shares_outstanding_date': '2026-05-28', 'shares_outstanding_published_at': '2026-06-03T21:00:00+00:00'}
+    assert split_explained(X, {'2026-05-30': 4.0}) is True                     # after the cover date, before the filing
+    assert split_explained(X, {'2026-07-01': 4.0}) is False                    # after the filing: not that count
+    assert split_explained(X, {'2020-01-02': 4.0}) is False and split_explained(X, None) is None
+    halved = dict(X, shares_outstanding_change_pct=-50.1)
+    assert split_explained(halved, {'2026-05-01': 0.9535}) is False            # a spin-off factor, not a 1:2 split
+    assert split_explained(halved, {'2026-05-01': 0.5}) is True
+    assert split_explained(dict(X, shares_outstanding_prior_date=None), {'2026-05-30': 4.0}) is None
 
 
 def test_history_stops_at_a_suspected_split():

@@ -1,5 +1,13 @@
 # Changelog
 
+## M-P4 — Master mission, phase P4: risk engine, journals, paper trading (2026-10-12)
+
+- `src/risk.py` (sizing to 1% risk / 2% hard, exposure, sector, concentration, liquidity limits, risk metrics;
+  no global risk score), `src/journal.py` (hash-chained predictions and transactions journals),
+  `src/paper.py` (strategy PT1, pre-registered in `docs/research/PAPER_STRATEGY_PT1.md`; paper only).
+- PT1 started 2026-10-12 08:00 UTC with 8 market-on-open orders from the stage 3 record of 2026-10-09.
+- Tests 537 → 546.
+
 ## M-P3 — Master mission, phase P3: quantitative metrics (2026-10-12)
 
 - `src/research/metrics.py` (AUC, precision / recall / F1, Brier, calibration) wired into future research model

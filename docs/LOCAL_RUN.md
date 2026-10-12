@@ -63,6 +63,16 @@ all records against realised returns (protocol: `docs/research/STAGE3_PREREGISTR
 - The pre-registered test runs once per horizon, after 52 valid weekly records (about one year); its result
   is frozen in `reports\prospective\confirmatory_<H>d.json` (commit it too).
 
+## Paper strategy PT1 (paper only)
+
+`python main.py paper` runs every day (after `analyze`): it turns a new stage 3 record into market-on-open
+orders, then fills them, applies stops, dividends and splits, and marks the portfolio at the close
+(`docs/research/PAPER_STRATEGY_PT1.md`). Nothing is ever sent to a broker. The journals
+`reports\paper\transactions.jsonl` and `reports\paper\predictions.jsonl` are append-only and hash-chained:
+never edit them. Commit them with the stage 3 files each week (`git add reports/paper reports/prospective`).
+The first orders (record of 2026-10-09) were placed in the cloud before the 2026-10-12 open; pull before running
+`paper` on the PC so that the PC continues the same journals.
+
 ## Good to know
 
 - The PC must be on (session open) at 23:00. A missed run starts at the next opportunity, but values it

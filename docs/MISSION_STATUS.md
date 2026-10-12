@@ -269,3 +269,54 @@ is kept.
   downloads), and the original result cannot change by protocol.
 - Survivorship: prices of delisted companies are not available from the allowed sources. Every study states
   the bias, since its universe is current members.
+
+## P4 — Risk management, journals and paper trading (2026-10-12)
+
+### Files
+- New:
+  - `src/risk.py`, `src/journal.py`, `src/paper.py`;
+  - `docs/research/PAPER_STRATEGY_PT1.md`, the pre-registration, committed (9da5530) before any code or order;
+  - `tests/test_p64_risk_paper.py`.
+- Changed: `src/market_data.py` (as-traded open/high/low), `main.py` (`paper`), `scripts/daily_run.py`
+  (paper step every day), `scheduler_config.json` (`risk` and `paper` settings, labelled assumptions).
+
+### What exists now
+
+**Risk engine**:
+- Sizing: 1% of equity at risk to the stop (hard limit 2%), counting round-trip costs per share, then capped by
+  20% of equity per position, 1% of the 20-session volume, available cash, and a minimum traded value.
+- Portfolio limits: gross exposure, sector (SEC SIC major group), positions.
+- Metrics: volatility, beta, pairwise correlation, downside deviation, drawdown, days to exit.
+- Position risk is reported separately from the capital invested.
+- No global risk score: NOT IMPLEMENTED, none validated.
+
+**Journals** (hash-chained, append-only; an append is refused on a broken chain):
+- `reports/paper/predictions.jsonl`: one prediction per ticker and week, with every field required by the
+  mission; outcomes are appended later as separate entries, never by editing a prediction.
+- `reports/paper/transactions.jsonl`: start, rebalances, orders, fills, rejections, stops, dividends, splits
+  and daily marks with both benchmarks.
+
+**Simulator**, following PT1:
+- Orders come only from a valid stage 3 record, written before the open of its entry session.
+- Fills happen at the next session's as-traded open, adjusted for slippage and the spread, plus commission.
+- Stops are checked on session lows; a gap through the stop fills at the open, below the stop.
+- Corporate actions are applied before the open: dividends credited to the previous close's holder, splits
+  adjusting shares, stop and cost basis.
+- State is rebuilt only from the journal.
+- Paper only: no broker library, no network call that places an order.
+
+### Tests and live results
+- Tests: 546 passed.
+- Synthetic full cycle tested: fills with costs; a gap-through stop filled at the open; a dividend; a 2:1 split
+  with as-traded conversion; equity = cash + positions; idempotence; refusal after the entry open.
+- Live, 2026-10-12 08:00 UTC: PT1 started from the stage 3 record of 2026-10-09.
+  - Orders: 8 market-on-open buys for the 2026-10-12 open (XOM, NVDA, UBER, GOOGL, MSFT, AMD, COST, ISRG).
+  - Predictions: 40.
+  - Pushed before the open (commit 01f8116).
+  - The fills are processed by the first `paper update` after Monday's session (the PC's evening run).
+
+### Remaining after P4
+- Risk metrics of the paper holdings are not yet in the weekly report or the dashboard (P5).
+- Event risk for the paper holdings relies on earnings snapshots that `collect` stores only for the configured
+  universe (4 tickers).
+- Commission, slippage and spread are assumptions: no execution data exists to calibrate them.

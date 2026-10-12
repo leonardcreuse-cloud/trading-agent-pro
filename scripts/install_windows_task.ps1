@@ -30,7 +30,7 @@ $trigger = New-ScheduledTaskTrigger -Daily -At $Time
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 4) `
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force `
-    -Description 'Trading Agent Pro: collect + analyze every day, weekly report on Saturdays (scripts\daily_run.py)' | Out-Null
+    -Description 'Trading Agent Pro: collect, analyze and paper every day, stage 3 record on weekends, weekly report on Sundays (scripts\daily_run.py)' | Out-Null
 
 Write-Host "Task '$TaskName' registered: every day at $Time with $python"
 Write-Host "Test it now:   Start-ScheduledTask -TaskName '$TaskName'"

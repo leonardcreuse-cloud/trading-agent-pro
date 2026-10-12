@@ -15,8 +15,9 @@ collects Friday's releases (08:30 New York) and an end-of-session option snapsho
 | When (local time) | `scripts\daily_run.py` runs |
 |---|---|
 | every day, 23:00 | `python main.py collect`, then `python main.py analyze` |
-| Saturday, 23:00 | the same, then `python main.py prospective` and `python main.py weekly` (week ending the day before) |
-| Sunday, 23:00 | `collect`, `analyze`, then `python main.py prospective` (catches a missed Saturday) |
+| every day, 23:00 | then `python main.py paper` (paper strategy PT1: orders, fills, stops, marks) |
+| Saturday, 23:00 | the same, plus `python main.py prospective` (stage 3 weekly record) |
+| Sunday, 23:00 | the same, plus `prospective` (catches a missed Saturday) and `python main.py weekly` (week ending Friday; on Sunday evening the news window is complete) |
 
 Logs: `data\logs\<date>_<step>.log`; summary of the latest run: `data\logs\last_run.json` (`"ok": true`).
 Exit codes: `collect` returns 2 when at least one source was unavailable (the log line gives the reason); the

@@ -12,6 +12,7 @@ renders. Nothing in this file decides an evidence level: levels come from core.c
 """
 
 import importlib
+import inspect
 import traceback
 from html import escape
 
@@ -35,7 +36,48 @@ QUESTIONS = {
     13: 'Which conclusions are strongly supported by data?',
     14: 'Which conclusions remain uncertain?',
 }
-SECTIONS = ('market', 'technicals', 'sec_events', 'valuation', 'macro', 'commodities', 'agencies', 'geopolitics', 'news', 'sector', 'catalysts', 'risks', 'positioning', 'quant')
+SECTIONS = ('market', 'regime', 'technicals', 'sec_events', 'valuation', 'macro', 'commodities', 'agencies',
+            'geopolitics', 'news', 'sector', 'catalysts', 'risks', 'positioning', 'quant', 'track_record',
+            'data_quality', 'synthesis')
+# a report whose critical section failed is INCOMPLETE (manifest status, exit code 3 of `python main.py weekly`)
+CRITICAL_SECTIONS = ('market', 'sec_events', 'valuation', 'macro', 'risks', 'quant', 'synthesis')
+# master mission P5: the 22-part structure of the weekly analysis
+PARTS = {1: 'Executive summary', 2: 'Overall market conditions', 3: 'Market regime', 4: 'Macroeconomic analysis',
+         5: 'Geopolitical analysis', 6: 'Socioeconomic analysis', 7: 'Commodities', 8: 'Sector analysis',
+         9: 'Company fundamentals', 10: 'Valuation', 11: 'Technical analysis', 12: 'Recent news and events',
+         13: 'Earnings and upcoming catalysts', 14: 'Insider activity', 15: 'Market sentiment and positioning',
+         16: 'Options and implied volatility', 17: 'Quantitative analysis', 18: 'Risk analysis',
+         19: 'Bull, base and bear scenarios', 20: 'Data quality', 21: 'Prediction history and performance',
+         22: 'Conclusions and key uncertainties'}
+SIMPLE_PARTS = {'market': 2, 'regime': 3, 'commodities': 7, 'sector': 8, 'technicals': 11, 'geopolitics': 5,
+                'catalysts': 13, 'quant': 17, 'data_quality': 20, 'track_record': 21}
+
+
+def part_of(section, question, text, kind=None):
+    """Report part (1-22) of a table / conclusion / unavailable item (rules above; first match)."""
+    low = (text or '').lower()
+    if section in SIMPLE_PARTS:
+        return SIMPLE_PARTS[section]
+    if section == 'synthesis':
+        return 19 if 'scenario' in low else 22 if 'uncertaint' in low and question == 13 else 1
+    if section in ('sec_events', 'risks') and ('form 4' in low or 'insider' in low):
+        return 14
+    if section == 'risks':
+        return 18
+    if section == 'positioning':
+        return 16 if any(w in low for w in ('option', 'implied volatility', 'skew', 'term slope')) else 15
+    if section == 'news':
+        return 5 if question == 4 else 12
+    if section == 'macro':
+        return {3: 4, 4: 5, 5: 6}.get(question, 4)
+    if section == 'agencies':
+        return 6 if question == 5 else 4
+    if section == 'sec_events':
+        return 9 if question == 2 else 12
+    if section == 'valuation':
+        return 9 if (': fundamentals (sec xbrl' in low or kind == 'official_fact' or low.startswith('company guidance')
+                     or low.startswith('extended fundamentals')) else 10
+    return 22
 
 # Structural blind spots of the quantitative signal (kept in sync with the code by a test).
 BLIND_SPOTS = [
@@ -64,7 +106,10 @@ def run_sections(ctx, names=SECTIONS):
             results.append(r.as_dict())
             continue
         try:
-            results.append(module.build(ctx).as_dict())
+            if 'previous' in inspect.signature(module.build).parameters:
+                results.append(module.build(ctx, previous=list(results)).as_dict())
+            else:
+                results.append(module.build(ctx).as_dict())
         except Exception as e:  # noqa: BLE001 - one section must not stop the report
             r = SectionResult(name, getattr(module, 'QUESTIONS', []))
             for q in r.questions or [None]:
@@ -101,7 +146,33 @@ def build(requested_cutoff=None, generated_at=None, ctx=None, names=SECTIONS):
     payload['counts'] = {'strongly_supported': len(payload['q13_strongly_supported']),
                          'uncertain': len(payload['q14_uncertain']),
                          'data_unavailable': len(unavailable_items)}
+    failed = [s['name'] for s in sections if any('section failed' in u['reason'] or 'NOT IMPLEMENTED (' in u['reason']
+                                                 for u in s['unavailable'] if u['item'] == f"section {s['name']}")]
+    critical = [n for n in failed if n in CRITICAL_SECTIONS]
+    payload['failed_sections'] = failed
+    payload['status'] = 'INCOMPLETE' if critical else 'COMPLETE'
+    payload['status_reason'] = (f"critical section(s) failed: {', '.join(critical)}" if critical else
+                                (f"non-critical section(s) failed: {', '.join(failed)}" if failed else None))
+    assign_parts(payload)
     return payload, ctx
+
+
+def assign_parts(payload):
+    """Tag every table / conclusion / unavailable item with its report part and build the structure table."""
+    counts = {n: [0, 0, 0] for n in PARTS}
+    for s in payload['sections']:
+        for t in s['tables']:
+            t['part'] = part_of(s['name'], t.get('question'), t['title'])
+            counts[t['part']][0] += 1
+        for c in s['conclusions']:
+            c['part'] = part_of(s['name'], c.get('question'), c['statement'], c.get('kind'))
+            counts[c['part']][1] += 1
+        for u in s['unavailable']:
+            u['part'] = part_of(s['name'], u.get('question'), f"{u['item']} {u['reason']}")
+            counts[u['part']][2] += 1
+    payload['parts'] = PARTS
+    payload['structure'] = [[n, PARTS[n], *counts[n], 'covered' if counts[n][0] or counts[n][1] else
+                             'DATA UNAVAILABLE' if counts[n][2] else 'empty'] for n in PARTS]
 
 
 def banner(sections):
@@ -189,31 +260,43 @@ def render_html(payload):
     parts.append(f"<p>Conclusions: {payload['counts']['strongly_supported']} strongly supported, "
                  f"{payload['counts']['uncertain']} uncertain, {payload['counts']['data_unavailable']} "
                  "data unavailable.</p>")
-    for q in range(1, 12):
-        parts.append(f"<h2>Q{q}. {escape(payload['questions'][q])}</h2>")
+    status = payload.get('status', 'COMPLETE')
+    parts.append(f"<p><b>Report status: {escape(status)}</b>" + (f" — {escape(payload['status_reason'])}"
+                                                               if payload.get('status_reason') else '') + '</p>')
+    if payload.get('structure'):
+        parts.append('<h2>Report structure</h2>' + _table({
+            'title': 'Parts of the weekly analysis (tables / conclusions / DATA UNAVAILABLE items)',
+            'columns': ['part', 'title', 'tables', 'conclusions', 'unavailable', 'status'],
+            'rows': payload['structure'], 'note': None}))
+    for n, title in (payload.get('parts') or {}).items():
+        n = int(n)
+        parts.append(f"<h2>{n}. {escape(title)}</h2>")
         for s in payload['sections']:
             for t in s['tables']:
-                if t.get('question') == q:
+                if t.get('part') == n:
                     parts.append(_table(t))
-        items = [c for s in payload['sections'] for c in s['conclusions'] if c['question'] == q]
-        parts.append(_conclusions_table(items))
-        for s in payload['sections']:
-            if q in s['questions'] and q == s['questions'][0] and s['notes']:
-                parts.append(f"<details><summary class='small'>Method notes ({escape(s['name'])})</summary>"
-                             + ''.join(f"<p class='small'>{escape(str(n))}</p>" for n in s['notes'])
-                             + '</details>')
-        un = [u for s in payload['sections'] for u in s['unavailable'] if u['question'] == q]
+        items = [c for s in payload['sections'] for c in s['conclusions'] if c.get('part') == n]
+        if items:
+            parts.append(_conclusions_table(items))
+        un = [u for s in payload['sections'] for u in s['unavailable'] if u.get('part') == n]
         if un:
             parts.append('<ul>' + ''.join(f"<li class='UNAVAILABLE'>{escape(u['scope'])}: {escape(u['item'])} — "
                                           f"{escape(u['reason'])}</li>" for u in un) + '</ul>')
-    parts.append(f"<h2>Q12. {escape(payload['questions'][12])}</h2><ul>"
+        if not (items or un or any(t.get('part') == n for s in payload['sections'] for t in s['tables'])):
+            parts.append("<p class='small'>Nothing in this part this week.</p>")
+    parts.append('<h2>Appendix — method notes per section</h2>')
+    for s in payload['sections']:
+        if s['notes']:
+            parts.append(f"<details><summary class='small'>{escape(s['name'])}</summary>"
+                         + ''.join(f"<p class='small'>{escape(str(x))}</p>" for x in s['notes']) + '</details>')
+    parts.append(f"<h2>Appendix — Q12. {escape(payload['questions'][12])}</h2><ul>"
                  + ''.join(f'<li>{escape(b)}</li>' for b in payload['q12_model_does_not_know']['structural'])
                  + '</ul><p>Missing or degraded this week:</p><ul>'
                  + ''.join(f"<li>{escape(u['scope'])} — {escape(u['item'])}: {escape(u['reason'])}</li>"
                            for u in payload['q12_model_does_not_know']['missing_this_week'])
                  + '</ul><p class="small">These lists are not exhaustive.</p>')
-    parts.append(f"<h2>Q13. {escape(payload['questions'][13])}</h2>" + _conclusions_table(payload['q13_strongly_supported']))
-    parts.append(f"<h2>Q14. {escape(payload['questions'][14])}</h2>" + _conclusions_table(payload['q14_uncertain']))
+    parts.append(f"<h2>Appendix — Q13. {escape(payload['questions'][13])}</h2>" + _conclusions_table(payload['q13_strongly_supported']))
+    parts.append(f"<h2>Appendix — Q14. {escape(payload['questions'][14])}</h2>" + _conclusions_table(payload['q14_uncertain']))
     parts.append('</div></body></html>')
     return '\n'.join(parts)
 
@@ -223,6 +306,7 @@ def run(requested_cutoff=None):
     html = render_html(payload)
     html_path, json_path = write_archive(ctx.tm, payload, html)
     print(f"[WEEKLY REPORT] week ending {ctx.tm.s0} (cutoff {ctx.tm.cutoff})")
-    print(f"  {payload['counts']}")
+    print(f"  {payload['counts']}; status {payload['status']}" + (f" ({payload['status_reason']})"
+                                                                   if payload.get('status_reason') else ''))
     print(f"  HTML: {html_path}\n  JSON: {json_path}")
     return payload

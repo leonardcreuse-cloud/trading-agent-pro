@@ -207,7 +207,8 @@ def write_archive(tm, payload, html):
     (base / f'weekly_v{version}.html').write_text(redact(html), encoding='utf-8')
     fetch_ids = sorted({e['fetch_id'] for s in payload['sections'] for c in s['conclusions']
                         for e in c['evidence'] if e.get('fetch_id')})
-    manifest = {'version': version, 'cutoff': tm.cutoff, 's0': tm.s0, 'generated_at': tm.generated_at,
+    manifest = {'version': version, 'status': payload.get('status'), 'status_reason': payload.get('status_reason'),
+                'cutoff': tm.cutoff, 's0': tm.s0, 'generated_at': tm.generated_at,
                 'code_version': payload.get('code_version'), 'fetch_ids': fetch_ids,
                 'sha256_json': hashlib.sha256(text.encode()).hexdigest()}
     (base / f'manifest_v{version}.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')

@@ -51,7 +51,8 @@ def main():
     elif command == 'weekly':
         from src.weekly.report import run
         cutoff = sys.argv[sys.argv.index('--cutoff') + 1] if '--cutoff' in sys.argv else None
-        run(cutoff)
+        payload = run(cutoff)
+        sys.exit(3 if payload.get('status') == 'INCOMPLETE' else 0)    # 3: a critical section failed
     elif command == 'research':
         from src.research.experiment import Study
         stage = int(sys.argv[sys.argv.index('--stage') + 1]) if '--stage' in sys.argv else 1

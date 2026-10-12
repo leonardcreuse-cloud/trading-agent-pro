@@ -9,7 +9,9 @@ Runs, with this Python interpreter, in the project folder:
                               before the next session opens) and its evaluation
   4. python main.py paper     every day: paper strategy PT1 (orders from a new stage 3 record, fills, stops, marks;
                               paper only, no real order)
-  5. python main.py weekly    on Saturdays (local date) unless --no-weekly; --weekly forces it
+  5. python main.py weekly    on Sundays (local date) unless --no-weekly; --weekly forces it. The cutoff is the same
+                              (Saturday 05:00 UTC after the last session); on Sunday evening the NewsAPI window is
+                              complete (results end ~24 h before retrieval; complete 26 h after the cutoff)
 One failing step does not stop the next ones. Each step writes data/logs/<YYYY-MM-DD>_<step>.log and the run
 writes data/logs/last_run.json; the exit code is 1 when a step failed (Task Scheduler "Last Run Result").
 
@@ -34,12 +36,12 @@ SATURDAY, SUNDAY = 5, 6
 
 
 def plan(today, weekly=None):
-    """Steps to run on `today` (a date); weekly None = on Saturdays only."""
+    """Steps to run on `today` (a date); weekly None = on Sundays only."""
     steps = ['collect', 'analyze']
     if today.weekday() in (SATURDAY, SUNDAY):
         steps.append('prospective')         # the record is made once per week; Sunday catches a missed Saturday
     steps.append('paper')                   # paper strategy PT1: orders from a new record, then fills / marks
-    if weekly or (weekly is None and today.weekday() == SATURDAY):
+    if weekly or (weekly is None and today.weekday() == SUNDAY):
         steps.append('weekly')
     return steps
 

@@ -49,7 +49,7 @@ holds only the `collect` sources (~93 MB; GDELT raw zips ~6 MB per day): `analyz
 
 ## Local daily run (decided 2026-10-11)
 The database lives on the owner's Windows PC; a scheduled task runs `scripts\daily_run.py` every day at 23:00
-Paris (collect + analyze; weekly report on Saturdays). Setup and reasons: `docs/LOCAL_RUN.md`. Cloud sessions
+Paris (collect, analyze, paper; stage 3 record on weekends; weekly report on Sundays). Setup and reasons: `docs/LOCAL_RUN.md`. Cloud sessions
 start with an empty database: use them for development, the local run for the real reports.
 
 ## Environment checklist (owner)

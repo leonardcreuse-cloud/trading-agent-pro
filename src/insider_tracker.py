@@ -103,6 +103,11 @@ def parse_form4(xml_text):
     return {'owners': owners, 'rule_10b5_1': plan, 'transactions': transactions}
 
 
+def unvalued_note(n):
+    """Suffix for a USD sum that leaves out n transaction lines reported without a price."""
+    return f' + {n} line(s) without price, not valued' if n else ''
+
+
 def form4_xml_url(cik, accession, primary_document):
     """Raw XML URL of a Form 4 (the feed points to the XSL-rendered copy)."""
     document = primary_document.split('/')[-1]
@@ -201,7 +206,11 @@ class InsiderTracker:
         discretionary = [t for t in sells if t.get('rule_10b5_1') is not True]
 
         def value(rows):
+            # sum of the PRICED lines only; unvalued() counts the others (never valued at 0)
             return round(sum(t['value_usd'] for t in rows if t.get('value_usd')), 2)
+
+        def unvalued(rows):
+            return sum(1 for t in rows if not t.get('value_usd'))
 
         def people(rows):
             # One Form 4 = one reporting group: joint filers (a fund and its general partners)
@@ -222,6 +231,9 @@ class InsiderTracker:
             'sell_value_usd': value(sells),
             'planned_sell_value_usd': value([t for t in sells if t.get('rule_10b5_1') is True]),
             'discretionary_sell_value_usd': value(discretionary),
+            'unvalued_buys': unvalued(buys),
+            'unvalued_sells': unvalued(sells),
+            'unvalued_discretionary_sells': unvalued(discretionary),
             'distinct_buyers': people(buys),
             'distinct_sellers': people(sells),
             'discretionary_sellers': people(discretionary),
@@ -264,10 +276,12 @@ class InsiderTracker:
         print(f"  Form 4 filings ingested ({LOOKBACK_DAYS + INGEST_MARGIN_DAYS}d): {n_filings} (parsed {n_parsed}); "
               f"in the {LOOKBACK_DAYS}-day window: {in_window}")
         print(f"  Open-market buys:  {summary['insider_buys']} "
-              f"({summary['distinct_buyers']} insiders, {summary['buy_value_usd']:,.0f} USD)")
+              f"({summary['distinct_buyers']} insiders, {summary['buy_value_usd']:,.0f} USD"
+              f"{unvalued_note(summary['unvalued_buys'])})")
         print(f"  Open-market sells: {summary['insider_sells']} "
-              f"({summary['distinct_sellers']} insiders, {summary['sell_value_usd']:,.0f} USD; "
-              f"discretionary {summary['discretionary_sell_value_usd']:,.0f} USD)")
+              f"({summary['distinct_sellers']} insiders, {summary['sell_value_usd']:,.0f} USD"
+              f"{unvalued_note(summary['unvalued_sells'])}; discretionary "
+              f"{summary['discretionary_sell_value_usd']:,.0f} USD{unvalued_note(summary['unvalued_discretionary_sells'])})")
         print(f"  Insider score: {score} (heuristic) -> {signal}")
         print("=" * 60)
         return {

@@ -30,7 +30,7 @@ report's own figures (DCF scenarios, technical levels, catalysts); no probabilit
 
 import re
 
-from ...insider_tracker import InsiderTracker
+from ...insider_tracker import InsiderTracker, unvalued_note
 from ...technicals import analyze
 from ..core import SectionResult, conclude, unavailable
 
@@ -139,7 +139,8 @@ def pillars(ctx, previous, t):
     out['macro'] = (f'real yields {real}' if real else 'unknown', 'regime section' + note)
     try:
         s = InsiderTracker(sec_parser=ctx.sec).summarize(t, known_at=tm.cutoff)
-        ins = f"{s['insider_buys']} open-market purchase(s), discretionary sales {s['discretionary_sell_value_usd']:,.0f} USD"
+        ins = (f"{s['insider_buys']} open-market purchase(s), discretionary sales "
+               f"{s['discretionary_sell_value_usd']:,.0f} USD{unvalued_note(s['unvalued_discretionary_sells'])}")
     except Exception as e:  # noqa: BLE001 - reported as unknown
         ins = f'insider summary unavailable ({type(e).__name__})'
     news = _table(previous, 'news', f'{t} — news events')

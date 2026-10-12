@@ -329,6 +329,17 @@ def test_planned_sales_are_neutral_and_discretionary_sales_bearish(sec):
     assert discretionary['insider_score'] == 45
 
 
+def test_unpriced_lines_are_counted_not_valued_at_zero(sec):
+    from src.insider_tracker import InsiderTracker, unvalued_note
+    payloads, _ = sec
+    add_form4(payloads, [('u-1', 5, form4_xml([('S', '2026-09-01', 100, 20.0), ('S', '2026-09-01', 50, '')],
+                                              plan=False))])
+    result = InsiderTracker().run('MP')
+    assert result['insider_sells'] == 2 and result['discretionary_sell_value_usd'] == 2000.0   # priced line only
+    assert result['unvalued_sells'] == 1 and result['unvalued_discretionary_sells'] == 1
+    assert unvalued_note(1) == ' + 1 line(s) without price, not valued' and unvalued_note(0) == ''
+
+
 def test_grants_and_exercises_are_not_scored(sec):
     from src.insider_tracker import InsiderTracker
     payloads, _ = sec

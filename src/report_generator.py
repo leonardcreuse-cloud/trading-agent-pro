@@ -21,6 +21,7 @@ confidence and risk score separately (unavailable ones say why).
 from html import escape
 
 from .common import DATA_UNAVAILABLE, NA_DISPLAY, display, utc_now_iso
+from .insider_tracker import unvalued_note
 
 STYLE = """
 body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; color: #222; }
@@ -218,11 +219,14 @@ class ReportGenerator:
                    f"<tr><td>Form 4 documents ingested / read ({cell(ins.get('ingest_window_days'))}d)</td>"
                    f"<td>{cell(ins.get('form4_filings_ingested'))} / {cell(ins.get('form4_parsed'))}</td></tr>"
                    f"<tr><td>Open-market buys</td><td>{cell(ins.get('insider_buys'))} "
-                   f"({cell(ins.get('distinct_buyers'))} insiders, {cell(ins.get('buy_value_usd'), ',.0f')} USD)</td></tr>"
+                   f"({cell(ins.get('distinct_buyers'))} insiders, {cell(ins.get('buy_value_usd'), ',.0f')} USD"
+                   f"{unvalued_note(ins.get('unvalued_buys'))})</td></tr>"
                    f"<tr><td>Open-market sells</td><td>{cell(ins.get('insider_sells'))} "
-                   f"({cell(ins.get('distinct_sellers'))} insiders, {cell(ins.get('sell_value_usd'), ',.0f')} USD)</td></tr>"
+                   f"({cell(ins.get('distinct_sellers'))} insiders, {cell(ins.get('sell_value_usd'), ',.0f')} USD"
+                   f"{unvalued_note(ins.get('unvalued_sells'))})</td></tr>"
                    f"<tr><td>of which discretionary (not 10b5-1)</td>"
-                   f"<td>{cell(ins.get('discretionary_sell_value_usd'), ',.0f')} USD</td></tr>"
+                   f"<td>{cell(ins.get('discretionary_sell_value_usd'), ',.0f')} USD"
+                   f"{unvalued_note(ins.get('unvalued_discretionary_sells'))}</td></tr>"
                    f"<tr><td>Score / direction</td><td>{cell(ins.get('insider_score'))} / {cell(ins.get('signal'))}</td></tr>"
                    '</table>')
         out.append(self._reason(ins))

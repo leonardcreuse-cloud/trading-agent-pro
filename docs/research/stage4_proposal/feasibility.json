@@ -1,0 +1,62 @@
+{
+ "computed_at": "2026-10-12T18:14:37+00:00",
+ "nature": "feasibility count only: SEC filing lists and index pages; no price",
+ "list_fetch": {
+  "fetch_id": 4324,
+  "source": "S&P 500 list (datasets/s-and-p-500-companies)",
+  "retrieved_at": "2026-10-12T18:14:34+00:00",
+  "status": "OK",
+  "raw_path": "raw/s_p_500_list__datasets_s_and_p_500_companies/a8/a8045f043ea7e68d4254a07470a5e95ca5759ded4656657eac514162e6e82e06.csv.gz",
+  "raw_sha256": "a8045f043ea7e68d4254a07470a5e95ca5759ded4656657eac514162e6e82e06",
+  "raw_bytes": 53632
+ },
+ "list_members_with_cik": 500,
+ "sample_size": 60,
+ "seed": 4,
+ "period": [
+  "2016-01-01",
+  "2025-12-31"
+ ],
+ "gap_rule_days": 45,
+ "firms_counted": 60,
+ "feeds_unavailable": [],
+ "events_in_sample": 1911,
+ "events_per_firm_mean": 31.9,
+ "events_per_year": {
+  "2016": 161,
+  "2017": 162,
+  "2018": 173,
+  "2019": 181,
+  "2020": 189,
+  "2021": 198,
+  "2022": 204,
+  "2023": 212,
+  "2024": 212,
+  "2025": 219
+ },
+ "extrapolated_events_full_list": 15925,
+ "firms_with_fewer_than_20_events": [
+  "CEG",
+  "CIEN",
+  "CRL",
+  "DASH",
+  "EME",
+  "FLEX",
+  "MPWR",
+  "STLD",
+  "TKO",
+  "TRGP",
+  "VRT",
+  "VYLR"
+ ],
+ "acceptance_timing_sample": {
+  "pre-open": 39,
+  "after-close": 19,
+  "intraday": 2
+ },
+ "timing_sample_size": 60,
+ "acceptance_minus_dateline_days_sample": {
+  "0": 30,
+  "no dateline found": 30
+ }
+}

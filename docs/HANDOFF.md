@@ -59,6 +59,15 @@
     (https://code.claude.com/docs/en/cloud-environments#network-access). Then run `python main.py sources`
     again.
 
+- 2026-10-12, owner's brief (preserve validation, propose stage 4, review blocked sources):
+  - Stage 3 and PT1 continue unchanged. With the current code, the 40 scores of the 2026-10-09 record
+    recompute identically, and the journals and ledger chains verify.
+  - Stage 4 pre-registration PROPOSAL (post-earnings drift after the market's reaction):
+    `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL.md`, with a filings-only feasibility count.
+    NOT RUN: it waits for the owner's approval.
+  - Blocked sources review: `docs/SOURCE_ACCESS_REVIEW.md`. It recommends USGS minerals data (priority 1) and,
+    optionally, Treasury FiscalData; nothing else.
+
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
 validation status of the signal; `reports/weekly/2026-10-09/` is the first weekly report.

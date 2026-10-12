@@ -175,4 +175,6 @@ def test_synthesis_pillars_questions_and_scenarios():
     company = next(c for c in out['conclusions'] if c['scope'] == 'AAA')
     assert company['kind'] == 'interpretation' and 'not evidence of future returns' in company['statement']
     summary = next(c for c in out['conclusions'] if c['scope'] == 'overall')
-    assert summary['statement'].startswith('Executive summary for the week ending 2026-10-09: 1 strongly supported')
+    assert summary['statement'].startswith('Executive summary for the week ending 2026-10-09: the analysis sections '
+                                           'hold 1 strongly supported')
+    assert qa['rows'][7][1] == 'pillars: agree (fundamentals +, technical +, quant +)'

@@ -28,6 +28,8 @@ future returns: no combination of them has been tested. Scenarios are conditiona
 report's own figures (DCF scenarios, technical levels, catalysts); no probability is attached to any of them.
 """
 
+import re
+
 from ...insider_tracker import InsiderTracker
 from ...technicals import analyze
 from ..core import SectionResult, conclude, unavailable
@@ -82,6 +84,23 @@ def _items(previous, scope, limit=4):
             seen.add(key)
             uniq.append(e)
     return uniq[:limit]
+
+
+def _signs_text(signs):
+    marks = {1: '+', -1: '-', 0: 'no direction', None: 'unknown'}
+    return ', '.join(f'{k} {marks[v]}' for k, v in signs.items())
+
+
+def _dcf_context(previous, t):
+    """Reliability and market-implied growth stated by the valuation section's DCF conclusion for `t`."""
+    for s in previous:
+        if s['name'] == 'valuation':
+            for c in s['conclusions']:
+                if c['scope'] == t and 'two-stage FCF model' in c['statement']:
+                    rel = re.search(r'Reliability ([A-Z][A-Z -]*[A-Z])', c['statement'])
+                    implied = re.search(r'starting growth of (-?[0-9.]+|None)%', c['statement'])
+                    return (rel.group(1) if rel else None), (implied.group(1) if implied else None)
+    return None, None
 
 
 def _sign(reading, positive, negative):
@@ -180,7 +199,7 @@ def build(ctx, previous=None):
              f'{len(geo)} pre-declared exposure / event match(es)' if geo else 'none matched by the pre-declared maps', '5, 6, 7'],
             ['What does technical analysis show?', f"{p['technical'][0]}; {p['risk'][0]}", '11'],
             ['What does market sentiment show?', p['sentiment'][1], '12, 14, 15'],
-            ['Which facts conflict?', f'pillars: {verdict} ({signs})', '1'],
+            ['Which facts conflict?', f'pillars: {verdict} ({_signs_text(signs)})', '1'],
             ['Which events should be monitored?', f"{p['events'][0]}; see the catalyst calendar", '13'],
             ['Which risks are increasing?', f'{len(risks)} risk conclusion(s) in the risk section', '18'],
             ['What does the quantitative model actually say?', f"ex-news heuristic label {p['quant'][0]}", '17'],
@@ -203,28 +222,33 @@ def build(ctx, previous=None):
         dcf = _table(previous, 'valuation', f'{t}: intrinsic-value scenarios')
         per = {r[0]: r for r in (dcf or {}).get('rows', [])}
         tech = _table(previous, 'technicals', f'{t}: technical indicators')
+        reliability, implied = _dcf_context(previous, t)
         rows = []
         for name, cond in (('bull', 'fundamentals keep improving and growth exceeds the base assumption'),
                            ('base', 'growth fades as assumed in the base case'),
                            ('bear', 'growth falls short (bear assumption) or the pillars turn negative')):
             r = per.get(name)
-            rows.append([name, cond, f'{r[2]} USD per share ({r[3]:+.1f}% vs close; starting growth {r[1]}%)'
+            rows.append([name, cond, f'{r[2]} USD per share ({r[3]:+.1f}% vs close; starting growth {r[1]}%'
+                         + (f'; DCF reliability {reliability})' if reliability else ')')
                          if r and r[2] is not None and r[3] is not None else 'DCF not reliable or unavailable',
                          f"{p['events'][0]}; {p['risk'][1]}"])
         res.table(f'{t}: bull / base / bear scenarios (conditional descriptions, no probabilities)',
                   ['scenario', 'condition', 'DCF figure under that condition (assumption-driven)', 'events and risks'],
                   rows, scope=t, question=1,
                   note='Scenarios restate the report\'s own figures under stated conditions; no probability and no '
-                       'expected price are given.' + ('' if tech else ' Technical table unavailable.'))
+                       'expected price are given.' + (f' DCF reliability {reliability}; the close is consistent with a '
+                                                      f'starting growth of {implied}% under the same rates (reverse DCF).'
+                                                      if reliability else '')
+                       + ('' if tech else ' Technical table unavailable.'))
     # executive summary and key uncertainties (overall)
     counts = {'strong': sum(1 for s in previous for c in s['conclusions'] if c['level'] == 'STRONGLY SUPPORTED'),
               'uncertain': sum(1 for s in previous for c in s['conclusions'] if c['level'] == 'UNCERTAIN'),
               'unavailable': sum(len(s['unavailable']) for s in previous)}
     failed = [s['name'] for s in previous if any('section failed' in u['reason'] for u in s['unavailable'])]
     regime = next((c['statement'] for s in previous if s['name'] == 'regime' for c in s['conclusions']), None)
-    res.add(conclude('overall', 1, f'Executive summary for the week ending {tm.s0}: {counts["strong"]} strongly '
-                                   f'supported and {counts["uncertain"]} uncertain conclusions, {counts["unavailable"]} '
-                                   'DATA UNAVAILABLE items' + (f'; failed sections: {", ".join(failed)}' if failed else '')
+    res.add(conclude('overall', 1, f'Executive summary for the week ending {tm.s0}: the analysis sections hold '
+                                   f'{counts["strong"]} strongly supported and {counts["uncertain"]} uncertain '
+                                   f'conclusions, {counts["unavailable"]} DATA UNAVAILABLE items' + (f'; failed sections: {", ".join(failed)}' if failed else '')
                                    + '. ' + (regime or 'Market regime unavailable.') + ' No predictive ability of the '
                                    'quantitative signal has been demonstrated; nothing here is a recommendation.',
                      [], 'system_output'))

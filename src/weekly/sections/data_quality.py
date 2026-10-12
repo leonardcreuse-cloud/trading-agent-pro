@@ -60,6 +60,9 @@ def build(ctx, previous=None, audit_path=None):
                                     f'logged downloads; {len(failing)} with at least one failure'
                                     + (f" ({', '.join(failing)})" if failing else '')
                                     + (f"; no successful download in the window for {', '.join(silent)}" if silent else '')
+                                    + ('' if srcs else ': the stored data used in this report was retrieved outside '
+                                                       'this window (each value carries its own publication and '
+                                                       'retrieval times)')
                                     + '.', [], 'system_output'))
     path = audit_path or reports_dir() / 'pipeline_audit.json'
     try:

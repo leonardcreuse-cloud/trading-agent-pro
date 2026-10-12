@@ -1,5 +1,13 @@
 # Changelog
 
+## PT1 sector lookup fix (2026-10-12)
+
+- `src/paper.py` `_sector`: now reads the SIC code from `get_filings(...)['raw']['sic']`. Before this fix, every
+  ticker came back `unknown` and was pooled into one 40% group: week 1 had 5 of 8 orders rejected.
+- An unreadable SIC code is now its own group, `unknown <ticker>`.
+- The journals are unchanged. Deviation note: `docs/research/PAPER_STRATEGY_PT1.md`.
+- Test: `tests/test_p77_paper_sector.py`.
+
 ## Gap round G0–G6 — second pass over every requirement (2026-10-12)
 
 Details: `docs/MISSION_STATUS.md` (gap round) and `docs/REQUIREMENTS_TRACEABILITY.md`.

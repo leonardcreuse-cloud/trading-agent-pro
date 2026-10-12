@@ -619,3 +619,11 @@ listed in `docs/REQUIREMENTS_TRACEABILITY.md`. The gaps found were then closed, 
   generation (adjusted prices are revised after dividends; news). `weekly --verify` lists the differences, and
   the archive keeps the fetch ids and raw payloads used.
 - **Windows scheduling:** the Windows task installer is still untested on the PC.
+
+## PT1 implementation fix (2026-10-12)
+
+Bug: the PT1 sector lookup did not read the SEC SIC code. The first rebalance had 5 of 8 orders rejected under the
+40% sector cap; 3 filled (XOM, NVDA, UBER). The code now reads the SIC code, as the frozen rule requires.
+- The journals are unchanged (append-only); week 1 stays as recorded.
+- Full note: `docs/research/PAPER_STRATEGY_PT1.md`, "Implementation deviation log".
+- Test: `tests/test_p77_paper_sector.py`.

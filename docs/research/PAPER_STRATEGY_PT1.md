@@ -45,3 +45,26 @@ Changing any rule, setting, universe or benchmark after the first paper order. A
 new pre-registration); journals of different strategies are never pooled. Real-money deployment would require, at a
 minimum, 12 months of paper trading, credible out-of-sample evidence (stage 3) and the other controls of the
 mission; it is not part of this work.
+
+## Implementation deviation log (append-only)
+
+**2026-10-12. Sector lookup bug (week 1).**
+- **What happened.** The sector lookup in `src/paper.py` (`Paper._sector`) read a `sic` key at the top level of the
+  SEC submissions result. The code is actually in `get_filings(...)['raw']['sic']`, so every ticker came back
+  `unknown`. All 8 names were pooled into a single "sector" capped at 40%.
+- **Effect on the first rebalance** (orders of the 2026-10-09 record, filled at the 2026-10-12 open):
+  - 3 orders filled: XOM, NVDA, UBER;
+  - 5 orders rejected with "sector unknown already at 40.0% of equity";
+  - about 60% of equity left in cash.
+- **What was not changed.**
+  - The frozen rule is still "sectors (SEC SIC major group) at most 40%".
+  - The journals are append-only and stay as written: week 1 is not replayed or corrected. Its under-investment is
+    part of the PT1 record and is reported as is.
+- **Correction (code only).**
+  - `_sector` now reads the SIC code where the feed holds it.
+  - A ticker whose SIC cannot be read is its own group (`unknown <ticker>`), never pooled with others.
+  - Checked against the live SEC feed: XOM 29, NVDA 36, AMD 36, UBER 73, GOOGL 73, MSFT 73, COST 53, ISRG 38.
+  - Test: `tests/test_p77_paper_sector.py`.
+- **When it applies.** From the next valid stage 3 record onwards.
+- **Classification.** A bug fix that makes the code follow the pre-registered rule, not a rule change. The owner may
+  instead decide to close PT1 and start PT2. That decision is recorded here if taken.

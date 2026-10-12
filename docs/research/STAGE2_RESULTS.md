@@ -304,3 +304,21 @@ q = BH within the 170 feature tests.
 | insider_disc_sellers_90d | insider | -1 | discretionary insider selling (Cohen, Malloy & Pomorski 2012) | 60 | +0.0074 | +0.47 | 0.6422 | 0.988 | 99.6 % |
 | insider_disc_sellers_90d | insider | -1 | discretionary insider selling (Cohen, Malloy & Pomorski 2012) | 120 | +0.0080 | +0.32 | 0.7501 | 0.988 | 99.6 % |
 | insider_disc_sellers_90d | insider | -1 | discretionary insider selling (Cohen, Malloy & Pomorski 2012) | 252 | +0.0147 | +0.46 | 0.6464 | 0.988 | 99.6 % |
+
+## Erratum — implementation details found on 2026-10-12 (master mission P6); results unchanged
+
+Found by the production-code scan for missing values replaced by zero. The code and the results above stay
+as they are: changing the code of a completed, pre-registered stage would change its reproduction after its
+results were seen.
+- `insider_net_buy_to_mcap` (C3, C4) counts a P or S transaction whose Form 4 has no price as 0 USD
+  (`src/research/insider_history.py`, `value_usd or 0`). The pre-registration did not declare this rule.
+  - The rule pulls the net value toward 0 for the affected filings.
+  - Scale, indicative only: in the Form 4 stored on 2026-10-12 (recent windows, 39 tickers), 9 of 2,453 P/S
+    transactions (0.37%) have no price. The share in the 2013–2026 history used by stage 2 was not measured.
+  - Neither hypothesis was confirmed (p = 0.67 and 0.75). The rule cannot turn these results into a
+    confirmation, but it does qualify them.
+- `sales_to_ev` and `ebitda_to_ev` (exploratory, see `STAGE1_RESULTS.md`) compute EV with a missing cash
+  balance taken as 0 (`src/research/panel.py`). EV is then overstated for those rows; how often this
+  happened was not measured.
+Any later study must treat both as missing values (None), declare that before it runs, and not reuse these
+figures as a baseline.

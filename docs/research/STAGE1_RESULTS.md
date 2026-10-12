@@ -245,3 +245,9 @@ q = BH within the 155 feature tests.
 | mom_6m_vs_sector | sector | +1 | within-industry momentum (Asness, Porter & Stevens 2000) | 60 | -0.0118 | -0.68 | 0.4988 | 0.993 | 100.0 % |
 | mom_6m_vs_sector | sector | +1 | within-industry momentum (Asness, Porter & Stevens 2000) | 120 | +0.0014 | +0.06 | 0.9496 | 0.993 | 100.0 % |
 | mom_6m_vs_sector | sector | +1 | within-industry momentum (Asness, Porter & Stevens 2000) | 252 | -0.0002 | -0.01 | 0.9924 | 0.993 | 100.0 % |
+
+## Erratum — 2026-10-12 (master mission P6); results unchanged
+
+`sales_to_ev` and `ebitda_to_ev` compute enterprise value with a missing cash balance taken as 0
+(`src/research/panel.py`); EV is then overstated for those rows (frequency not measured). This was not
+declared. The code and the results above are kept as computed; see `STAGE2_RESULTS.md` (erratum).

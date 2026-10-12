@@ -71,13 +71,3 @@ class NewsSentiment:
         score = round(sentiment_value, 2)
         
         return signal, score
-
-
-if __name__ == "__main__":
-    print("[TEST] NewsSentiment")
-    test_text = "Stock surges on bullish earnings beat and strong growth outlook"
-    sentiment = NewsSentiment.analyze_sentiment(test_text)
-    signal, score = NewsSentiment.score_sentiment(sentiment)
-    print(f"  Text: {test_text}")
-    print(f"  Sentiment: {sentiment:.0f}/100")
-    print(f"  Signal: {signal} (Score: {score})")

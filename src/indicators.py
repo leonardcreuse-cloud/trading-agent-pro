@@ -92,17 +92,3 @@ class Indicators:
             'lower': lower,
             'std': std
         }
-
-
-if __name__ == "__main__":
-    print("[TEST] Indicators")
-    prices = np.random.randn(100).cumsum() + 100
-
-    rsi = Indicators.calculate_rsi(prices)
-    print(f"  RSI (last): {rsi[-1]:.2f}")
-
-    macd = Indicators.calculate_macd(prices)
-    print(f"  MACD (last): {macd['macd'][-1]:.4f}")
-
-    bb = Indicators.calculate_bollinger_bands(prices)
-    print(f"  BB Upper (last): {bb['upper'][-1]:.2f}")

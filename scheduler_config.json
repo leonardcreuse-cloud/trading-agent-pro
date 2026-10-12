@@ -149,5 +149,28 @@
          "default_growth_pct": 3.0,
          "beta_weeks": 104
       }
+   },
+   "risk": {
+      "note": "ASSUMPTIONS of the risk engine and of paper strategy PT1 (docs/research/PAPER_STRATEGY_PT1.md), set 2026-10-12 before any paper order; not optimised and not validated.",
+      "target_risk_pct": 1.0,
+      "max_risk_pct": 2.0,
+      "max_position_pct": 20.0,
+      "max_gross_exposure_pct": 100.0,
+      "max_sector_pct": 40.0,
+      "max_positions": 10,
+      "max_adv_participation_pct": 1.0,
+      "min_avg_dollar_volume": 20000000,
+      "stop_atr_multiple": 2.0,
+      "commission_bps": 1.0,
+      "slippage_bps": 5.0,
+      "half_spread_bps": 2.0,
+      "metrics_window": 60
+   },
+   "paper": {
+      "strategy": "PT1",
+      "preregistration": "docs/research/PAPER_STRATEGY_PT1.md",
+      "initial_capital": 100000,
+      "top_n": 8,
+      "min_scored": 10
    }
 }

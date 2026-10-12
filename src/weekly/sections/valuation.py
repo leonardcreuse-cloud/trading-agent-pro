@@ -225,9 +225,9 @@ def build(ctx, tickers=None, history=True):
         _split_note(ctx, t, X, R)
         rows, (title, cols) = _ratios_table(t, R, f'at the close of {day} (fundamentals known at T_c)')
         res.table(title, cols, rows, scope=t, question=2,
-                  note=f"Shares: {R['shares_basis']}. " + ' '.join(R['flags']) + ' Enterprise value excludes '
-                       'minority interests, preferred stock and operating leases. Descriptive: no cheap / expensive '
-                       'judgement.')
+                  note=f"Shares: {R['shares_basis']}. " + ''.join(f'{x}. ' for x in R['flags'])
+                       + 'Enterprise value excludes minority interests, preferred stock and operating leases. '
+                         'Descriptive: no cheap / expensive judgement.')
         shown = [f"{LABELS[k]} {R[k]['value']}" for k in RATIOS if R[k]['value'] is not None]
         mc = R['market_cap']['value']
         codes = ['ESTIMATE'] + (['PARTIAL_COVERAGE'] if R['flags'] else [])

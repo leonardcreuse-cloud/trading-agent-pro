@@ -37,6 +37,10 @@ Q11 - validation_status(walk_forward.latest_summary(now=T_c), research summaries
   interval for the IC; runs computed after the cutoff are listed as such and never used; data
   reliability per component at T_c (coverage, freshness at the cutoff, source rank) kept separate from
   signal validity; model prediction, prediction confidence and risk score are NOT IMPLEMENTED.
+  Stage 3 (docs/research/STAGE3_PREREGISTRATION.md): stage 3 records generated <= T_c that the hash-chained
+  ledger verifies, and the latest prospective evaluation computed <= T_c (src/prospective.py): progress per
+  hypothesis (n / 52 valid weekly records), interim mean IC without any test, and the pre-registered test
+  once its sample is complete (frozen when first computed).
 No score is ever converted into a probability. Sections never call the wall clock and never write files.
 """
 
@@ -46,6 +50,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ... import prospective as stage3
 from ...common import DATA_UNAVAILABLE, reports_dir, to_utc_iso
 from ...insider_tracker import (FORM4_METRIC, LOOKBACK_DAYS, InsiderTracker, form4_xml_url, insider_score,
                                 parse_form4)
@@ -458,7 +463,99 @@ def validation_text(validation, wf):
     return text + f': validation status {status}'
 
 
-def _validation(ctx, res, wf_path, research_paths):
+def _stage3_test_text(conf):
+    verdict = ('CONFIRMED' if conf.get('confirmed') else 'significantly NEGATIVE (adverse ranking)'
+               if conf.get('adverse') else 'NOT CONFIRMED')
+    records = conf.get('records') or [None]
+    mean = _num(conf.get('mean_ic'))
+    return (f"pre-registered test on the first {len(conf.get('records') or [])} valid records ({records[0]} to "
+            f"{records[-1]}): mean IC {'n/a' if mean is None else f'{mean:+.4f}'}, t {conf.get('t_stat')}, "
+            f"p {conf.get('p_value')} (required < {conf.get('required_p')}): {verdict}")
+
+
+def _prospective(ctx, res, base=None):
+    """
+    Q11, stage 3 (docs/research/STAGE3_PREREGISTRATION.md): ledger entries generated at or before T_c (hash
+    chain and record files verified now) and the latest evaluation computed at or before T_c. The evaluation
+    only uses prices that existed when it was computed, so nothing after the cutoff enters.
+    """
+    tm = ctx.tm
+    name = 'prospective record of weekly signals and realized outcomes (stage 3)'
+    ledger = stage3.verify_ledger(base)
+    entries = sorted((e for e in ledger['verified'].values() if e['generated_at'] <= tm.cutoff),
+                     key=lambda e: e['s0'])
+    ev = stage3.latest_evaluation(tm.cutoff, base)
+    if ledger['problems']:
+        res.add(unavailable('overall', 11, 'stage 3 record integrity',
+                            'records not verified by the hash-chained ledger (never used): '
+                            + '; '.join(ledger['problems'])))
+    sample = (f'{stage3.MIN_RECORDS} valid weekly records per horizon over the frozen '
+              f'{len(stage3.UNIVERSE)}-ticker validation universe')
+    if not entries and ev is None:
+        res.add(unavailable('overall', 11, name,
+                            f'no stage 3 record generated at or before the cutoff: the weekly record (pre-registered '
+                            f'on 2026-10-12, {stage3.PREREGISTRATION}) starts with the first weekend run after the '
+                            f'pre-registration; the pre-registered test needs {sample}'))
+        return
+    items, parts = [], []
+    if entries:
+        fact = (f"{len(entries)} stage 3 weekly record(s) generated at or before the cutoff (s0 {entries[0]['s0']} to "
+                f"{entries[-1]['s0']}), verified by the hash-chained ledger")
+        parts.append(fact)
+        items.append(evidence(tm, SYSTEM_SOURCE, None, fact, as_of=entries[-1]['s0'],
+                              published_at=entries[-1]['generated_at'], basis='generated_at of the latest record'))
+    rows = []
+    if ev is None:
+        parts.append('no evaluation computed at or before the cutoff')
+    else:
+        counts = ev.get('record_counts') or {}
+        head = (f"evaluation computed {ev['computed_at']}: {ev.get('status')}"
+                + (f" ({ev['reason']})" if ev.get('reason') else '')
+                + (f"; {counts.get('valid', 0)} valid, {counts.get('invalid', 0)} invalid, "
+                   f"{counts.get('pending', 0)} pending record(s)" if counts else ''))
+        items.append(evidence(tm, SYSTEM_SOURCE, None, head, as_of=ev['computed_at'][:10],
+                              published_at=ev['computed_at'], basis='computed_at of the evaluation'))
+        parts.append(head)
+        for label, h in (ev.get('horizons') or {}).items():
+            conf, interim = h.get('confirmatory'), h.get('interim') or {}
+            mean = _num(interim.get('mean_ic'))
+            if conf:
+                parts.append(f"{h['hypothesis']} ({label}): {_stage3_test_text(conf)}")
+            else:
+                parts.append(f"{h['hypothesis']} ({label}): {h['n_evaluated']} of {h['required']} valid weekly records "
+                             'evaluated' + (f", interim mean IC {mean:+.4f} over {interim.get('n_weeks')} weeks, "
+                                           f"{interim.get('positive_weeks_pct')}% of weeks positive"
+                                           if mean is not None else '')
+                             + ' (no test before the pre-registered sample is complete)')
+            rows.append([h['hypothesis'], label, h['n_evaluated'], h['required'], interim.get('mean_ic'),
+                         interim.get('positive_weeks_pct'), 'done' if conf else 'not yet (sample incomplete)',
+                         (conf or {}).get('mean_ic'), (conf or {}).get('t_stat'), (conf or {}).get('p_value'),
+                         (conf or {}).get('required_p'),
+                         None if not conf else 'CONFIRMED' if conf.get('confirmed') else
+                         'ADVERSE' if conf.get('adverse') else 'NOT CONFIRMED'])
+    res.add(conclude('overall', 11, f'Stage 3 prospective record (ex-news combined score, paper only, '
+                                    f'{stage3.PREREGISTRATION}): ' + '; '.join(parts) + '.', items, 'system_output'))
+    invalid = [f"{r['s0']}: {'; '.join(r['problems'])}" for r in (ev or {}).get('records', []) if r.get('problems')]
+    res.table('Prospective record (stage 3, pre-registered)',
+              ['hypothesis', 'horizon', 'valid weekly records evaluated', 'required', 'interim mean weekly IC',
+               'weeks with positive IC (%)', 'pre-registered test', 'mean IC (test sample)', 't', 'two-sided p',
+               'required p', 'result'], rows, question=11,
+              note=('Weekly cross-sectional Spearman IC of the ex-news combined score recorded at the close of s0 '
+                    '(frozen universe), against the return from the close of the next session to H sessions later. '
+                    'Interim figures carry no test: P1 (20 sessions) and P2 (5 sessions) are tested once each, on the '
+                    f'first {stage3.MIN_RECORDS} valid records (Bonferroni over 2, IC > 0 required). Evaluation '
+                    f"shown: the latest computed at or before the cutoff ({ev['computed_at'] if ev else 'none'})."
+                    + (' Invalid records (never used): ' + ' | '.join(invalid) if invalid else '')))
+    pending = [f"{label} {h['n_evaluated']}/{h['required']}" for label, h in ((ev or {}).get('horizons') or {}).items()
+               if not h.get('confirmatory')]
+    if ev is None or pending:
+        res.add(unavailable('overall', 11, 'pre-registered prospective test (stage 3)',
+                            'insufficient sample: ' + (', '.join(pending) + ' valid weekly records evaluated'
+                                                       if pending else 'no evaluation at the cutoff')
+                            + f'; the test needs {sample}'))
+
+
+def _validation(ctx, res, wf_path, research_paths, prospective_path=None):
     tm = ctx.tm
     path = Path(wf_path) if wf_path else None
     wf_c = latest_summary(path, now=tm.cutoff)
@@ -570,10 +667,7 @@ def _validation(ctx, res, wf_path, research_paths):
     res.add(unavailable('overall', 11, 'per-company signal reliability',
                         'the walk-forward validation is cross-sectional over the validation universe (ranking tickers '
                         'against each other); no per-company validation exists'))
-    res.add(unavailable('overall', 11, 'prospective record of weekly signals and realized outcomes',
-                        'insufficient sample: no archived weekly signal with a realized outcome is evaluated yet; the '
-                        'pre-declared minimum is >= 52 weekly reports over a universe of >= 10 tickers (the report '
-                        'covers the configured universe only)'))
+    _prospective(ctx, res, prospective_path)
     for field, info in not_implemented_fields().items():
         res.add(unavailable('overall', 11, field, f"{info['status']}: {info['reason']}"))
     return v, wf_c, (items[0] if admissible else None)
@@ -756,16 +850,16 @@ def _reliability(ctx, res, info):
 
 # ---------------------------------------------------------------- section
 
-def build(ctx, analysis_path=None, walk_forward_path=None, research_paths=None, tickers=None):
+def build(ctx, analysis_path=None, walk_forward_path=None, research_paths=None, tickers=None, prospective_path=None):
     """
-    analysis_path / walk_forward_path / research_paths ({stage: path}): result files (default: the
-    reports directory). Nothing is downloaded by this section.
+    analysis_path / walk_forward_path / research_paths ({stage: path}) / prospective_path (stage 3 directory):
+    result files (default: the reports directory). Nothing is downloaded by this section.
     """
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
     band = _borderline(ctx)
     version = (getattr(ctx, 'weekly', None) or {}).get('thresholds_version')
-    validation, wf_c, wf_item = _validation(ctx, res, walk_forward_path, research_paths)
+    validation, wf_c, wf_item = _validation(ctx, res, walk_forward_path, research_paths, prospective_path)
     found = validation_text(validation, wf_c)
     daily, daily_problem = load_daily_run(analysis_path)
     universe = list(tickers or ctx.universe)

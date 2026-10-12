@@ -221,6 +221,28 @@ class WalkForward:
         summary = self._insider_summary_at(ticker, coverage, known)
         return None if summary is None else insider_score(summary)
 
+    def score_at(self, ticker, values, dates, i, facts, coverage):
+        """
+        Component scores, ex-news combined score, label and features at T = close of dates[i], from
+        closes values[:i + 1] only (shared by samples() and the prospective record, src/prospective.py).
+        """
+        known = session_close_utc(dates[i])
+        tech = self.technical.score_closes(values[:i + 1])
+        fund, fin = None, None
+        if facts:
+            fin = self.sec.fundamentals(ticker, known_at=known)
+            fund, _ = self.fundamentals.score_inputs(fin)
+        insider = self._insider_summary_at(ticker, coverage, known)
+        scores = {'technical': tech['technical_score'] if tech else None,
+                  'fundamentals': fund,
+                  'insider': None if insider is None else insider_score(insider)}
+        available = [k for k, v in scores.items() if v is not None]
+        combined = self.signal.combine_scores(scores) \
+            if len(available) >= self.signal.MIN_COMPONENTS else None
+        return {'ticker': ticker, 'date': dates[i], 'known_at': known, **scores,
+                'combined': combined, 'signal': self.signal.generate_final_signal(combined),
+                'features': feature_vector(values[:i + 1], fin, insider)}
+
     def samples(self, ticker):
         """One row per evaluation date: component scores, combined signal, forward returns."""
         prices = self.prices.get(ticker)
@@ -237,24 +259,9 @@ class WalkForward:
         dates = [d.date().isoformat() for d in close.index]
         rows = []
         for i in range(MIN_HISTORY - 1, len(values) - ENTRY_LAG - min(HORIZONS), STEP):
-            known = session_close_utc(dates[i])
-            tech = self.technical.score_closes(values[:i + 1])
-            fund, fin = None, None
-            if facts:
-                fin = self.sec.fundamentals(ticker, known_at=known)
-                fund, _ = self.fundamentals.score_inputs(fin)
-            insider = self._insider_summary_at(ticker, coverage, known)
-            scores = {'technical': tech['technical_score'] if tech else None,
-                      'fundamentals': fund,
-                      'insider': None if insider is None else insider_score(insider)}
-            available = [k for k, v in scores.items() if v is not None]
-            combined = self.signal.combine_scores(scores) \
-                if len(available) >= self.signal.MIN_COMPONENTS else None
+            row = self.score_at(ticker, values, dates, i, facts, coverage)
             entry = i + ENTRY_LAG
-            row = {'ticker': ticker, 'date': dates[i], 'known_at': known, **scores,
-                   'combined': combined, 'signal': self.signal.generate_final_signal(combined),
-                   'entry_date': dates[entry],
-                   'features': feature_vector(values[:i + 1], fin, insider)}
+            row['entry_date'] = dates[entry]
             for h in HORIZONS:
                 exit_ = entry + h
                 row[f'fwd_{h}d'] = values[exit_] / values[entry] - 1 if exit_ < len(values) else None

@@ -12,4 +12,6 @@ reports/history/
 reports/research_stage*.md
 .pytest_cache/
 data/
-
+# stage 3: records, ledger and frozen test results are committed (external timestamp); evaluations are derived
+reports/prospective/evaluation.json
+reports/prospective/history/

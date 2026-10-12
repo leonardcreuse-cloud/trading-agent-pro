@@ -5,7 +5,9 @@ Daily local run (Windows Task Scheduler or cron): `python scripts/daily_run.py [
 Runs, with this Python interpreter, in the project folder:
   1. python main.py collect   external sources and agency APIs (each value stored with its retrieval time)
   2. python main.py analyze   prices, SEC filings, Form 4 and the daily signal run
-  3. python main.py weekly    on Saturdays (local date) unless --no-weekly; --weekly forces it
+  3. python main.py prospective   on Saturdays and Sundays: stage 3 weekly signal record (made once per week,
+                              before the next session opens) and its evaluation
+  4. python main.py weekly    on Saturdays (local date) unless --no-weekly; --weekly forces it
 One failing step does not stop the next ones. Each step writes data/logs/<YYYY-MM-DD>_<step>.log and the run
 writes data/logs/last_run.json; the exit code is 1 when a step failed (Task Scheduler "Last Run Result").
 
@@ -26,12 +28,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TIMEOUT_SECONDS = 3 * 3600
-SATURDAY = 5
+SATURDAY, SUNDAY = 5, 6
 
 
 def plan(today, weekly=None):
     """Steps to run on `today` (a date); weekly None = on Saturdays only."""
     steps = ['collect', 'analyze']
+    if today.weekday() in (SATURDAY, SUNDAY):
+        steps.append('prospective')         # the record is made once per week; Sunday catches a missed Saturday
     if weekly or (weekly is None and today.weekday() == SATURDAY):
         steps.append('weekly')
     return steps

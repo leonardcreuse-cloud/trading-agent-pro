@@ -65,6 +65,22 @@ def main():
         results = collect_all()
         print_results(results)
         sys.exit(0 if all(r['status'] == 'OK' for r in results) else 2)    # 2: some source unavailable
+    elif command == 'prospective':
+        from src.prospective import Recorder, evaluate, print_evaluation
+        action = sys.argv[2].lower() if len(sys.argv) > 2 else 'all'
+        code = 0
+        if action in ('record', 'all'):
+            print("\n[PROSPECTIVE] weekly record (docs/research/STAGE3_PREREGISTRATION.md)")
+            out = Recorder().run()
+            print(f"  {out['status']}: {out['message']}")
+            code = 1 if out['status'] in ('DATA UNAVAILABLE', 'LEDGER BROKEN') else 0
+        if action in ('evaluate', 'all'):
+            result = evaluate()
+            print_evaluation(result)
+            code = code or (1 if result['status'] == 'DATA UNAVAILABLE' else 0)
+        if action not in ('record', 'evaluate', 'all'):
+            print_menu()
+        sys.exit(code)
     elif command == 'dedupe':
         from src.database import Database
         out = Database().remove_redundant_versions()
@@ -91,6 +107,8 @@ def print_menu():
     print("  python main.py collect   - Download external sources (CFTC, FINRA, Cboe, Fed, BLS,")
     print("                              BEA, EIA, Federal Register, GPR, GDELT, options); run it daily")
     print("                              (exit code 2 when a source is unavailable; see docs/LOCAL_RUN.md)")
+    print("  python main.py prospective [record|evaluate] - Stage 3 weekly signal record (paper only)")
+    print("                              and its evaluation on realised returns (default: both)")
     print("  python main.py dedupe    - Remove observation versions that repeat an earlier one (backup first)")
     print("  python main.py status    - Show configuration status")
 

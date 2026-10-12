@@ -22,7 +22,8 @@ Sections never call the wall clock and never write files.
 
 from ...common import to_utc_iso
 from ...database import source_rank
-from ...fundamentals_ext import GUIDANCE_STATUS, extended, revenue_years_ago
+from ...fundamentals_ext import extended, revenue_years_ago
+from ...guidance import GUIDANCE_RULES_VERSION, guidance
 from ...intrinsic import MIN_BETA_WEEKS, dcf, settings
 from ...intrinsic import beta as beta_of
 from ...market_data import session_close_utc
@@ -94,6 +95,35 @@ def _sec_item(ctx, t, X):
                     as_of=as_of, published_at=pub, retrieved_at=fetch.get('retrieved_at'),
                     fetch_id=fetch.get('fetch_id'), fresh=_fresh(ctx, as_of),
                     basis='acceptance time of the latest filing used')
+
+
+def _guidance(ctx, res, t):
+    """Company guidance quoted from the latest earnings release known at T_c (src/guidance.py); never parsed."""
+    from .market import fresh_flag
+    if not hasattr(ctx, 'filings'):
+        res.add(unavailable(t, 2, 'company guidance', 'no SEC filings accessor in this context'))
+        return
+    feed = ctx.filings(t)
+    if feed.get('status') != 'OK':
+        res.add(unavailable(t, 2, 'company guidance', f"SEC filings unavailable ({feed.get('reason')})"))
+        return
+    g = guidance(ctx.sec, ctx.sec.get_cik(t), feed['filings'], ctx.tm.cutoff)
+    if g['status'] != 'OK':
+        res.add(unavailable(t, 2, 'company guidance', f"{g['status']}: {g['reason']}"))
+        return
+    f = g['filing']
+    res.table(f"{t}: company guidance, quoted from its earnings release (8-K item 2.02, exhibit 99, "
+              f"{f['accession_number']}, accepted {f['published_at']})", ['line, quoted as filed'],
+              [[line] for line in [g['heading']] + g['lines']], scope=t, question=2,
+              note=f"Source: {g['url']}. Forward-looking statements by the company, quoted verbatim (often on a "
+                   f"non-GAAP basis) under the deterministic rules {GUIDANCE_RULES_VERSION}; not parsed into numbers, "
+                   'not verified, and subject to the company\'s own safe-harbour caveats.')
+    item = evidence(ctx.tm, SEC_SOURCE, SEC_RANK, f"{t}: 8-K {f['accession_number']} exhibit 99 (earnings release)",
+                    as_of=f['published_at'][:10], published_at=f['published_at'],
+                    fresh=fresh_flag(ctx, f['published_at'][:10], 'quarterly_filing'), basis='SEC acceptance time')
+    res.add(conclude(t, 2, f"{t} stated an outlook in its earnings release accepted {f['published_at']} "
+                           f"(section '{g['heading']}', {len(g['lines'])} line(s) quoted in the table). This is what the "
+                           'company said, not a verified figure.', [item], 'official_fact'))
 
 
 def _close(ctx, t, idx=-1):
@@ -211,7 +241,7 @@ def build(ctx, tickers=None, history=True):
         X_p = ext(t, tm.previous_cutoff)
         item = _sec_item(ctx, t, X)
         _fundamentals(ctx, res, t, X, X_p, item)
-        res.add(unavailable(t, 2, 'company guidance', GUIDANCE_STATUS))
+        _guidance(ctx, res, t)
         if not hasattr(ctx, 'prices'):
             res.add(unavailable(t, 2, 'valuation ratios', 'no price accessor in this context'))
             continue

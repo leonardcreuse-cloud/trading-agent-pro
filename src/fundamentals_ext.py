@@ -39,8 +39,8 @@ from datetime import date, timedelta
 from .sec_xbrl import (CASH_TAGS, DA_PARTS, DA_TAGS, DATE_TOLERANCE_DAYS, EPS_TAGS, INTEREST_TAGS, LIQUIDITY_TAGS,
                        RND_TAGS, SHORT_TERM_INVESTMENT_TAGS, _near, ttm_at)
 
-GUIDANCE_STATUS = ('NOT IMPLEMENTED: company guidance is published in press releases and 8-K exhibits as '
-                   'unstructured text; no structured, verifiable source is wired in')
+GUIDANCE_STATUS = ('NOT IN XBRL: company guidance is not an XBRL fact; it is quoted verbatim from the latest 8-K '
+                   'earnings release by src/guidance.py (weekly valuation section)')
 SHARES_PRIOR_TOLERANCE_DAYS = 45      # cover dates are a few weeks after the period end
 SPLIT_SUSPECT_PCT = 40.0              # cover-page share count change in a year above which a split is suspected
 CONVERSION_MIN_NET_MARGIN_PCT = 2.0

@@ -888,3 +888,12 @@ def test_section_never_reads_the_wall_clock():
         assert re.search(pattern, probe), probe                    # the guard catches every common clock read
     assert not re.search(pattern, source)
     assert not re.search(r'from\s+datetime\s+import[^\n]*\bdatetime\b|^import\s+datetime', source, re.MULTILINE)
+
+
+def test_level_difference_keeps_the_level_unit_for_percent_change_series():
+    # regression (gap round G1): a T_p / T_c difference of WALCL (USD millions) was labelled '%'
+    from src.weekly.sections import macro
+    assert macro._level_diff(macro.SERIES['WALCL'], 4529.0) == '+4,529 USD m'
+    assert macro._level_diff(macro.SERIES['INDPRO'], 0.31) == '+0.31 points'
+    assert macro._level_diff(macro.SERIES['DGS10'], 0.05) == macro._diff(macro.SERIES['DGS10'], 0.05) == '+0.05 pp'
+    assert macro._diff(macro.SERIES['RSAFS'], 0.6) == '+0.6%'                 # a release-style change stays a percent

@@ -124,7 +124,7 @@ def test_extended_fundamentals_formulas(sec):
     assert X['ebitda_ttm'] == pytest.approx(1060 * 0.15 + 1060 * 0.04)
     assert X['cash_conversion'] == 2.0 and X['cash_runway_years'] is None
     assert X['shares_outstanding'] == 100.0 and X['shares_outstanding_change_pct'] == 0.0
-    assert X['guidance'] is None and X['guidance_status'].startswith('NOT IMPLEMENTED')
+    assert X['guidance'] is None and X['guidance_status'].startswith('NOT IN XBRL')
     assert revenue_years_ago(sec, 'AAA', X, 3) is None              # 2023-06 TTM not computable (no 6M 2023)
     assert extended(sec, 'AAA', '2026-07-01T00:00:00+00:00')['revenue'] is None   # facts published 2026-08-01
 

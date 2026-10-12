@@ -78,6 +78,7 @@ def part_of(section, question, text, kind=None):
         return 9 if question == 2 else 12
     if section == 'valuation':
         return 9 if (': fundamentals (sec xbrl' in low or kind == 'official_fact' or low.startswith('company guidance')
+                     or ': company guidance' in low
                      or low.startswith('extended fundamentals')) else 10
     return 22
 

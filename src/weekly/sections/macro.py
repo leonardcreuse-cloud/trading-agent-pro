@@ -109,6 +109,10 @@ UMCSENT_NOTE = ('the FRED vintage date is not established as the date the Univer
                 'in that month or early in the next, i.e. not the mid-month preliminary reading), and whether the '
                 'source has published a later reading is not established here')
 UMCSENT_RESOLVE = 'the University of Michigan Surveys of Consumers release with its own publication date'
+REGIONAL_NOTE = ('a regional Federal Reserve Bank survey of manufacturers (official, monthly): share of firms '
+                 'reporting an increase minus share reporting a decrease; it covers one district and is not a PMI')
+MTS_NOTE = ('monthly flow, not seasonally adjusted: month-to-month changes mostly reflect the tax and payment '
+            'calendar; compare with the same month a year earlier')
 
 # Pre-declared series (order = table order). sign: +1 when an increase is the "firmer / stronger /
 # higher" direction of its block under DIRECTION_CONVENTION, -1 when it is the opposite.
@@ -147,6 +151,20 @@ SERIES = {
     'INDPRO': _spec(3, 'Industrial production index (SA)', 'index 2017 = 100', '', 'monthly', '%', change='pct',
                     digits=2),
     'TCU': _spec(3, 'Capacity utilisation, total industry (SA)', '% of capacity', '%', 'monthly', 'pp', digits=1),
+    # master mission gap round G1: official substitutes for the PMIs (regional Fed surveys), monetary and fiscal policy
+    'GACDFSA066MSFRBPHI': _spec(3, 'Philadelphia Fed manufacturing survey: current general activity (SA)',
+                                'diffusion index (> 0: more firms report increases)', '', 'monthly', 'points',
+                                digits=1, note=REGIONAL_NOTE),
+    'GACDISA066MSFRBNY': _spec(3, 'New York Fed Empire State manufacturing survey: current general business '
+                                  'conditions (SA)', 'diffusion index (> 0: more firms report increases)', '',
+                               'monthly', 'points', digits=1, note=REGIONAL_NOTE),
+    'BACTSAMFRBDAL': _spec(3, 'Dallas Fed Texas manufacturing survey: current general business activity (SA)',
+                           'diffusion index (> 0: more firms report increases)', '', 'monthly', 'points', digits=1,
+                           note=REGIONAL_NOTE),
+    'WALCL': _spec(3, 'Federal Reserve total assets (Wednesday level, H.4.1): balance-sheet policy', 'USD millions',
+                   ' USD m', 'weekly', '%', change='pct', digits=0),
+    'MTSDS133FMS': _spec(3, 'Federal surplus (+) or deficit (-), monthly (Monthly Treasury Statement): fiscal policy',
+                         'USD millions', ' USD m', 'monthly', 'USD m', digits=0, note=MTS_NOTE),
     'USEPUINDXD': _spec(4, 'US daily Economic Policy Uncertainty index, newspaper-based, Baker-Bloom-Davis',
                         'index', '', 'daily', 'points'),
     'GEPUCURRENT': _spec(4, 'Global Economic Policy Uncertainty index, current-price GDP weights, newspaper-based',
@@ -194,7 +212,8 @@ STATIC_UNAVAILABLE = [
      'no other source of the survey is configured'),
     (3, 'purchasing managers\' indexes (ISM manufacturing / services PMI, S&P Global PMI)',
      'proprietary surveys: not on FRED (the former ISM series were withdrawn) and no licensed source is configured; '
-     'industrial production and capacity utilisation (Federal Reserve) are shown instead as official activity data'),
+     'shown instead as official activity data: the Philadelphia, New York and Dallas Fed manufacturing surveys '
+     '(diffusion indexes of one district each, not PMIs), industrial production and capacity utilisation'),
     (5, 'official sampling-error bands for labour and consumer statistics',
      'NOT IMPLEMENTED: the BLS and BEA technical notes that state sampling errors are not collected or parsed'),
 ]
@@ -248,6 +267,14 @@ def _val(spec, v):
 def _diff(spec, v, unit=None):
     unit = unit or spec['diff_unit']
     return f"{_sfmt(v, _ddigits(spec))}{'' if unit == '%' else ' '}{unit}"
+
+
+def _level_diff(spec, v):
+    """A difference of LEVELS (T_p vs T_c): in the level's unit, also for series whose release-style change is a
+    percent (diff_unit '%' describes that change, not a level difference)."""
+    if spec['change'] != 'pct':
+        return _diff(spec, v)
+    return f"{_sfmt(v, max(spec['digits'], 2))}{spec['short'] or ' points'}"
 
 
 def _period(spec, obs):
@@ -706,14 +733,14 @@ def _asknown(ctx, res, d, q, thr, version):
         if dc == dp:
             statement = (f'{head}: the latest observation ({_period(spec, dc)}) was revised from {_val(spec, qp)} '
                          f'(as known at T_p) to {_val(spec, qc)} (as known at T_c){yoy_note}; difference '
-                         f'{_diff(spec, delta)}; no new observation first published in the window.')
+                         f'{_level_diff(spec, delta)}; no new observation first published in the window.')
         else:
             beyond, extra, phrase = _assess(spec, delta, noise['max'], thr, version)
             out['beyond'] = beyond
             codes += extra
             resolve = dict(resolve, **_threshold_resolve(version))
             statement = (f'{head}: {_val(spec, qp)} for {_period(spec, dp)} as known at T_p and {_val(spec, qc)} for '
-                         f'{_period(spec, dc)} as known at T_c{yoy_note}; difference {_diff(spec, delta)} '
+                         f'{_period(spec, dc)} as known at T_c{yoy_note}; difference {_level_diff(spec, delta)} '
                          f'({phrase}; {_noise_text(spec, noise, what)}){new_note}.')
     if spec['note']:
         statement = statement[:-1] + f' ({spec["note"]}).'

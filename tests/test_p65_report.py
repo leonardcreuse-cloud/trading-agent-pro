@@ -196,3 +196,17 @@ def test_synthesis_pillars_questions_and_scenarios():
     assert summary['statement'].startswith('Executive summary for the week ending 2026-10-09: the analysis sections '
                                            'hold 1 strongly supported')
     assert qa['rows'][7][1] == 'pillars: agree (fundamentals +, technical +, quant +)'
+
+
+def test_fingerprint_ignores_only_marked_retrieval_times():
+    from src.weekly.report import fingerprint
+    def payload(note, level='UNCERTAIN'):
+        return {'sections': [{'name': 'catalysts', 'conclusions': [
+            {'scope': 'AAA', 'level': level, 'statement': 's', 'evidence': []}],
+            'tables': [{'title': 'T', 'rows': [['next earnings date', 'REPORTED', note]]}], 'unavailable': []}]}
+    a = payload('retrieved at G (2026-10-12T11:47:06+00:00) after the cutoff')
+    b = payload('retrieved at G (2026-10-12T11:48:28+00:00) after the cutoff')
+    assert fingerprint(a) == fingerprint(b)
+    assert fingerprint(a) != fingerprint(payload('retrieved at 2026-10-12'))
+    assert fingerprint(a) != fingerprint(payload('retrieved at G (2026-10-12T11:47:06+00:00) after the cutoff',
+                                                 level='STRONGLY SUPPORTED'))

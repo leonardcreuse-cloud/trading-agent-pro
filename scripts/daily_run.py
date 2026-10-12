@@ -9,9 +9,14 @@ Runs, with this Python interpreter, in the project folder:
                               before the next session opens) and its evaluation
   4. python main.py paper     every day: paper strategy PT1 (orders from a new stage 3 record, fills, stops, marks;
                               paper only, no real order)
-  5. python main.py weekly    on Sundays (local date) unless --no-weekly; --weekly forces it. The cutoff is the same
-                              (Saturday 05:00 UTC after the last session); on Sunday evening the NewsAPI window is
-                              complete (results end ~24 h before retrieval; complete 26 h after the cutoff)
+  5. python main.py sources, then audit, then weekly   on Sundays (local date) unless --no-weekly; --weekly forces
+                              them. The source probe and the data audit run right before the report (validation
+                              checks; their results are listed in report part 20 when computed before the cutoff,
+                              and in the dashboard). The cutoff is the same (Saturday 05:00 UTC after the last
+                              session); on Sunday evening the NewsAPI window is complete (results end ~24 h before
+                              retrieval; complete 26 h after the cutoff). weekly exits with 3 when a critical
+                              section failed (report INCOMPLETE)
+  6. python main.py dashboard every day, last: reports/dashboard.html from every output
 One failing step does not stop the next ones. Each step writes data/logs/<YYYY-MM-DD>_<step>.log and the run
 writes data/logs/last_run.json; the exit code is 1 when a step failed (Task Scheduler "Last Run Result").
 
@@ -42,7 +47,8 @@ def plan(today, weekly=None):
         steps.append('prospective')         # the record is made once per week; Sunday catches a missed Saturday
     steps.append('paper')                   # paper strategy PT1: orders from a new record, then fills / marks
     if weekly or (weekly is None and today.weekday() == SUNDAY):
-        steps.append('weekly')
+        steps += ['sources', 'audit', 'weekly']  # source availability and data checks right before the report
+    steps.append('dashboard')               # rebuilt last, from every output of the day
     return steps
 
 

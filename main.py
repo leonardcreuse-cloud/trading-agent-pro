@@ -48,6 +48,19 @@ def main():
     elif command == 'walkforward':
         from src.walk_forward import WalkForward
         WalkForward().run([t.upper() for t in sys.argv[2:]] or None)
+    elif command == 'weekly' and '--verify' in sys.argv:
+        from src.weekly.report import verify
+        from src.dashboard import latest_weekly
+        i = sys.argv.index('--verify')
+        path = sys.argv[i + 1] if len(sys.argv) > i + 1 else str(latest_weekly()[1])
+        out = verify(path)
+        print(f"[WEEKLY VERIFY] {path} (cutoff {out['cutoff']}): "
+              f"{'IDENTICAL' if out['identical'] else 'DIFFERENT'} ({out['archived_items']} archived items, "
+              f"{out['rebuilt_items']} rebuilt); code {out['archived_code_version']} -> {out['current_code_version']}")
+        for tag, items in (('only in the archive', out['only_archived']), ('only in the rebuild', out['only_rebuilt'])):
+            for x in items[:10]:
+                print(f'  {tag}: {str(x)[:220]}')
+        sys.exit(0 if out['identical'] else 4)                          # 4: the rebuild differs from the archive
     elif command == 'weekly':
         from src.weekly.report import run
         cutoff = sys.argv[sys.argv.index('--cutoff') + 1] if '--cutoff' in sys.argv else None
@@ -129,6 +142,10 @@ def main():
         print_report(report)
         s = report['summary']
         sys.exit(0 if s['integrated_reachable'] == s['integrated_total'] else 2)    # 2: an integrated source failed
+    elif command == 'dashboard':
+        from src.dashboard import Dashboard
+        d = Dashboard()
+        print(f"[DASHBOARD] {d.save_dashboard_html(d.create_live_dashboard_html())}")
     elif command == 'status':
         print_status()
     else:
@@ -142,6 +159,7 @@ def print_menu():
     print("                              validation universe (slow first run)")
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
     print("  python main.py sources    - Probe every registered data source (HTTP status, terms, limits)")
+    print("  python main.py dashboard  - Rebuild reports/dashboard.html from the latest outputs")
     print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] [--recalc LABEL]")
     print("                              - Predictive-edge study; results are written once, a later run")
     print("                                needs --recalc LABEL (separate file, never the original)")

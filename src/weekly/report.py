@@ -15,6 +15,7 @@ import importlib
 import inspect
 import traceback
 from html import escape
+from pathlib import Path
 
 from ..common import NA_DISPLAY, redact
 from .context import Context
@@ -302,6 +303,48 @@ def render_html(payload):
     parts.append(f"<h2>Appendix — Q14. {escape(payload['questions'][14])}</h2>" + _conclusions_table(payload['q14_uncertain']))
     parts.append('</div></body></html>')
     return '\n'.join(parts)
+
+
+VOLATILE = [(r'retrieved at G \([^)]*\)', 'retrieved at G (...)')]   # display-only retrieval times, marked as such
+
+
+def _norm(value):
+    import json as _json
+    import re as _re
+    text = value if isinstance(value, str) else _json.dumps(value, sort_keys=True, default=str)
+    for pattern, repl in VOLATILE:
+        text = _re.sub(pattern, repl, text)
+    return text
+
+
+def fingerprint(payload):
+    """Set of comparable items: conclusions (level, statement, evidence), tables (rows), DATA UNAVAILABLE items."""
+    out = set()
+    for s in payload['sections']:
+        for c in s['conclusions']:
+            ev = [(e.get('source'), e.get('fact'), e.get('as_of'), e.get('published_at')) for e in c['evidence']]
+            out.add(('conclusion', s['name'], c['scope'], c['level'], _norm(c['statement']), _norm(ev)))
+        for t in s['tables']:
+            out.add(('table', s['name'], t['title'], _norm(t['rows'])))
+        for u in s['unavailable']:
+            out.add(('unavailable', s['name'], u['scope'], u['item'], _norm(u['reason'])))
+    return out
+
+
+def verify(archived_path):
+    """
+    Rebuild the report of an archived JSON with the same requested cutoff (nothing is written) and compare it:
+    {'identical', 'only_archived', 'only_rebuilt', 'archived_code_version', 'current_code_version', 'cutoff'}.
+    Differences can come from code changes (compare the code versions) or from stored data that changed.
+    """
+    import json as _json
+    archived = _json.loads(Path(archived_path).read_text(encoding='utf-8'))
+    cutoff = archived['time_model']['cutoff']
+    payload, _ = build(requested_cutoff=cutoff)
+    a, b = fingerprint(archived), fingerprint(payload)
+    return {'identical': a == b, 'only_archived': sorted(a - b, key=str), 'only_rebuilt': sorted(b - a, key=str),
+            'archived_code_version': archived.get('code_version'), 'current_code_version': payload.get('code_version'),
+            'cutoff': cutoff, 'archived_items': len(a), 'rebuilt_items': len(b)}
 
 
 def run(requested_cutoff=None):

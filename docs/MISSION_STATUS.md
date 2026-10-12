@@ -520,3 +520,102 @@ data shown as DATA UNAVAILABLE, point-in-time evidence.
 - **Paper costs.** Commission, slippage and spread are assumptions; there is no execution data.
 - **Windows scheduling is untested on Windows.** The Windows scheduled-task installer has not been run on the
   PC yet.
+
+## Gap round G0–G6 — second pass over every requirement (2026-10-12)
+
+The owner pointed out that the mission was not finished. Every requirement was re-read and its state is now
+listed in `docs/REQUIREMENTS_TRACEABILITY.md`. The gaps found were then closed, phase by phase.
+
+### Files
+- New:
+  - `src/source_registry.py`, `src/guidance.py`, `src/paper_report.py`, `src/verify_report.py`;
+  - `docs/REQUIREMENTS_TRACEABILITY.md`, `requirements-dev.txt`;
+  - tests `test_p70_sources.py` … `test_p76_verify_report.py`.
+- Rewritten: `src/dashboard.py`.
+- Changed:
+  - `src/external_sources.py`: Cboe price history;
+  - `src/pipeline_audit.py`: second source, identifiers, implied splits;
+  - `src/valuation.py`: implied splits, peer medians;
+  - `src/technicals.py`: retracement;
+  - `src/weekly/context.py`, sections `macro`, `market`, `valuation`, `technicals`, `catalysts`, `track_record`,
+    `sec_events`, and `report.py` (fingerprint, verify);
+  - `main.py`: `sources`, `dashboard`, `verify-report`, `weekly --verify`, `paper report`;
+  - `scripts/daily_run.py`, `docs/DATA_POLICY.md`.
+
+### Regression risk handled
+- No frozen stage 3 input changed (signal, `src/indicators.py` functions, SEC tags, weights): the frozen-tag test
+  passes.
+- The PT1 rules and journals are untouched: the new reports only read them.
+- Pre-registered results are unchanged.
+
+### Resolved
+- **G0 — sources.**
+  - `python main.py sources` probes every provider with the same client as production. The registry records
+    rank, endpoint, authentication, frequency, terms and rate limits (or "not verified here").
+  - Live: 17 / 17 integrated sources respond.
+  - Refused by the network policy (gateway 403 on CONNECT): World Bank, ECB, Treasury FiscalData, Census,
+    NY Fed, OFR, IMF, U. Michigan, USGS, Stooq.
+  - `DATA_POLICY.md` was out of date (it described a signal with news, and "available in a later phase"
+    statuses): corrected.
+- **G1 — macro and guidance.**
+  - Official PMI substitutes (Philadelphia, New York and Dallas Fed surveys), Fed total assets, monthly
+    federal deficit.
+  - Company guidance quoted verbatim from the latest earnings release (8-K item 2.02, exhibit 99).
+  - Bug found and fixed: a T_p / T_c difference of levels was labelled '%' for percent-change series (INDPRO,
+    and WALCL "+4,529%" for +4,529 USD m).
+- **G2 — second price source and technicals.**
+  - The Cboe delayed daily history (an allowed host) was found and integrated: 22,550 bars for 41 tickers.
+  - Audit cross-check: 40 / 41 tickers identical over 252 sessions.
+  - HON:
+    - Cboe applied a 1-for-2 split on 2026-06-29 that yfinance does not list. The implied ratio is
+      0.9535 × 1/1.907 = 0.500, matching the SEC halving of the share count.
+    - HON's current market cap is therefore on one basis and it is back in RKLB's peer median, with the
+      explanation.
+    - yfinance's split-adjusted HON history before that date is not (WARN kept).
+  - Retracement of the last swing.
+  - Reference check against stockstats: RSI, MACD, ATR, Bollinger middle, ±DI and DX agree to ≤ 1e-6 on
+    NVDA / SPY. Two convention differences are documented: Bollinger ddof 0, and Wilder ADX against
+    stockstats' 6-period DX average.
+  - Identifier check: 40 / 40 tickers resolve to the CIK of their stored SEC facts; META's former name is
+    reported.
+- **G4 — paper trading reports.**
+  - Trade table: realised or unrealised P&L, sessions held, worst position value against cost (split-invariant).
+  - Outcomes by horizon, with the weekly rank correlation (calibration NOT CALIBRATED).
+  - Descriptive backtest beside the paper results, marked not comparable before 52 rebalances.
+  - All read point-in-time in report part 21 and through `paper report`.
+- **G5 — dashboard and automation.**
+  - Dashboard covering every element of section 12, from real outputs only, each dated.
+  - The daily run rebuilds it last; on Sundays it runs `sources` and `audit` before the report.
+  - `weekly --verify` rebuilds an archived report and compares it.
+    - Its first use found a real reproducibility defect: the catalysts section repeated a live yfinance call
+      at every generation. Fixed by reusing a call logged in the last 12 hours, as for FRED.
+    - Rebuild of v16: IDENTICAL, 521 items.
+- **G6 — verification against sources.**
+  - `verify-report` fetches report facts again at their sources.
+  - v16: 84 of 84 MATCH (FRED values as known at the cutoff through ALFRED, SEC acceptance times and forms,
+    closes against Cboe, guidance quotes against the exhibit).
+  - Its tests show that planted errors are reported as MISMATCH, and unreachable sources as UNVERIFIABLE.
+  - The SEC-events approximate multiples now point to the reference ratios of part 10, which use a different
+    share-count basis.
+
+### Tests and live results
+- Tests: 598 passed.
+- Audit: 708 PASS, 21 WARN, 0 FAIL. The WARNs are the 19 explained in P6, plus HON's second-source difference,
+  plus the share-count case now matched only by a Cboe-implied split.
+- Weekly v16: COMPLETE.
+  - 114 strongly supported conclusions, 188 uncertain, 68 DATA UNAVAILABLE.
+  - Replay IDENTICAL; source verification 84 / 84.
+
+### Remaining
+- **Factor groups not tested:**
+  - analyst revisions: no free point-in-time history;
+  - macro: needs a time-series design;
+  - events (earnings surprise from XBRL EPS, 8-K items) and news sentiment: histories not built.
+
+  Testing them requires a new pre-registered stage (proposed as the next research step, not started).
+- **Blocked here (network policy or licences):** rare earths and lithium prices, ISM / S&P PMIs, a third
+  price source, delisted-stock prices.
+- **Reproducibility over long delays:** a rebuild weeks later can differ where inputs are re-downloaded at
+  generation (adjusted prices are revised after dividends; news). `weekly --verify` lists the differences, and
+  the archive keeps the fetch ids and raw payloads used.
+- **Windows scheduling:** the Windows task installer is still untested on the PC.

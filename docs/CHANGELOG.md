@@ -1,5 +1,25 @@
 # Changelog
 
+## Gap round G0–G6 — second pass over every requirement (2026-10-12)
+
+Details: `docs/MISSION_STATUS.md` (gap round) and `docs/REQUIREMENTS_TRACEABILITY.md`.
+- New commands:
+  - `sources`: source registry and live probe;
+  - `dashboard`: section 12, real outputs only;
+  - `verify-report`: facts fetched again at their sources (v16: 84 / 84 MATCH);
+  - `weekly --verify`: replay of an archived report (v16: IDENTICAL);
+  - `paper report`: trades, outcomes by horizon.
+- New data: Cboe delayed daily history as a second price source (audit cross-check; HON's unlisted 1-for-2
+  split detected); company guidance quoted from 8-K earnings releases; regional Fed manufacturing surveys,
+  Fed balance sheet, federal deficit.
+- New checks: identifiers (ticker to CIK), second source, implied splits; technicals compared with an
+  independent library; retracements.
+- Fixes:
+  - level differences labelled '%' for percent-change macro series;
+  - a non-reproducible live yfinance call in the catalysts section;
+  - `DATA_POLICY.md` statements contradicting the code.
+- Tests: 598 passed.
+
 ## M-P6 — Master mission, phase P6: final validation (2026-10-12)
 
 Details: `docs/MISSION_STATUS.md` (P6).

@@ -15,9 +15,9 @@ collects Friday's releases (08:30 New York) and an end-of-session option snapsho
 | When (local time) | `scripts\daily_run.py` runs |
 |---|---|
 | every day, 23:00 | `python main.py collect`, then `python main.py analyze` |
-| every day, 23:00 | then `python main.py paper` (paper strategy PT1: orders, fills, stops, marks) |
+| every day, 23:00 | then `python main.py paper` (paper strategy PT1: orders, fills, stops, marks), and last `python main.py dashboard` (`reports\dashboard.html`) |
 | Saturday, 23:00 | the same, plus `python main.py prospective` (stage 3 weekly record) |
-| Sunday, 23:00 | the same, plus `prospective` (catches a missed Saturday) and `python main.py weekly` (week ending Friday; on Sunday evening the news window is complete) |
+| Sunday, 23:00 | the same, plus `prospective` (catches a missed Saturday), then `python main.py sources` (source probe), `python main.py audit` (data checks) and `python main.py weekly` (week ending Friday; on Sunday evening the news window is complete) |
 
 Logs: `data\logs\<date>_<step>.log`; summary of the latest run: `data\logs\last_run.json` (`"ok": true`).
 Exit codes: `collect` returns 2 when at least one source was unavailable (the log line gives the reason);
@@ -83,3 +83,23 @@ The first orders (record of 2026-10-09) were placed in the cloud before the 2026
 - Back up `data\` from time to time: it is the only copy of the history (raw payloads included).
 - `scheduler.py` is the older always-on loop that runs `analyze` only, at 08:00; the scheduled task replaces it.
 - Remove the task: `Unregister-ScheduledTask -TaskName "TradingAgentPro daily" -Confirm:$false`.
+
+## Checks you can run at any time
+
+- `python main.py sources`: probes every data source with the production client.
+  - Results: `reports\source_check.json`.
+  - On the PC, check the "alternatives reachable here" line: hosts refused in the cloud (World Bank, ECB,
+    Treasury, Census, NY Fed, IMF, Stooq…) may be open on your network. None is used until it is integrated
+    and tested.
+- `python main.py weekly --verify`: rebuilds the latest archived weekly report with the same cutoff and lists
+  every difference.
+  - Exit 4 when the rebuild differs.
+  - A rebuild weeks later can differ where prices were re-adjusted after a dividend.
+- `python main.py verify-report`: fetches the report's FRED values, SEC filings, closes and guidance quotes
+  again at their sources.
+  - Exit 5 on a mismatch.
+  - Results: `reports\verification\`.
+- `python main.py paper report`: PT1 trades (P&L, sessions held, worst drawdown) and prediction outcomes by
+  horizon.
+- Tests against an independent reference library: `pip install -r requirements-dev.txt`, then
+  `python -m pytest tests/test_p73_reference_indicators.py`.

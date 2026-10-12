@@ -47,6 +47,18 @@
   - Final audit: 0 FAIL, 19 explained WARNs.
   - No predictive ability is demonstrated anywhere; stage 3 and PT1 are the only open tests.
 
+- Gap round G0–G6 (2026-10-12): the second pass over every requirement of the mission.
+  - The requirement-by-requirement state is in `docs/REQUIREMENTS_TRACEABILITY.md`.
+  - New commands: `sources`, `dashboard`, `verify-report`, `weekly --verify`, `paper report`.
+  - New data: the Cboe second price source and company guidance quoted from 8-K earnings releases.
+  - Tests: 598 passed.
+  - Audit: 0 FAIL.
+  - Weekly v16: replay IDENTICAL, source verification 84 / 84.
+  - To widen the cloud environment's network (World Bank, ECB, Treasury, Census, NY Fed, OFR, IMF,
+    U. Michigan, USGS, Stooq are refused today): environment settings, Network access, Allowed domains
+    (https://code.claude.com/docs/en/cloud-environments#network-access). Then run `python main.py sources`
+    again.
+
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
 validation status of the signal; `reports/weekly/2026-10-09/` is the first weekly report.

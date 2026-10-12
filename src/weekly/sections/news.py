@@ -50,6 +50,14 @@ Processing (pre-declared)
   match: off-topic matches (e.g. sports 'sanctions') are possible and are not removed by hand; the
   simple title clustering can split one story written with different words (outlet counts are
   then conservative).
+Event classification (master mission P2, EVENT_CLASSES_VERSION), per company story cluster: event classes from
+pre-declared keywords of the headline and description of the cluster's articles (EVENT_CLASSES), a pre-declared
+materiality per class (MATERIALITY: what kind of news usually matters for a company, not an estimate of this
+story's effect), novelty against the previous window (NEW when no headline of the same query for the previous
+window, stored by an earlier report, is similar (Jaccard >= JACCARD_MIN); CONTINUING otherwise; NOT ASSESSED
+when that query is not stored) and the word-lexicon sentiment of the lead headline, shown as NOT VALIDATED
+(src/news_sentiment.py could not be validated: no labelled financial text is reachable; it is not part of any
+signal). All of it is an aggregator-based description (UNCERTAIN).
 Sections never call the wall clock, never write files themselves (fetch logging goes through
 ctx.db) and never download outside this documented NewsAPI call.
 """
@@ -63,9 +71,9 @@ from urllib.parse import urlencode, urlsplit
 import requests
 from dotenv import load_dotenv
 
-from ...common import DATA_UNAVAILABLE, redact, secret_env, to_utc_iso
+from ...common import DATA_UNAVAILABLE, end_of_us_trading_day_utc, redact, secret_env, to_utc_iso
 from ...database import source_rank
-from ..core import NEWS_DELAY_HOURS, SectionResult, conclude, evidence, unavailable
+from ..core import NEWS_DELAY_HOURS, WEEK_SESSIONS, SectionResult, conclude, evidence, unavailable
 
 load_dotenv()
 
@@ -321,7 +329,7 @@ def select_articles(tm, payload, terms):
             stats['not_relevant'] += 1
             continue
         kept.append({'published_at': pub, 'title': title or '(untitled)', 'outlet': outlet, 'url': url,
-                     'topics': topics, 'copies': []})
+                     'topics': topics, 'copies': [], 'description': desc or ''})
     stats['span'] = (min(published), max(published)) if published else (None, None)
 
     kept.sort(key=lambda x: (x['published_at'], x['url'] or ''))
@@ -510,6 +518,97 @@ def _global(ctx, res, http_get, budget):
 
 # ---------------------------------------------------------------- companies (Q1)
 
+EVENT_CLASSES_VERSION = 'news-events-v1-2026-10-12'
+EVENT_CLASSES = {
+    'earnings / results': ('earnings', 'results', 'quarterly', 'quarter', 'revenue', 'profit', 'eps'),
+    'guidance': ('guidance', 'outlook', 'forecast', 'expects'),
+    'M&A': ('acquire', 'acquires', 'acquisition', 'merger', 'buyout', 'takeover'),
+    'analyst rating': ('upgrade', 'upgrades', 'downgrade', 'downgrades', 'price target', 'initiates coverage',
+                       'rating'),
+    'legal / regulatory': ('lawsuit', 'sues', 'sued', 'probe', 'investigation', 'antitrust', 'settlement', 'fine',
+                           'regulator', 'regulators'),
+    'security incident / outage': ('outage', 'breach', 'hack', 'hacked', 'cyberattack', 'vulnerability'),
+    'management change': ('ceo', 'cfo', 'resigns', 'appoints', 'appointed', 'steps down', 'chief executive'),
+    'financing / capital return': ('offering', 'convertible', 'buyback', 'repurchase', 'dividend', 'notes due'),
+    'product / contract': ('launch', 'launches', 'unveils', 'contract', 'partnership', 'partners', 'award',
+                           'awarded', 'wins'),
+    'price commentary': ('shares', 'stock', 'stocks', 'rally', 'slump', 'soars', 'plunges', 'jumps', 'falls'),
+}
+MATERIALITY = {'earnings / results': 'high', 'guidance': 'high', 'M&A': 'high', 'legal / regulatory': 'high',
+               'security incident / outage': 'high', 'management change': 'high', 'financing / capital return': 'high',
+               'analyst rating': 'medium', 'product / contract': 'medium', 'price commentary': 'low'}
+MATERIALITY_ORDER = ('high', 'medium', 'low', 'unclassified')
+
+
+def classify(text):
+    """[(class, matched keywords)] from pre-declared word / phrase keywords (lower case, word boundaries)."""
+    low = (text or '').lower()
+    out = []
+    for name, words in EVENT_CLASSES.items():
+        hit = [w for w in words if re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', low)]
+        if hit:
+            out.append((name, hit))
+    return out
+
+
+def materiality(classes):
+    levels = [MATERIALITY[c] for c, _ in classes]
+    return next((lvl for lvl in MATERIALITY_ORDER if lvl in levels), 'unclassified')
+
+
+class _PreviousWindow:
+    def __init__(self, tm):
+        self.previous_cutoff = end_of_us_trading_day_utc(tm.sessions[-2 * WEEK_SESSIONS - 1])
+        self.cutoff = tm.previous_cutoff
+
+
+def previous_titles(ctx, q):
+    """Token sets of the headlines returned by the same query for the previous window (stored), or None."""
+    tm = ctx.tm
+    if len(tm.sessions) <= 2 * WEEK_SESSIONS or not hasattr(ctx.db, 'latest_fetch'):
+        return None
+    params = request_params(_PreviousWindow(tm), q)
+    stored = ctx.db.latest_fetch(DB_SOURCE, endpoint_for(params))
+    if not stored:
+        return None
+    try:
+        payload = json.loads(ctx.db.read_raw(stored['fetch_id']))
+    except (RuntimeError, ValueError, TypeError, OSError):
+        return None
+    return [set(normalized_title(a.get('title') or '', (a.get('source') or {}).get('name')).split())
+            for a in payload.get('articles') or []]
+
+
+def _events(ctx, res, ticker, name, clusters):
+    from ...news_sentiment import NewsSentiment
+    prev = previous_titles(ctx, f'"{name}"')
+    rows, counts, novelty = [], {}, {}
+    for c in clusters:
+        text = ' '.join(f"{x['title']} {x.get('description') or ''}" for x in c['articles'])
+        classes = classify(text)
+        level = materiality(classes)
+        counts[level] = counts.get(level, 0) + 1
+        if prev is None:
+            new = 'NOT ASSESSED'
+        else:
+            new = 'CONTINUING' if any(jaccard(c['lead']['tokens'], t) >= JACCARD_MIN for t in prev if t) else 'NEW'
+        novelty[new] = novelty.get(new, 0) + 1
+        lex = NewsSentiment.analyze_sentiment(c['lead']['title'])
+        rows.append([c['id'], c['first'], c['lead']['title'], len(c['outlets']),
+                     '; '.join(f"{k} ({', '.join(w)})" for k, w in classes) or 'unclassified', level, new,
+                     'no lexicon word' if lex is None else f'{lex} (NOT VALIDATED)'])
+    res.table(f'{ticker} — news events (classified, {EVENT_CLASSES_VERSION})',
+              ['story', 'first publishedAt', 'lead headline (verbatim, unverified)', 'outlets',
+               'event classes (matched words)', 'materiality of the class (pre-declared)', 'novelty vs the previous '
+               'window', 'lexicon sentiment of the headline'], rows, scope=ticker, question=Q_COMPANY,
+              note='Classes and materiality are pre-declared keyword rules (EVENT_CLASSES / MATERIALITY in '
+                   'src/weekly/sections/news.py): a headline can be misclassified. Materiality is that of the class, '
+                   'not an estimate of the story\'s effect. Novelty compares with the same query for the previous '
+                   'window when an earlier report stored it. The lexicon sentiment is not validated and not used by '
+                   'any signal.')
+    return counts, novelty
+
+
 def _company(ctx, res, ticker, http_get, budget, coverage_rows):
     tm = ctx.tm
     name = ctx.company(ticker)
@@ -548,6 +647,14 @@ def _company(ctx, res, ticker, http_get, budget, coverage_rows):
                      f'from {len(outlets)} outlet(s), published {first} to {last} (NewsAPI returned '
                      f'{stats["returned"]} of {total} results, coverage {fmt_cov(cov)}); {NOT_ESTABLISHED}.',
                      [article_evidence(ctx, a, fetch) for a in unique], 'aggregator', reason_codes=codes))
+    counts, novelty = _events(ctx, res, ticker, name, clusters)
+    res.add(conclude(ticker, Q_COMPANY,
+                     f'{ticker}: story clusters by pre-declared event materiality: '
+                     + ', '.join(f'{counts[k]} {k}' for k in MATERIALITY_ORDER if counts.get(k))
+                     + '; novelty vs the previous window: ' + ', '.join(f'{v} {k}' for k, v in sorted(novelty.items()))
+                     + f' ({EVENT_CLASSES_VERSION}; keyword classification of an aggregator, not a verified event).',
+                     [article_evidence(ctx, c['lead'], fetch) for c in clusters[:MAX_COMPANY_STORY_CONCLUSIONS]],
+                     'aggregator', reason_codes=codes))
     left = _story_conclusions(ctx, res, ticker, Q_COMPANY, f'{ticker} news', clusters, fetch, codes,
                               COMPANY_STORY_MIN_OUTLETS, MAX_COMPANY_STORY_CONCLUSIONS)
     if left:

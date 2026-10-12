@@ -19,7 +19,8 @@ Q10 - the live heuristic signal recomputed POINT-IN-TIME with the production cod
   Combined with ScoringSignalFixed().combine_scores / generate_final_signal (>= 2 components, weights
   0.25 / 0.40 / 0.20 / 0.15 renormalized over the available components, labels POSITIVE >= 65,
   NEGATIVE <= 40). Shown: the ex-news variant first (technical + fundamentals + insider: the variant
-  the walk-forward evaluated), then the live 4-component variant; per-component contributions
+  the walk-forward evaluated, and since 2026-10-12 the system's daily signal), then the 4-component variant with
+  the news lexicon as a descriptive comparison only (news is not validated; master mission P2); contributions
   w_i' x s_i with renormalized weights; the delta S(T_c) - S(T_p) split into a score effect on the
   components available at both cutoffs (sum of w_i^C x (s_i(T_c) - s_i(T_p))) and a coverage effect
   (the rest, from components present at one cutoff only); the distance to the nearest threshold.

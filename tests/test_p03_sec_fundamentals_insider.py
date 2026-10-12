@@ -386,5 +386,5 @@ def test_signal_includes_insider_component():
     from src.scoring_signal_fixed import ScoringSignalFixed
     result = ScoringSignalFixed().analyze('MP', {'technical_score': 60}, {'fundamental_score': 70},
                                           {'news_score': 50}, {'insider_score': 40})
-    assert result['coverage'] == '4/4'
-    assert result['signal_strength'] == round(60 * .25 + 70 * .40 + 50 * .20 + 40 * .15, 2)
+    assert result['coverage'] == '3/3'                                    # news: descriptive only (P2)
+    assert result['signal_strength'] == round((60 * .25 + 70 * .40 + 40 * .15) / .80, 2)

@@ -735,20 +735,42 @@ def option_snapshot(chain_frames, spot, expiry_days):
         d = expiry_days[exp]
         if d >= 7 and (best is None or abs(d - 30) < abs(expiry_days[best[0]] - 30)):
             best = (exp, calls, puts)
-    atm_iv = None
+    def quoted(frame):
+        return frame[(frame['bid'] > 0) & (frame['ask'] > 0) & (frame['impliedVolatility'] > 0.01)]
+
+    def iv_near(frame, strike):
+        q = quoted(frame)
+        if not len(q):
+            return None
+        row = q.iloc[(q['strike'] - strike).abs().argsort().iloc[0]]
+        # the nearest quoted strike must be within 5% of the target, else the point is not measured
+        return float(row['impliedVolatility']) if abs(row['strike'] / strike - 1) <= 0.05 else None
+
+    def atm(calls, puts):
+        ivs = [iv_near(f, spot) for f in (calls, puts)]
+        return sum(ivs) / 2 if None not in ivs else None
+    atm_iv = atm(best[1], best[2]) if best is not None and spot else None
+    # master mission P2: skew at the ~30-day expiry (put 90% strike minus call 110% strike, volatility points) and
+    # the term structure (ATM IV by expiry, >= 7 days)
+    skew = None
     if best is not None and spot:
-        ivs = []
-        for frame in best[1:]:
-            q = frame[(frame['bid'] > 0) & (frame['ask'] > 0) & (frame['impliedVolatility'] > 0.01)]
-            if len(q):
-                row = q.iloc[(q['strike'] - spot).abs().argsort().iloc[0]]
-                ivs.append(float(row['impliedVolatility']))
-        atm_iv = sum(ivs) / len(ivs) if len(ivs) == 2 else None
+        put90, call110 = iv_near(best[2], 0.9 * spot), iv_near(best[1], 1.1 * spot)
+        skew = put90 - call110 if put90 is not None and call110 is not None else None
+    term = []
+    if spot:
+        for exp, calls, puts in chain_frames:
+            if expiry_days[exp] >= 7:
+                v = atm(calls, puts)
+                if v is not None:
+                    term.append((expiry_days[exp], exp, v))
+    term.sort()
+    slope = term[-1][2] - term[0][2] if len(term) >= 2 else None
     def ratio(num, den):
         return tot[num] / tot[den] if seen[num] and seen[den] and tot[den] else None
     return {'atm_iv': atm_iv, 'expiry': best[0] if best else None,
             'put_call_oi': ratio('oi_p', 'oi_c'), 'put_call_volume': ratio('vol_p', 'vol_c'),
-            'quotes_missing_open_interest': missing['openInterest'], 'quotes_missing_volume': missing['volume']}
+            'quotes_missing_open_interest': missing['openInterest'], 'quotes_missing_volume': missing['volume'],
+            'skew_90_110': skew, 'term_structure': [[d, e, round(v, 4)] for d, e, v in term], 'term_slope': slope}
 
 
 def collect_options(db, tickers, today=None, max_days=60):
@@ -792,7 +814,9 @@ def collect_options(db, tickers, today=None, max_days=60):
                  'published_at_basis': basis}
                 for m, v, u in (('opt_atm_iv_30d', snap['atm_iv'], 'annualised implied volatility'),
                                 ('opt_put_call_oi_60d', snap['put_call_oi'], 'ratio'),
-                                ('opt_put_call_volume_60d', snap['put_call_volume'], 'ratio'))
+                                ('opt_put_call_volume_60d', snap['put_call_volume'], 'ratio'),
+                                ('opt_skew_90_110_30d', snap['skew_90_110'], 'implied volatility difference'),
+                                ('opt_term_slope_60d', snap['term_slope'], 'implied volatility difference'))
                 if v is not None]
         rows.append({'entity': t, 'metric': 'opt_snapshot', 'as_of_date': as_of, 'published_at': None,
                      'published_at_basis': basis,

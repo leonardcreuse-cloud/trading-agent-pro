@@ -259,6 +259,9 @@ def _short_interest(ctx, res, ticker, rows):
     return big, item
 
 
+IV_PERCENTILE_MIN = 252          # about one year of daily snapshots
+
+
 def _options(ctx, res, ticker, rows):
     tm, db = ctx.tm, ctx.db
     now = _point(db, ticker, 'opt_atm_iv_30d', YF_SOURCE, tm.cutoff, end=tm.s0)
@@ -283,6 +286,28 @@ def _options(ctx, res, ticker, rows):
             + (f'; {r_p["value"]:.1%} in the snapshot known at T_p ({d_p}), change {100 * delta:+.1f} points'
                if delta is not None else '; no other snapshot known at T_p'))
     res.add(conclude(ticker, Q_COMPANY, text + ' (unofficial source, rank 2).', [item], 'market_fact'))
+    # master mission P2: skew, term structure and IV percentile (same snapshot session only)
+    extra = []
+    for metric, label in (('opt_skew_90_110_30d', 'skew (put IV at 90% minus call IV at 110% of spot, ~30 days)'),
+                          ('opt_term_slope_60d', 'term slope (ATM IV of the longest minus the shortest expiry, 7-60 days)')):
+        pt = _point(db, ticker, metric, YF_SOURCE, tm.cutoff, end=tm.s0)
+        if pt and pt[0] == d_c:
+            rows.append([ticker, label, None, f'{d_c}: {100 * pt[1]["value"]:+.1f} points', None, None, None,
+                         'descriptive'])
+            extra.append(f'{label} {100 * pt[1]["value"]:+.1f} volatility points')
+    history = [r['value'] for _, r in db.series(ticker, 'opt_atm_iv_30d', known_at=tm.cutoff, source=YF_SOURCE)
+               if r.get('value') is not None]
+    if len(history) >= IV_PERCENTILE_MIN:
+        pct = (sum(v < r_c['value'] for v in history) + 0.5 * sum(v == r_c['value'] for v in history)) / len(history)
+        extra.append(f'ATM IV at the {100 * pct:.0f}th percentile of {len(history)} snapshots')
+    else:
+        res.add(unavailable(ticker, Q_COMPANY, 'implied volatility rank / percentile',
+                            f'insufficient history: {len(history)} daily option snapshot(s) known at the cutoff, at '
+                            f'least {IV_PERCENTILE_MIN} needed (snapshots are collected daily since 2026-10; no '
+                            'historical option data source is configured)'))
+    if extra:
+        res.add(conclude(ticker, Q_COMPANY, f'{ticker}: in the same snapshot (session {d_c}): ' + '; '.join(extra)
+                         + '. Descriptive (unofficial source, rank 2).', [item], 'market_fact'))
 
 
 # ---------------------------------------------------------------- section

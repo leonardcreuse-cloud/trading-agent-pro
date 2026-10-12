@@ -35,7 +35,7 @@ QUESTIONS = {
     13: 'Which conclusions are strongly supported by data?',
     14: 'Which conclusions remain uncertain?',
 }
-SECTIONS = ('market', 'sec_events', 'valuation', 'macro', 'commodities', 'agencies', 'geopolitics', 'news', 'sector', 'catalysts', 'risks', 'positioning', 'quant')
+SECTIONS = ('market', 'technicals', 'sec_events', 'valuation', 'macro', 'commodities', 'agencies', 'geopolitics', 'news', 'sector', 'catalysts', 'risks', 'positioning', 'quant')
 
 # Structural blind spots of the quantitative signal (kept in sync with the code by a test).
 BLIND_SPOTS = [
@@ -44,8 +44,8 @@ BLIND_SPOTS = [
     'EPS, dilution, guidance, analyst estimates or revisions)',
     'insider component: open-market Form 4 purchases / sales over 90 days only (no Form 4/A, '
     'no derivative transactions)',
-    'news component: naive word-count lexicon on titles and descriptions, aggregator source, '
-    'never validated, no history',
+    'news: the word-count lexicon on titles and descriptions (aggregator source, no history) could not be '
+    'validated and is not part of the signal since 2026-10-12 (descriptive only)',
     'not used by the signal at all: macro, geopolitics, socio-economic data, sector, options / implied '
     'volatility, short interest, earnings dates, analyst revisions, events',
     'the combined weights (0.25 / 0.40 / 0.20 / 0.15) and thresholds (65 / 40) are heuristic and '

@@ -10,6 +10,7 @@ raw CSV in data/raw/ and stores daily observations:
              Yahoo rewrites past adjusted prices after every split / dividend, so the
              stored version is only known from its retrieval time (strict_vintage).
   close_raw  close as reported by Yahoo (split-adjusted only), value_revisable=1.
+  open / high / low  adjusted like close (auto_adjust), value_revisable=1 (master mission P2: ATR, ADX, candles)
   volume
 published_at = 21:00 UTC on the session date (16:00 New York in winter, conservative in
 summer). Sessions whose close is after the retrieval time (bar still in progress) are
@@ -99,6 +100,10 @@ class PriceFeed:
         raw_close = _column(unadjusted, 'Close') if unadjusted is not None and not unadjusted.empty else None
         if raw_close is not None:
             frame['close_raw'] = raw_close
+        for name in ('Open', 'High', 'Low'):
+            col = _column(adjusted, name)
+            if col is not None:
+                frame[name.lower()] = col
         frame = frame[frame['close'].notna()]
         frame.index = pd.to_datetime(frame.index).date
 
@@ -114,7 +119,8 @@ class PriceFeed:
         rows = []
         for day, rec in frame.iterrows():
             published = session_close_utc(day)
-            for metric, unit in (('close', 'USD'), ('close_raw', 'USD'), ('volume', 'shares')):
+            for metric, unit in (('close', 'USD'), ('close_raw', 'USD'), ('open', 'USD'), ('high', 'USD'),
+                                 ('low', 'USD'), ('volume', 'shares')):
                 if metric in rec and pd.notna(rec[metric]):
                     rows.append({'entity': ticker, 'metric': metric, 'as_of_date': day,
                                  'value': float(rec[metric]), 'unit': unit,
@@ -131,7 +137,7 @@ class PriceFeed:
         return {
             'status': 'OK' if len(frame) else 'DATA UNAVAILABLE',
             'close': series,
-            'frame': full,          # close (adjusted), volume, close_raw (split-adjusted only)
+            'frame': full,          # close / open / high / low (adjusted), volume, close_raw (split-adjusted only)
             'fetch': fetch,
             'dropped_incomplete_sessions': dropped,
             'provenance': self.db.provenance(

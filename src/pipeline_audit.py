@@ -41,6 +41,11 @@ FORMAT_CHECK_SOURCES = ('FRED', 'BLS', 'BEA', 'EIA', 'CFTC', 'FINRA', 'Cboe', 'F
                         'GPR index (Caldara-Iacoviello)', 'yfinance', 'SEC EDGAR')
 # endpoints whose counts depend on a moving request window (FRED release calendars list upcoming dates)
 FORMAT_CHECK_EXCLUDE = ('/fred/release/dates',)
+BENCHMARK = 'SPY'
+OHLC_TOLERANCE = 0.005          # adjusted OHLC from Yahoo can disagree by rounding
+ADJUSTMENT_JUMP = 0.02          # adjusted / unadjusted ratio step larger than a usual dividend
+SPLIT_JUMP = 0.40               # cover-page share count change between filings suggesting a split
+SPLIT_RATIO_TOL = 0.15          # split ratio vs share-count ratio (issuance / buybacks in between)
 LABEL_SAMPLE = 2          # filings per ticker whose acceptance time is re-checked on the EDGAR index page
 
 
@@ -132,7 +137,72 @@ class PipelineAudit:
                          f'{len(big)} (check for unadjusted splits)', big[:10]))
         age = (datetime.now(timezone.utc).date() - close.index[-1].date()).days
         out.append(check('last session age', WARN if age > 5 else PASS, f'{age} days'))
+        out += self.bar_checks(ticker, prices)
         return out
+
+    def bar_checks(self, ticker, prices):
+        """
+        Master mission P2 (market data validation): OHLC consistency, sessions missing against the benchmark
+        calendar, zero / missing volumes, jumps of the adjusted / unadjusted ratio (dividend or split adjustments to
+        check) and splits reported by yfinance against jumps of the SEC cover-page share count.
+        """
+        out, frame = [], prices.get('frame')
+        if frame is None:
+            return out
+        if all(c in frame for c in ('open', 'high', 'low')):
+            f = frame.dropna(subset=['open', 'high', 'low', 'close'])
+            tol = OHLC_TOLERANCE * f['close']
+            bad = f[(f['low'] > f[['open', 'close']].min(axis=1) + tol) | (f['high'] < f[['open', 'close']].max(axis=1) - tol)
+                    | (f['low'] > f['high'] + tol)]
+            out.append(check(f'OHLC consistency (low <= open, close <= high; tolerance {OHLC_TOLERANCE:.1%})',
+                             WARN if len(bad) else PASS, f'{len(bad)} of {len(f)} bars',
+                             [str(d.date()) for d in bad.index[:10]]))
+        else:
+            out.append(check('OHLC consistency', WARN, 'no open / high / low stored for this fetch'))
+        bench = self.prices.get(BENCHMARK)
+        if bench['status'] == 'OK':
+            have = {d.date() for d in frame.index}
+            first = min(have)
+            missing = sorted(d.date() for d in bench['close'].index if d.date() >= first and d.date() not in have)
+            out.append(check(f'sessions missing against the {BENCHMARK} calendar', WARN if missing else PASS,
+                             f'{len(missing)} sessions', [str(d) for d in missing[:10]]))
+        if 'volume' in frame:
+            zero = [str(d.date()) for d, v in frame['volume'].items() if not v or v != v]
+            out.append(check('zero or missing volume', WARN if zero else PASS, f'{len(zero)} sessions', zero[:10]))
+        if 'close_raw' in frame:
+            ratio = (frame['close'] / frame['close_raw']).dropna()
+            jumps = ratio.pct_change().dropna()
+            big = [f'{d.date()}: {v:+.2%}' for d, v in jumps.items() if abs(v) > ADJUSTMENT_JUMP]
+            out.append(check(f'adjusted / unadjusted ratio jumps > {ADJUSTMENT_JUMP:.0%} (large dividend or split '
+                             'adjustment to check)', WARN if big else PASS, f'{len(big)}', big[:10]))
+        out.append(self.split_check(ticker))
+        return out
+
+    def split_check(self, ticker):
+        """yfinance splits (rank 2) vs >= 40% jumps of the SEC cover-page share count (rank 1) since the SEC series."""
+        shares = dict(self.db.series(ticker, 'dei:SharesOutstanding', source=SEC_SOURCE))
+        if len(shares) < 2:
+            return check('splits: yfinance vs SEC share count', WARN, 'fewer than 2 cover-page share counts stored')
+        try:
+            import yfinance as yf
+            events = yf.Ticker(ticker).splits
+            splits = {d.date().isoformat(): float(r) for d, r in events.items()} if events is not None else {}
+            self.db.record_fetch('yfinance', f'yfinance.Ticker({ticker}).splits', status='OK',
+                                 raw=json.dumps(splits, sort_keys=True), raw_ext='json', n_records=len(splits))
+        except Exception as e:  # noqa: BLE001 - reported
+            return check('splits: yfinance vs SEC share count', WARN, redact(f'yfinance splits: {type(e).__name__}: {e}'))
+        dates = sorted(shares)
+        jumps = [(a, b, shares[b]['value'] / shares[a]['value']) for a, b in zip(dates, dates[1:])
+                 if shares[a]['value'] and abs(shares[b]['value'] / shares[a]['value'] - 1) >= SPLIT_JUMP]
+        unexplained = [f'{a} -> {b}: x{r:.2f} with no yfinance split in between' for a, b, r in jumps
+                       if not any(a < d <= b and abs(s / r - 1) <= SPLIT_RATIO_TOL for d, s in splits.items())]
+        unmatched = [f'{d}: split {s:g} with no matching SEC share-count jump' for d, s in splits.items()
+                     if dates[0] < d <= dates[-1] and s != 1 and
+                     not any(a < d <= b and abs(s / r - 1) <= SPLIT_RATIO_TOL for a, b, r in jumps)]
+        problems = unexplained + unmatched
+        return check('splits: yfinance vs SEC share count', WARN if problems else PASS,
+                     f'{len(jumps)} share-count jump(s), {len(splits)} yfinance split(s) in total; '
+                     f'{len(problems)} not matched', problems[:10])
 
     # ------------------------------------------------------------------ SEC
 

@@ -198,22 +198,31 @@ class ScoringSignalFixed:
         strength_pct = min(100, abs(combined - 50) / 50 * 100)
         return round(max(0, min(100, agreement_pct * 0.60 + strength_pct * 0.40)), 2)
 
+    # Master mission P2 (2026-10-12): the news lexicon is NOT part of the combined signal any more. It could not be
+    # validated (no labelled financial text is reachable; it has no negation handling and ambiguous words such as
+    # 'cut', 'buy', 'up'), so it is reported as descriptive only. The combined signal is the ex-news variant, the
+    # one evaluated by the walk-forward and recorded by stage 3. Weights and thresholds are unchanged.
+    SIGNAL_COMPONENTS = ('technical', 'fundamentals', 'insider')
+    NEWS_STATUS = ('DESCRIPTIVE ONLY - NOT VALIDATED: naive word lexicon on titles / descriptions; not part of the '
+                   'combined signal')
+
     def analyze(self, ticker, tech_result, fund_result, news_result, insider_result=None):
         print(f"  [SIGNAL] {ticker}...")
         insider_result = insider_result or {}
+        news_result = news_result or {}
 
         scores = {
             'technical': tech_result.get('technical_score'),
             'fundamentals': fund_result.get('fundamental_score'),
-            'news': news_result.get('news_score'),
             'insider': insider_result.get('insider_score'),
         }
         signals = {
             'technical': tech_result.get('signal'),
             'fundamentals': fund_result.get('signal'),
-            'news': news_result.get('signal'),
             'insider': insider_result.get('signal'),
         }
+        news = {'score': news_result.get('news_score'), 'label': news_result.get('signal'),
+                'status': self.NEWS_STATUS}
         available = [k for k, v in scores.items() if v is not None]
         missing = [k for k in scores if k not in available]
 
@@ -242,11 +251,12 @@ class ScoringSignalFixed:
             'missing_components': missing,
             'component_scores': scores,
             'component_signals': signals,
+            'news_sentiment': news,
             'score_type': 'heuristic 0-100 score, not a probability; weights not validated',
             'signal_summary': summary,
             'disclaimer': NOT_A_RECOMMENDATION,
             'timestamp': utc_now_iso(),
-            'source': 'Multi-Source heuristic v4',
+            'source': 'Multi-Source heuristic v4 (ex-news since 2026-10-12)',
         }
 
 

@@ -128,18 +128,20 @@ def test_signal_requires_two_components():
                        {'news_score': None})
     assert result['signal_strength'] is None
     assert result['quantitative_signal'] == INSUFFICIENT_DATA
-    assert result['coverage'] == '1/4'          # P0.3: insider is the 4th component
+    assert result['coverage'] == '1/3'          # master mission P2: news is descriptive, not a component
     assert result['signal_agreement'] is None
 
 
 def test_signal_renormalizes_weights_over_available_components():
     from src.scoring_signal_fixed import ScoringSignalFixed
     s = ScoringSignalFixed()
-    result = s.analyze('MP', {'technical_score': 80}, {'fundamental_score': None}, {'news_score': 40})
-    # technical 0.25 and news 0.20, renormalized: (80*0.25 + 40*0.20) / 0.45
-    assert result['signal_strength'] == 62.22
-    assert result['coverage'] == '2/4'
-    assert result['missing_components'] == ['fundamentals', 'insider']
+    result = s.analyze('MP', {'technical_score': 80}, {'fundamental_score': None}, {'news_score': 40},
+                       {'insider_score': 60})
+    # technical 0.25 and insider 0.15, renormalized: (80*0.25 + 60*0.15) / 0.40; news is not a component
+    assert result['signal_strength'] == 72.5
+    assert result['coverage'] == '2/3'
+    assert result['missing_components'] == ['fundamentals']
+    assert result['news_sentiment']['score'] == 40 and 'NOT VALIDATED' in result['news_sentiment']['status']
 
 
 # ---------------------------------------------------------------- technical

@@ -142,6 +142,18 @@ def main():
         print_report(report)
         s = report['summary']
         sys.exit(0 if s['integrated_reachable'] == s['integrated_total'] else 2)    # 2: an integrated source failed
+    elif command == 'verify-report':
+        from src.dashboard import latest_weekly
+        from src.verify_report import verify as verify_report
+        path = sys.argv[2] if len(sys.argv) > 2 else str(latest_weekly()[1])
+        out = verify_report(path)
+        print(f"[VERIFY REPORT] {path} (cutoff {out['cutoff']}): {out['summary']}")
+        for c in out['checks']:
+            if c['status'] != 'MATCH':
+                print(f"  {c['status']}: {c['claim'][:110]} | report {str(c['report_value'])[:40]} | source "
+                      f"{str(c['source_value'])[:40]} | {str(c['detail'] or '')[:100]}")
+        print(f"  Results: {out['path']}")
+        sys.exit(5 if out['mismatches'] else 0)                          # 5: a report value differs from its source
     elif command == 'dashboard':
         from src.dashboard import Dashboard
         d = Dashboard()
@@ -160,6 +172,7 @@ def print_menu():
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
     print("  python main.py sources    - Probe every registered data source (HTTP status, terms, limits)")
     print("  python main.py dashboard  - Rebuild reports/dashboard.html from the latest outputs")
+    print("  python main.py verify-report [archive.json] - Re-fetch report facts at their sources and compare")
     print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] [--recalc LABEL]")
     print("                              - Predictive-edge study; results are written once, a later run")
     print("                                needs --recalc LABEL (separate file, never the original)")

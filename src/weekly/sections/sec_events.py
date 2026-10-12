@@ -821,9 +821,11 @@ def _valuation(ctx, res, t, F_p, F_c, sec_item):
         'measure', f'close of {tm.previous_week[-1]} with fundamentals known at T_p',
         f'close of {tm.s0} with fundamentals known at T_c'), rows, scope=t, question=2,
         note='Market value = unadjusted close (yfinance, rank 2) x diluted weighted-average shares of the latest '
-             'reported period (an approximation of shares outstanding; cash and debt are ignored). n/m: the '
-             'denominator is not positive or not available. Multiples are descriptive: no "cheap" or "expensive" '
-             'judgement is made.')
+             'reported period (an approximation of shares outstanding; cash and debt are ignored), kept for a '
+             'like-for-like T_p / T_c comparison. The reference ratios of this report (cover-page share count, '
+             'enterprise value with debt and cash) are in part 10 (valuation): the market values can differ by the '
+             'share-count basis. n/m: the denominator is not positive or not available. Multiples are '
+             'descriptive: no "cheap" or "expensive" judgement is made.')
     price_item = price_evidence(ctx, t, px, f'close {close_c} on {tm.s0}', as_of=tm.s0)
     res.add(conclude(t, 2, f"{t}: derived valuation at the close of {tm.s0}: market value about "
                            f"{_usd(m_c['market_value'])} (close x diluted weighted shares of the period ending "

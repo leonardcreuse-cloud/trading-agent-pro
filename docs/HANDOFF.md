@@ -1,4 +1,4 @@
-# Handoff — state on 2026-10-11 (end of session)
+# Handoff — state on 2026-10-12
 
 ## Done and pushed
 - Data layer with provenance (SEC XBRL / Form 4, FRED vintages, yfinance, NewsAPI), point-in-time rules,
@@ -31,9 +31,18 @@
   `geopolitics`, `agencies`; SP500 cross-check fixed; stale "blocked" items removed). Live report for the week
   ending 2026-10-09: `reports/weekly/2026-10-09/weekly_v3.*` (v2 was the same run before a cosmetic fix).
 
+- P5.0 (stage 3, "voie 2"): prospective weekly record, paper only. Pre-registration committed first
+  (`docs/research/STAGE3_PREREGISTRATION.md`, commit 4ddae81), code next (318ef56: `src/prospective.py`,
+  `python main.py prospective [record|evaluate]`, weekly Q11 progress), then the first record: week of
+  2026-10-09, generated 2026-10-12T06:45:13Z in the cloud and pushed at 06:45:53Z, before the 13:30 UTC open
+  (40/40 tickers scored: 13 POSITIVE, 27 NEUTRAL). Its `code_version` reads `318ef56-dirty`: the only uncommitted
+  changes were two docs files.
+
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
 validation status of the signal; `reports/weekly/2026-10-09/` is the first weekly report.
+`reports/prospective/records/` and `reports/prospective/ledger.jsonl` (stage 3) are tracked normally: commit
+them every week from the PC (external timestamp); `evaluation.json` and `history/` are derived and ignored.
 The SQLite database (`data/`, ~550 MB) is NOT in git: a new session rebuilds it on the first runs
 (`python main.py analyze`, then `python main.py weekly`; SEC requests are throttled). In this session `data/`
 holds only the `collect` sources (~93 MB; GDELT raw zips ~6 MB per day): `analyze` / `weekly` not yet re-run.
@@ -82,4 +91,19 @@ answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA ke
    valuation in Q2. On the owner's PC, once after pulling: `python main.py analyze`, then
    `python main.py dedupe` (it backs the whole database up first: free disk space about twice its size),
    then `python main.py audit`.
-5. Later ("voie 2"): prospective weekly record of pre-declared signals vs realised returns (paper only).
+5. Done (P5.0): stage 3 prospective record (see above). From now on it runs by itself on the PC every weekend
+   (`scripts/daily_run.py`); the pre-registered test happens once, after 52 valid weekly records (about
+   October 2027 at 5 sessions, a month later at 20). Until then the weekly report shows the progress and
+   interim figures only. Nothing in the protocol may change; a scoring change that alters scores means a new
+   series (amendment in the pre-registration).
+
+## Owner actions on the PC (in this order)
+1. `git fetch origin`, `git checkout claude/nifty-ramanujan-u1p317`, `git pull` (brings the code and the first
+   record + ledger; pull before the weekend run of 2026-10-17, see `docs/LOCAL_RUN.md` step 7).
+2. `venv\Scripts\pip install -r requirements.txt`; add `BLS_API_KEY`, `BEA_API_KEY`, `EIA_API_KEY` to `.env`;
+   `venv\Scripts\python main.py status`.
+3. `venv\Scripts\python scripts\daily_run.py --no-weekly` once, then
+   `powershell -ExecutionPolicy Bypass -File scripts\install_windows_task.ps1` (untested on Windows: report any
+   error message).
+4. Once: `venv\Scripts\python main.py dedupe`, then `venv\Scripts\python main.py audit` (expected 0 FAIL).
+5. Every week (e.g. Sunday): `git add reports/prospective`, `git commit -m "Stage 3 record <date>"`, `git push`.

@@ -1,5 +1,20 @@
 # Changelog
 
+## P5.0 — Stage 3: prospective weekly record (step 5 of the handoff, paper only)
+
+- Pre-registration first (`docs/research/STAGE3_PREREGISTRATION.md`, its own commit before any code that
+  records): ex-news combined heuristic score over the frozen 40-ticker validation universe; P1 (20 sessions)
+  and P2 (5 sessions), mean weekly cross-sectional IC > 0, Bonferroni over 2; tested once, on the first 52
+  valid weekly records; interim figures without t or p.
+- `src/prospective.py`: `record` (scores at the close of s0 via `WalkForward.score_at`, now shared with the
+  walk-forward; only between Saturday 05:00 UTC and the next Monday 13:30 UTC; one immutable file per week
+  and a hash-chained ledger) and `evaluate` (integrity, timing, weekly spacing, >= 10 tickers; returns from
+  the close of the next session; the pre-registered test frozen in `confirmatory_<H>d.json`).
+- `python main.py prospective [record|evaluate]`; `scripts/daily_run.py` runs it on Saturdays and Sundays.
+- Weekly report Q11: the static "prospective record" item is replaced by the progress at the cutoff (records
+  generated and the latest evaluation computed before it; ledger problems reported, never used).
+- Tests 473 → 490.
+
 ## P4.2 — Audit corrections (step 4 of the handoff)
 
 - SEC acceptance times: against the EDGAR filing index pages, the feed's `acceptanceDateTime` labels follow

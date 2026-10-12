@@ -15,7 +15,8 @@ collects Friday's releases (08:30 New York) and an end-of-session option snapsho
 | When (local time) | `scripts\daily_run.py` runs |
 |---|---|
 | every day, 23:00 | `python main.py collect`, then `python main.py analyze` |
-| Saturday, 23:00 | the same, then `python main.py weekly` (week ending the day before) |
+| Saturday, 23:00 | the same, then `python main.py prospective` and `python main.py weekly` (week ending the day before) |
+| Sunday, 23:00 | `collect`, `analyze`, then `python main.py prospective` (catches a missed Saturday) |
 
 Logs: `data\logs\<date>_<step>.log`; summary of the latest run: `data\logs\last_run.json` (`"ok": true`).
 Exit codes: `collect` returns 2 when at least one source was unavailable (the log line gives the reason); the
@@ -35,10 +36,32 @@ shows it as DATA UNAVAILABLE.
    (option `-Time 23:30`). It runs for the current user, without administrator rights.
 6. Check it: `Start-ScheduledTask -TaskName "TradingAgentPro daily"`, then
    `Get-ScheduledTaskInfo -TaskName "TradingAgentPro daily"` (LastTaskResult 0 = success).
-7. Once, after the first run on the updated code: `venv\Scripts\python main.py dedupe` (removes the old
+7. Stage 3 record: after the pull, `reports\prospective\ledger.jsonl` must exist (first record, week of
+   2026-10-09, made in the cloud before the 2026-10-12 open). Pull **before** the first weekend run: a run
+   without that file would start a second, separate ledger.
+8. Once, after the first run on the updated code: `venv\Scripts\python main.py dedupe` (removes the old
    SEC versions made redundant by the calibrated acceptance times; it backs the database up first into
    `data\backups\`, so keep free disk space of about twice the database size), then
    `venv\Scripts\python main.py audit` (expected: 0 FAIL).
+
+## Stage 3 record (paper only)
+
+`python main.py prospective` makes the weekly signal record of the 40 validation tickers, then evaluates
+all records against realised returns (protocol: `docs/research/STAGE3_PREREGISTRATION.md`).
+
+- One record per week, `reports\prospective\records\record_<Friday>.json`, plus one line in
+  `reports\prospective\ledger.jsonl` (hash chain). It is made only between Saturday 05:00 UTC and Monday
+  13:30 UTC (before the next session can open); outside that window the command says `NOT DUE` (exit 0).
+  A weekend with the PC off leaves the week missing: it is never filled in later.
+- Never edit, move or delete a record or the ledger: a changed record is excluded by the evaluation, and a
+  broken chain stops new records (`LEDGER BROKEN`, exit 1) until it is repaired from git.
+- External timestamp (recommended each week, e.g. Sunday): `git add reports/prospective`,
+  `git commit -m "Stage 3 record <date>"`, `git push`. The evaluation files (`evaluation.json`, `history\`)
+  are derived and ignored by git.
+- The weekly report (Q11) shows the progress: records generated and the latest evaluation computed before
+  its cutoff. The Saturday evaluation runs after that week's cutoff, so the report shows the previous one.
+- The pre-registered test runs once per horizon, after 52 valid weekly records (about one year); its result
+  is frozen in `reports\prospective\confirmatory_<H>d.json` (commit it too).
 
 ## Good to know
 

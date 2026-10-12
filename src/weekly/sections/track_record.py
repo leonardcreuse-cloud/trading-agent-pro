@@ -23,6 +23,7 @@ import pandas as pd
 
 from ...common import history_dir, stamp, to_utc_iso
 from ...journal import Journal
+from ...paper_report import CALIBRATION_STATUS, backtest_vs_paper, known_at, outcomes_by_horizon, performance, trades
 from ...risk import RISK_SCORE_STATUS, days_to_exit, portfolio_metrics, settings
 from ..core import SectionResult, conclude, evidence, unavailable
 from .market import prices_aligned
@@ -46,20 +47,18 @@ def _predictions(ctx, res, base):
         res.add(unavailable('overall', 11, 'prediction journal',
                             'no prediction recorded at or before the cutoff (journal started 2026-10-12)'))
         return
-    rows = []
-    for h in (20, 5):
-        top, rest = [], []
-        for o in (x for x in outs if x['horizon_sessions'] == h):
-            p = preds[o['prediction_id']]
-            (top if p['model_output']['rank'] <= TOP_N else rest).append(o['realised_return'])
-        rows.append([f'{h} sessions', len(top) + len(rest),
-                     round(sum(top) / len(top) * 100, 3) if top else None,
-                     round(sum(rest) / len(rest) * 100, 3) if rest else None])
+    by_h = outcomes_by_horizon(list(preds.values()) + outs, TOP_N)
+    rows = [[f'{h} sessions', by_h[h]['outcomes'] if h in by_h else 0,
+             by_h.get(h, {}).get('mean_top_pct'), by_h.get(h, {}).get('mean_others_pct'),
+             by_h.get(h, {}).get('positive_share_pct'), by_h.get(h, {}).get('mean_weekly_ic'),
+             by_h.get(h, {}).get('ic_weeks', 0)] for h in (20, 5)]
     weeks = sorted({p['signal_instant'][:10] for p in preds.values()})
     res.table('Prediction journal — realised outcomes known at the cutoff (descriptive)',
-              ['horizon', 'outcomes', f'mean return of the top {TOP_N} (%)', 'mean return of the others (%)'], rows,
-              question=11, note='Predictions are never edited; outcomes are separate entries. No test: the stage 3 '
-                                'pre-registration decides when a test is run.')
+              ['horizon', 'outcomes', f'mean return of the top {TOP_N} (%)', 'mean return of the others (%)',
+               'positive returns (%)', 'mean weekly rank correlation score / return', 'weeks with a correlation'],
+              rows, question=11, note='Predictions are never edited; outcomes are separate entries. No test: the '
+                                      'stage 3 pre-registration decides when a test is run. Calibration: '
+                                      + CALIBRATION_STATUS + '.')
     last = max(to_utc_iso(p['timestamp']) for p in preds.values())
     res.add(conclude('overall', 11, f'Prediction journal at the cutoff: {len(preds)} prediction(s) over {len(weeks)} '
                                     f'week(s) (first {weeks[0]}), {len(outs)} realised outcome(s) recorded.',
@@ -107,6 +106,24 @@ def _paper(ctx, res, base):
                                     f'maximum drawdown {mdd * 100:.2f}%, {stops} stop(s). Interim and descriptive.',
                      [_item(tm, f"PT1 mark {m['session']}", to_utc_iso(m['created_at']))], 'system_output'))
     _paper_risk(ctx, res, m, entries)
+    known = known_at(entries, tm.cutoff)
+    rows = [[p['ticker'], p['entry_session'], p['entry_price'], p['shares'], p['stop'], p['exit_session'],
+             p['exit_type'] or 'open', p['exit_price'], p['pnl'], p['pnl_kind'], p['return_pct'], p['holding_sessions'],
+             p['worst_drawdown_pct']] for p in trades(known)]
+    res.table(f"Paper strategy PT1 — positions and trades known at the cutoff", [
+        'ticker', 'entry session', 'fill price', 'shares', 'stop', 'exit session', 'exit', 'exit / last price',
+        'P&L (USD)', 'P&L kind', 'return vs cost basis (%)', 'sessions held', 'worst position value vs cost (%)'], rows,
+        question=11, note='Fill prices are as-traded opens adjusted for slippage and spread; cost basis includes '
+                          'commission. Worst position value vs cost uses the daily marks (close x shares, split-invariant; '
+                          'intraday lows are not marked). A stop does not guarantee its price: a gap fills at the open.')
+    rebalances = sum(1 for e in known if e['type'] == 'rebalance')
+    ev = _evaluation_known(tm)
+    res.table('Descriptive backtest beside the prospective paper results (not comparable yet)',
+              ['measure', 'backtest: heuristic, walk-forward (descriptive)', 'paper PT1 (prospective, known at T_c)'],
+              backtest_vs_paper(ev, performance(marks, capital), rebalances), question=11,
+              note='The backtest is in-sample of one run of a heuristic whose weights were never fitted; the paper '
+                   'record is prospective. Differences are expected from the selection (top quintile vs top 8), '
+                   'sizing, costs and sample length; the pre-registered PT1 evaluation needs 52 weekly rebalances.')
 
 
 def _closes_to(ctx, ticker, session):
@@ -165,6 +182,13 @@ def _paper_risk(ctx, res, m, entries):
                                       'a split. Descriptive; no limit here is a forecast of loss.')
     if not ok:
         res.add(unavailable('overall', 11, 'PT1 portfolio risk metrics', metrics.get('reason')))
+
+
+def _evaluation_known(tm):
+    """The latest heuristic evaluation history file computed at or before T_c, or None."""
+    cut = stamp(tm.cutoff)
+    files = [p for p in sorted(history_dir().glob('heuristic_evaluation_*.json')) if p.stem.split('_', 2)[-1] <= cut]
+    return json.loads(files[-1].read_text(encoding='utf-8')) if files else None
 
 
 def _backtest(ctx, res):

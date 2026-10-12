@@ -126,7 +126,7 @@ def test_track_record_is_point_in_time(monkeypatch, tmp_path):
     tx = Journal('transactions')
     tx.append([{'type': 'start', 'capital': 100000.0, 'created_at': '2026-10-03T12:00:00+00:00'},
                {'type': 'fill', 'side': 'buy', 'ticker': 'AAA', 'session': '2026-10-05', 'sector': '35',
-                'created_at': '2026-10-05T22:00:00+00:00', 'costs': 8.0},
+                'costs': 8.0, 'price': 150.0, 'shares': 500, 'cash_out': 75008.0, 'stop': 140.0, 'notional': 75000.0},
                {'type': 'mark', 'session': '2026-10-06', 'created_at': '2026-10-06T22:00:00+00:00', 'equity': 101000.0,
                 'cash': 1000.0, 'positions_value': 100000.0, 'gross_exposure_pct': 99.0,
                 'positions': {'AAA': {'shares': 500, 'close': 158.0, 'stop': 150.0}},
@@ -148,6 +148,12 @@ def test_track_record_is_point_in_time(monkeypatch, tmp_path):
     assert rows['largest sector, SIC major group (% of equity)'] == '35 78.22'
     assert rows['longest exit (sessions at the participation limit)'] == 'AAA 0.05'   # 500 / (1e6 x 1%)
     assert rows['global risk score'].startswith('NOT IMPLEMENTED')
+    trades = next(t for t in out['tables'] if 'positions and trades' in t['title'])
+    row = dict(zip(trades['columns'], trades['rows'][0]))
+    assert row['exit'] == 'open' and row['P&L kind'] == 'unrealised' and row['sessions held'] == 1   # 10-12 mark: after T_c
+    assert row['P&L (USD)'] == round((158.0 - 150.016) * 500, 2) and row['return vs cost basis (%)'] == 5.322
+    bvp = next(t for t in out['tables'] if 'backtest beside' in t['title'])
+    assert dict((r[0], r[2]) for r in bvp['rows'])['comparable?'] == 'no: fewer than 52 weekly rebalances'
 
 
 def test_synthesis_pillars_questions_and_scenarios():

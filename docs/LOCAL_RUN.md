@@ -20,8 +20,9 @@ collects Friday's releases (08:30 New York) and an end-of-session option snapsho
 | Sunday, 23:00 | the same, plus `prospective` (catches a missed Saturday) and `python main.py weekly` (week ending Friday; on Sunday evening the news window is complete) |
 
 Logs: `data\logs\<date>_<step>.log`; summary of the latest run: `data\logs\last_run.json` (`"ok": true`).
-Exit codes: `collect` returns 2 when at least one source was unavailable (the log line gives the reason); the
-task's "Last Run Result" is 1 when any step did not return 0. A failed source is never filled in: the report
+Exit codes: `collect` returns 2 when at least one source was unavailable (the log line gives the reason);
+`weekly` returns 3 when a critical section failed (report status INCOMPLETE, written in the report and its
+manifest; the report is still archived); the task's "Last Run Result" is 1 when any step did not return 0. A failed source is never filled in: the report
 shows it as DATA UNAVAILABLE.
 
 ## One-time setup (PowerShell, in `C:\Users\leona\trading-agent-pro`)

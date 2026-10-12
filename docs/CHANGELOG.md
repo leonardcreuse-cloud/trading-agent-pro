@@ -1,5 +1,17 @@
 # Changelog
 
+## M-P5 — Master mission, phase P5: 22-part weekly report and automation (2026-10-12)
+
+Details and live results: `docs/MISSION_STATUS.md`.
+- New weekly sections: `regime` (pre-declared rules regime-v1), `data_quality` (fetch log, audit known at T_c,
+  DATA UNAVAILABLE per section), `track_record` (prediction journal, PT1 performance and portfolio risk, heuristic
+  evaluation, all as known at T_c) and `synthesis` (pillars per asset, the 13 questions, bull / base / bear
+  conditions on the report's own DCF figures, executive summary, key uncertainties).
+- The report is organised in the mission's 22 parts with a structure table; status COMPLETE / INCOMPLETE
+  (a critical section failed: manifest, exit code 3).
+- The scheduled weekly report runs on Sunday (same cutoff; the news window is complete).
+- Tests: 557 passed.
+
 ## M-P4 — Master mission, phase P4: risk engine, journals, paper trading (2026-10-12)
 
 - `src/risk.py` (sizing to 1% risk / 2% hard, exposure, sector, concentration, liquidity limits, risk metrics;

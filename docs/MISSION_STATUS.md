@@ -320,3 +320,89 @@ is kept.
 - Event risk for the paper holdings relies on earnings snapshots that `collect` stores only for the configured
   universe (4 tickers).
 - Commission, slippage and spread are assumptions: no execution data exists to calibrate them.
+
+## P5 — Weekly report integration and automation (2026-10-12)
+
+### Files
+- New:
+  - `src/weekly/sections/regime.py`, `data_quality.py`, `track_record.py` and `synthesis.py`;
+  - `tests/test_p65_report.py` (synthetic inputs only).
+- Changed:
+  - `src/weekly/report.py`: 22-part structure, report status, sections that read earlier results;
+  - `src/weekly/core.py`: the manifest carries the status;
+  - `main.py`: `weekly` exits with 3 when INCOMPLETE;
+  - `scripts/daily_run.py`: the weekly report runs on Sunday;
+  - `tests/test_daily_run.py`, `docs/LOCAL_RUN.md`, `docs/HANDOFF.md`, `scripts/install_windows_task.ps1`.
+
+### Regression risk handled
+- New sections run after the existing ones. Existing sections, their conclusions and evidence levels are
+  unchanged. Two consecutive live runs on the same commit gave identical conclusions, tables and DATA
+  UNAVAILABLE items. The only differences were the retrieval times of the yfinance earnings dates, which are
+  shown for information and marked not admissible at T_c.
+- The frozen stage 3 inputs (signal, indicators, SEC tags, weights) are not touched.
+
+### What exists now
+
+**Structure.** The report follows the mission's 22 parts:
+- Fixed rules in `report.part_of` tag each table, conclusion and DATA UNAVAILABLE item with its part.
+- A structure table gives, per part, the counts of tables, conclusions and unavailable items, with the status
+  covered / DATA UNAVAILABLE / empty.
+- The appendix keeps the method notes and questions Q12 to Q14.
+
+**Status.**
+- The report is INCOMPLETE when a critical section (market, sec_events, valuation, macro, risks, quant,
+  synthesis) fails or is missing.
+- The status and its reason are shown in the HTML, the JSON and the manifest. `python main.py weekly` then
+  exits with 3 and the daily run reports the step as failed.
+- A failed non-critical section is listed but keeps the status COMPLETE.
+
+**Regime** (part 3; rules regime-v1-2026-10-12, conventions that are not validated, an interpretation):
+- SPY trend rule.
+- VIX percentile over 756 observations.
+- High-yield spread change over 63 observations (±0.50 pp).
+- 10y−2y curve sign.
+- 10y TIPS yield change over 21 observations (±0.25 pp).
+
+**Data quality** (part 20):
+- Downloads logged in (T_p, T_c] per source.
+- The pipeline audit, used as evidence only when computed at or before T_c.
+- DATA UNAVAILABLE items and failed sections, per section of the same report.
+
+**Prediction history and performance** (part 21), all read as known at T_c:
+- Predictions and outcomes from the journal.
+- PT1 marks: equity, return, drawdown, benchmarks, stops, costs.
+- PT1 portfolio risk at the latest mark (part 18): volatility, downside deviation, beta, correlations, largest
+  position and sector, days to exit. No global risk score.
+- The heuristic evaluation, kept apart from the prospective figures.
+- Nothing in this part is a test.
+
+**Synthesis** (parts 1, 19 and 22; rules synthesis-v1-2026-10-12):
+- Per asset: readings for fundamentals, valuation, technical, macro, sentiment (facts only), quant and risk.
+  Any of them may be unknown; unknown is never filled.
+- Agreement or conflict between the directional pillars, stated as a hypothesis that has not been tested.
+- The 13 questions of the mission, each answered from the report with its part.
+- Bull, base and bear conditions using the report's own DCF figures with their reliability and the reverse-DCF
+  growth. No probability is given.
+- An executive summary and the key uncertainties.
+
+### Tests and live results
+- Tests: 557 passed.
+- Live run on the cloud database, cutoff 2026-10-10T05:00Z (week ending 2026-10-09), clean commit:
+  - Status COMPLETE: 105 strongly supported conclusions, 188 uncertain, 71 DATA UNAVAILABLE.
+  - Parts 1 to 20 and 22 are covered. Part 21 is DATA UNAVAILABLE, which is correct at this cutoff: the
+    journals and PT1 started on 2026-10-12, and the heuristic evaluation was computed after the cutoff.
+  - Regime: trend up; VIX normal (37th percentile); credit stable (+0.46 pp over 63 observations); curve
+    positive (0.44 pp); real yield rising (+0.41 pp over 21 observations).
+  - Synthesis example: CRWD pillars agree (fundamentals +, technical +, quant no direction).
+    - The DCF base case is 26.42 USD per share, with reliability LOW.
+    - The close is consistent with a starting growth of 158.8% under the same rates. The scenarios are shown
+      as conditions, not price targets.
+- The PT1 risk table was checked on real prices with a hypothetical mark held in memory only. This was a
+  runtime check, not published.
+
+### Remaining after P5
+- Part 21 fills only once the journals and PT1 have entries known at a report cutoff. That is the report for
+  the week ending 2026-10-16 (outcomes need 5 or 20 sessions).
+- The dashboard does not show the 22-part structure or the PT1 risk table; the weekly report is the reference.
+- Regime and synthesis rules are conventions that have not been validated. Changing them requires a new
+  version label, never a silent edit.

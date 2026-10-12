@@ -478,14 +478,20 @@ class Paper:
         return out
 
     def _sector(self, ticker):
-        """SEC SIC major group (first 2 digits) from the submissions feed (official), or 'unknown'."""
+        """
+        SEC SIC major group (first 2 digits) from the submissions feed (official). The SIC code is in the feed's raw
+        submissions JSON (get_filings(...)['raw']['sic']). When it cannot be read, the ticker is its own group
+        ('unknown <ticker>'): an unknown sector is never pooled with other unknown ones.
+        """
         try:
             from .sec_parser import SECParser
             feed = SECParser(db=self.db).get_filings(ticker) or {}
-            sic = str(feed.get('sic') or '')
-            return f'SIC {sic[:2]}' if sic[:2].isdigit() else 'unknown'
+            sic = str((feed.get('raw') or {}).get('sic') or feed.get('sic') or '')
+            if sic[:2].isdigit():
+                return f'SIC {sic[:2]}'
         except Exception:  # noqa: BLE001 - an unknown sector counts as its own group
-            return 'unknown'
+            pass
+        return f'unknown {ticker}'
 
     def _benchmarks(self, s, st, entries):
         """Total-return benchmarks (adjusted bars) started at the first fill session's open."""

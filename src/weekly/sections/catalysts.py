@@ -92,6 +92,12 @@ RELEASES = [
     (53, 'Gross Domestic Product', 'macro release'),
     (9, 'Advance Monthly Sales for Retail and Food Services', 'macro release'),
     (180, 'Unemployment Insurance Weekly Claims Report', 'macro release'),
+    # master mission P1: other official releases the macro section reads
+    (46, 'Producer Price Index', 'macro release'),
+    (13, 'G.17 Industrial Production and Capacity Utilization', 'macro release'),
+    (192, 'Job Openings and Labor Turnover Survey', 'macro release'),
+    (27, 'New Residential Construction', 'macro release'),
+    (51, 'U.S. International Trade in Goods and Services', 'macro release'),
     (326, 'Summary of Economic Projections (FOMC meetings with projections only)', 'FOMC meeting'),
 ]
 FOMC_RELEASE = 326
@@ -99,6 +105,7 @@ FOMC_RELEASE = 326
 PERIODIC_FORMS = ('10-Q', '10-K')
 PERIODIC_CADENCE = 'quarterly_filing'
 COUNTERPART_TOLERANCE_DAYS = 20     # year-earlier counterpart: report date within +/- 20 days
+EARNINGS_CROSS_CHECK_DAYS = 10      # yfinance next date vs anniversary of last year's 8-K 2.02 (descriptive)
 EARNINGS_8K_LAG_DAYS = 3            # 8-K 2.02 between period end and periodic filing date + 3 days
 
 NO_SESSION_CALENDAR = ('future sessions are not observed (the session calendar is the SPY daily bars up '
@@ -760,6 +767,7 @@ def _company(ctx, res, t, calendar_fn):
     rows = []
     # next earnings date: a snapshot stored before the cutoff, then the calendar at G (information only)
     snap = stored_earnings(ctx, t)
+    yf_next = snap['dates'][0] if snap else None
     if snap:
         fetch, nxt = snap['fetch'], snap['dates'][0]
         inside = in_horizon(tm, nxt)
@@ -830,6 +838,13 @@ def _company(ctx, res, t, calendar_fn):
                                                     '; no 8-K item 2.02 found for that period'),
                          f"same calendar dates one year later: {anniv}" + (f' / {anniv_8k}' if anniv_8k else '')
                          + f" ({'inside' if inside else 'outside'} the horizon ({lo}, {hi}])"])
+            if yf_next and anniv_8k:
+                gap = abs((_d(yf_next) - _d(anniv_8k)).days)
+                rows.append(['cross-check: yfinance date vs one year after last year\'s 8-K item 2.02',
+                             'CONSISTENT' if gap <= EARNINGS_CROSS_CHECK_DAYS else 'DIFFERENT',
+                             'yfinance (rank 2) vs SEC EDGAR (rank 1) pattern', f'{yf_next} vs {anniv_8k}: {gap} days apart',
+                             f'consistent = within {EARNINGS_CROSS_CHECK_DAYS} days; agreement does not make the date '
+                             'official, a difference does not make either wrong'])
             used = {id(f): f for f in (latest, anchor, nxt, k8) if f}     # nxt can be latest (annual filer)
             items = [_filing_item(ctx, feed, f, assess_fresh=f is latest) for f in used.values()]
             if nxt is latest:      # annual filer: the filing after last year's counterpart is the latest one

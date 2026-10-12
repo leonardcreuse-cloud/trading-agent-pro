@@ -136,5 +136,18 @@
       }
     },
     "thresholds_note": "Pre-declared heuristics from the weekly-report design mapping (written before any weekly report was produced); not fitted and not validated. A crossing is reported with the HEURISTIC_THRESHOLD reason code, never as a validated signal."
-  }
+  },
+   "valuation": {
+      "dcf": {
+         "note": "ASSUMPTIONS of the intrinsic-value scenarios (src/intrinsic.py), set 2026-10-12 before any report used them; not estimated from data and not validated. The risk-free rate (FRED DGS10), beta (prices) and revenue growth (SEC) are sourced; these are not. Changing them changes every scenario.",
+         "years": 5,
+         "equity_risk_premium_pct": 5.0,
+         "terminal_growth_pct": 2.5,
+         "growth_bounds_pct": [-5.0, 25.0],
+         "bear_minus_pts": 10.0,
+         "bull_plus_pts": 5.0,
+         "default_growth_pct": 3.0,
+         "beta_weeks": 104
+      }
+   }
 }

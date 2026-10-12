@@ -636,7 +636,8 @@ def fred_payload(dates):
 
 CALENDARS = {10: ['2026-10-14', '2026-11-10'], 50: ['2026-11-06'], 54: ['2026-10-29'], 53: ['2026-10-29'],
              9: ['2026-10-15', '2026-11-17'], 180: ['2026-10-08', '2026-10-15', '2026-10-22'],
-             326: ['2026-12-09']}
+             326: ['2026-12-09'], 46: ['2026-10-15', '2026-11-13'], 13: ['2026-10-16'], 192: ['2026-11-03'],
+             27: ['2026-10-17'], 51: ['2026-11-04']}            # logic-test schedules, not real release dates
 
 
 class FredHTTP:
@@ -698,12 +699,12 @@ def test_catalysts_calendar_retrieved_after_cutoff_is_logged_but_not_admissible(
     http = FredHTTP()
     out = run_cat(cat_ctx(db=db), http)
     assert out['name'] == 'catalysts' and out['questions'] == [9]
-    assert len(http.calls) == len(catalysts.RELEASES) == 7
+    assert len(http.calls) == len(catalysts.RELEASES) == 12
     assert all(c['realtime_start'] == '2026-10-06' and c['include_release_dates_with_no_data'] == 'true'
                for c in http.calls)
     with db.connect() as conn:
         rows = [dict(r) for r in conn.execute("SELECT * FROM source_fetches WHERE source='FRED'")]
-    assert len(rows) == 7 and all(r['status'] == 'OK' and r['raw_path'] for r in rows)
+    assert len(rows) == len(catalysts.RELEASES) and all(r['status'] == 'OK' and r['raw_path'] for r in rows)
     # the database timestamps the calls (the section never records G or a clock reading of its own)
     assert all(r['requested_at'] == r['completed_at'] != GENERATED for r in rows)
     assert all('testkey-abcdef123' not in json.dumps(r) for r in rows)        # key never stored
@@ -825,7 +826,7 @@ def test_catalysts_without_key_or_with_http_error(monkeypatch):
     with db.connect() as conn:
         failed = conn.execute("SELECT COUNT(*) FROM source_fetches WHERE source='FRED' AND status=?",
                               (UNAVAILABLE,)).fetchone()[0]
-    assert failed == 7
+    assert failed == len(catalysts.RELEASES)
 
 
 def test_catalysts_earnings_calendar_empty_or_failing_is_unavailable(monkeypatch):

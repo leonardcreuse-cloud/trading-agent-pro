@@ -21,6 +21,15 @@ downloads nothing. Values are read as known at the cutoff: COALESCE(published_at
 
 Kinds: Federal Register statements are official_fact; GPR and GDELT statements are 'aggregator' (UNCERTAIN by
 rule). No event is linked to any price move (timing only) and no direction of markets is implied.
+
+Event analysis (master mission P1, version EVENT_MAP_VERSION): every Federal Register document of the window is
+described by 1. what was published (type, title, action), 2. source and publication date (document number, link),
+3. exposed sectors and companies, 4. transmission mechanism, 5. likely horizon, 6. evidence and 7. uncertainties.
+3-4 come from THEMES, a pre-declared map of title / action keywords to themes (sectors, companies of the validation
+universe, mechanism); 5 from the document type (HORIZON_BY_TYPE). Matching is on words of the title and action only:
+a document can match a theme it does not concern, or miss one it does. Everything after point 2 is an
+interpretation (UNCERTAIN by rule); no impact size and no direction for prices are stated, and no headline is ever
+turned into a buy or sell signal.
 """
 
 import json
@@ -42,6 +51,48 @@ FR_LABELS = {'industry-and-security-bureau': 'Bureau of Industry and Security (e
              'trade-representative-office-of-united-states': 'Office of the U.S. Trade Representative (trade)',
              FR_PRESIDENTIAL: 'Presidential documents'}
 MAX_TITLES = 8
+EVENT_MAP_VERSION = 'event-themes-v1-2026-10-12'
+# theme: (keywords (lower case, matched as words / phrases), sectors, companies, mechanism)
+THEMES = {
+    'semiconductor export controls': (('semiconductor', 'integrated circuit', 'advanced computing', 'entity list',
+                                       'export administration regulations', 'supercomputer'),
+                                      'semiconductors', ('NVDA', 'AMD', 'QCOM', 'MU', 'INTC'),
+                                      'licence requirements limit sales of chips and tools to listed destinations'),
+    'China trade measures': (('china', "people's republic of china", 'section 301', 'technology transfer'),
+                             'semiconductors, industrials, consumer goods, critical minerals',
+                             ('NVDA', 'AMD', 'QCOM', 'MU', 'INTC', 'CAT', 'DE', 'BA', 'NKE', 'TSLA', 'MP', 'ALB'),
+                             'tariffs, exclusions or restrictions change costs, demand or access to the Chinese market '
+                             'and supply chain'),
+    'tariffs and trade remedies': (('tariff', 'duties', 'section 232', 'antidumping', 'countervailing', 'import',
+                                    'carbon border', 'trade agreement'),
+                                   'steel, aluminium, manufacturing, retail',
+                                   ('NUE', 'FCX', 'BA', 'CAT', 'DE', 'GE', 'HON', 'NKE', 'HD', 'COST', 'TSLA'),
+                                   'import costs and the prices of competing imports change'),
+    'sanctions on oil producers': (('iran', 'venezuela', 'russia', 'oil', 'petroleum'),
+                                   'energy', ('XOM', 'CVX'),
+                                   'sanctions change the supply of crude oil and the access to some producers'),
+    'energy policy': (('energy', 'diesel', 'fuel', 'natural gas', 'lng', 'pipeline', 'drilling'), 'energy',
+                      ('XOM', 'CVX'), 'fuel taxes, permits or supply measures change volumes and margins'),
+    'critical minerals': (('critical mineral', 'rare earth', 'lithium', 'cobalt', 'graphite', 'magnet'),
+                          'critical minerals', ('MP', 'ALB', 'FCX'),
+                          'support, stockpiles or import restrictions change prices and demand for domestic supply'),
+    'defence and space': (('defense', 'defence', 'military', 'space', 'satellite', 'launch', 'missile'),
+                          'aerospace and defence', ('LMT', 'BA', 'GE', 'HON', 'RKLB'),
+                          'procurement, export licences or budgets change orders'),
+    'cybersecurity': (('cyber', 'cybersecurity', 'information and communications technology', 'ict supply chain',
+                       'critical infrastructure'), 'software / cybersecurity', ('CRWD', 'NET', 'PANW', 'ZS'),
+                      'security requirements change demand for security products'),
+}
+HORIZON_BY_TYPE = {
+    'Rule': 'in force on its effective date (usually on publication or within weeks)',
+    'Proposed Rule': 'not in force: a comment period comes first (months)',
+    'Notice': 'informational or immediate (designations, determinations); depends on the notice',
+    'Presidential Document': 'immediate for executive orders and proclamations with legal effect; none for '
+                             'ceremonial proclamations',
+}
+EVENT_UNCERTAINTIES = ('theme from keywords of the title and action only (the document text is not analysed); '
+                       'exposure from a pre-declared map, not from company disclosures; size and direction of any '
+                       'effect not estimated')
 COLLECT_HINT = '`python main.py collect` stores these data; run it daily'
 GDELT_METRICS = (('material_conflict_root', 'material-conflict root events / day'),
                  ('verbal_conflict_root', 'verbal-conflict root events / day'),
@@ -153,6 +204,57 @@ def _federal_register(ctx, res):
              'assessed.')
 
 
+def themes_of(text):
+    """[(theme, matched keywords)] for a title / action text (word-boundary matches, lower case)."""
+    low = (text or '').lower()
+    out = []
+    for theme, (words, _, _, _) in THEMES.items():
+        hit = [w for w in words if re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', low)]
+        if hit:
+            out.append((theme, hit))
+    return out
+
+
+def _events(ctx, res):
+    """Seven-point description of each Federal Register document of the window (see module docstring)."""
+    tm = ctx.tm
+    universe = set(ctx.universe)
+    rows, by_company = [], {}
+    for slug, label in FR_LABELS.items():
+        for r in fr_documents(ctx.db, f'FR:{slug}', tm.previous_cutoff, tm.cutoff):
+            d = json.loads(r['value_text'])
+            found = themes_of(f"{d.get('title') or ''} {d.get('action') or ''}")
+            item = evidence(tm, FR_SOURCE, 1, f"{d.get('type')} {d.get('document_number')}: {d.get('title')}",
+                            as_of=r['as_of_date'], published_at=r['published_at'], retrieved_at=r['retrieved_at'],
+                            fetch_id=r['fetch_id'], fresh=fresh_flag(ctx, r['as_of_date'], 'event'),
+                            basis=r['published_at_basis'])
+            sectors = '; '.join(THEMES[t][1] for t, _ in found) or None
+            companies = sorted({c for t, _ in found for c in THEMES[t][2]})
+            rows.append([r['as_of_date'], label, d.get('type'), d.get('title'), d.get('document_number'),
+                         d.get('html_url'), '; '.join(f"{t} ({', '.join(w)})" for t, w in found) or 'no theme matched',
+                         sectors, ', '.join(companies) or None,
+                         '; '.join(THEMES[t][3] for t, _ in found) or None,
+                         HORIZON_BY_TYPE.get(d.get('type'), 'not classified'),
+                         EVENT_UNCERTAINTIES if found else None])
+            for t, words in found:
+                for c in THEMES[t][2]:
+                    if c in universe:
+                        by_company.setdefault(c, []).append((d, t, words, item))
+    res.table(f'Event analysis of the Federal Register documents in the window ({EVENT_MAP_VERSION})', [
+        'publication date', 'agency', 'type', 'what was published (title)', 'document number', 'source link',
+        'themes (matched words)', 'exposed sectors', 'exposed companies (validation universe)', 'mechanism',
+        'likely horizon', 'main uncertainties'], rows, question=Q,
+        note='Columns 1-6 are official facts; the rest is a pre-declared, keyword-based interpretation (THEMES and '
+             'HORIZON_BY_TYPE in src/weekly/sections/geopolitics.py). No document is turned into a buy or sell signal.')
+    for c, hits in sorted(by_company.items()):
+        listed = '; '.join(f"{d.get('type')} '{d.get('title')}' (theme {t}: {', '.join(w)}; horizon: "
+                           f"{HORIZON_BY_TYPE.get(d.get('type'), 'not classified')})" for d, t, w, _ in hits[:MAX_TITLES])
+        res.add(conclude(c, Q, f'{c}: {len(hits)} Federal Register document(s) of the window match pre-declared themes '
+                               f'linked to the company: {listed}. Mechanism: '
+                               + '; '.join(sorted({THEMES[t][3] for _, t, _, _ in hits})) + '. Uncertainties: '
+                               + EVENT_UNCERTAINTIES + '.', [h[3] for h in hits[:MAX_TITLES]], 'interpretation'))
+
+
 # ---------------------------------------------------------------- GPR and GDELT (aggregators)
 
 def _daily(db, entity, metric, source, known_at, lo, hi):
@@ -235,6 +337,7 @@ def build(ctx):
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
     _federal_register(ctx, res)
+    _events(ctx, res)
     rows = []
     gpr = _gpr(ctx, res)
     if gpr:

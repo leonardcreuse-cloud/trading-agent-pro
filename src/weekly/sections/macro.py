@@ -120,10 +120,18 @@ SERIES = {
     # the target range is a setting in effect on its date (announced the day before), not an end-of-day value
     'DFEDTARU': _spec(3, 'Federal funds target range, upper limit', '%', '%', 'daily', 'pp', eod=False),
     'DFEDTARL': _spec(3, 'Federal funds target range, lower limit', '%', '%', 'daily', 'pp', eod=False),
+    # master mission P1: real yields, inflation compensation, euro-area policy rate, investment-grade credit, euro
+    'DFII10': _spec(3, '10-year Treasury inflation-indexed (TIPS) yield: real yield', '%', '%', 'daily', 'pp'),
+    'T10YIE': _spec(3, '10-year breakeven inflation rate (nominal minus TIPS yield)', '%', '%', 'daily', 'pp'),
+    'ECBDFR': _spec(3, 'ECB deposit facility rate (euro area)', '%', '%', 'daily', 'pp', eod=False),
     'VIXCLS': _spec(3, 'CBOE Volatility Index (VIX), close', 'index', '', 'daily', 'points'),
     'DTWEXBGS': _spec(3, 'Nominal broad U.S. dollar index (goods and services)', 'index Jan 2006 = 100', '',
                       'daily', 'points', digits=4),
     'BAMLH0A0HYM2': _spec(3, 'ICE BofA US High Yield index option-adjusted spread', '%', '%', 'daily', 'pp'),
+    'BAMLC0A0CM': _spec(3, 'ICE BofA US Corporate (investment grade) index option-adjusted spread', '%', '%', 'daily',
+                        'pp'),
+    'DEXUSEU': _spec(3, 'U.S. dollars per euro (noon buying rate, New York)', 'USD per EUR', '', 'daily', 'USD',
+                     digits=4),
     'BAA10Y': _spec(3, "Moody's seasoned Baa corporate yield minus 10-year Treasury yield", 'percentage points',
                     ' pp', 'daily', 'pp'),
     'NFCI': _spec(3, 'Chicago Fed National Financial Conditions Index', 'index (0 = average conditions)', '',
@@ -134,6 +142,11 @@ SERIES = {
                       transform='yoy', block='inflation', sign=1),
     'PCEPI': _spec(3, 'PCE price index (SA), year-over-year', '% YoY', '% YoY', 'monthly', 'pp',
                    transform='yoy', block='inflation', sign=1),
+    'PCEPILFE': _spec(3, 'PCE price index less food and energy (SA), year-over-year', '% YoY', '% YoY', 'monthly',
+                      'pp', transform='yoy', block='inflation', sign=1),
+    'INDPRO': _spec(3, 'Industrial production index (SA)', 'index 2017 = 100', '', 'monthly', '%', change='pct',
+                    digits=2),
+    'TCU': _spec(3, 'Capacity utilisation, total industry (SA)', '% of capacity', '%', 'monthly', 'pp', digits=1),
     'USEPUINDXD': _spec(4, 'US daily Economic Policy Uncertainty index, newspaper-based, Baker-Bloom-Davis',
                         'index', '', 'daily', 'points'),
     'GEPUCURRENT': _spec(4, 'Global Economic Policy Uncertainty index, current-price GDP weights, newspaper-based',
@@ -179,6 +192,9 @@ STATIC_UNAVAILABLE = [
      'FRED carries one UMCSENT reading per month, first dated late in that month or early in the next in the stored '
      'vintages (not the mid-month preliminary reading), and its vintage date is not the source\'s publication date; '
      'no other source of the survey is configured'),
+    (3, 'purchasing managers\' indexes (ISM manufacturing / services PMI, S&P Global PMI)',
+     'proprietary surveys: not on FRED (the former ISM series were withdrawn) and no licensed source is configured; '
+     'industrial production and capacity utilisation (Federal Reserve) are shown instead as official activity data'),
     (5, 'official sampling-error bands for labour and consumer statistics',
      'NOT IMPLEMENTED: the BLS and BEA technical notes that state sampling errors are not collected or parsed'),
 ]

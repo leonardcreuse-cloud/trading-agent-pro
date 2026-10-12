@@ -61,10 +61,10 @@ import requests
 from .common import (end_of_us_trading_day_utc, redact, to_utc_iso, unavailable, utc_now_iso,
                      DATA_UNAVAILABLE)
 from .database import Database
-from .sec_xbrl import (CAPEX_TAGS, COST_OF_REVENUE_TAGS, DEBT_TAGS, DILUTED_SHARES_TAGS, DURATION_MONTHS,
-                       EQUITY_TAGS, GROSS_PROFIT_TAGS, MAX_BALANCE_AGE_DAYS, NET_INCOME_TAGS,
-                       OPERATING_CASH_FLOW_TAGS, OPERATING_INCOME_TAGS, REVENUE_TAGS, _near, balance_sheet,
-                       facts_to_observations, latest_ttm, ttm_at)
+from .sec_xbrl import (CAPEX_TAGS, COST_OF_REVENUE_TAGS, DEBT_TAGS, DILUTED_SHARES_TAGS, DURATION_MONTHS, EPS_TAGS,
+                       EQUITY_TAGS, EXT_DURATION_TAGS, EXT_INSTANT_TAGS, GROSS_PROFIT_TAGS, MAX_BALANCE_AGE_DAYS,
+                       NET_INCOME_TAGS, OPERATING_CASH_FLOW_TAGS, OPERATING_INCOME_TAGS, REVENUE_TAGS, _near,
+                       balance_sheet, facts_to_observations, latest_ttm, shares_outstanding_observations, ttm_at)
 
 SEC_SOURCE = 'SEC EDGAR'
 PERIODIC_FORMS = ('10-K', '10-Q')
@@ -435,6 +435,12 @@ class SECParser:
         rows = facts_to_observations(ticker, data, acceptance)
         rows += facts_to_observations(ticker, data, acceptance, instant_tags=(), duration_tags=DILUTED_SHARES_TAGS,
                                       unit='shares')
+        # master mission P1: extended concepts (descriptive fundamentals and valuation only)
+        rows += facts_to_observations(ticker, data, acceptance, instant_tags=EXT_INSTANT_TAGS,
+                                      duration_tags=EXT_DURATION_TAGS)
+        rows += facts_to_observations(ticker, data, acceptance, instant_tags=(), duration_tags=EPS_TAGS,
+                                      unit='USD/shares')
+        rows += shares_outstanding_observations(ticker, data, acceptance)
         self.db.upsert_observations(fetch, rows)
         self._facts_fetch[ticker] = fetch
         return fetch

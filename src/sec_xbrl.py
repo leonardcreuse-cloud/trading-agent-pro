@@ -51,6 +51,10 @@ from datetime import date, timedelta
 
 from .common import end_of_us_trading_day_utc
 
+# FROZEN (stage 3, protocol stage3-v1): REVENUE_TAGS, EQUITY_TAGS, DEBT_DEFINITIONS and SHORT_TERM_TAGS define the
+# revenue, revenue growth and debt / equity inputs of the heuristic signal recorded by src/prospective.py. Changing
+# them changes the recorded signal (tests/test_p61_fundamentals_ext.py pins them). Extended concepts for the
+# descriptive analysis are added in the EXT_* groups below instead.
 REVENUE_TAGS = ('Revenues',
                 'RevenueFromContractWithCustomerExcludingAssessedTax',
                 'RevenueFromContractWithCustomerIncludingAssessedTax',
@@ -84,6 +88,23 @@ PROFIT_TAGS = (GROSS_PROFIT_TAGS + COST_OF_REVENUE_TAGS + OPERATING_INCOME_TAGS 
                + OPERATING_CASH_FLOW_TAGS + CAPEX_TAGS)
 DILUTED_SHARES_TAGS = ('WeightedAverageNumberOfDilutedSharesOutstanding',)      # unit 'shares'
 DURATION_TAGS = REVENUE_TAGS + PROFIT_TAGS
+
+# Master mission P1: extended concepts for the descriptive fundamentals and valuation (src/fundamentals_ext.py,
+# src/valuation.py). Not inputs of the heuristic signal.
+CASH_TAGS = ('CashAndCashEquivalentsAtCarryingValue',)
+SHORT_TERM_INVESTMENT_TAGS = ('ShortTermInvestments', 'MarketableSecuritiesCurrent',
+                              'AvailableForSaleSecuritiesDebtSecuritiesCurrent')
+LIQUIDITY_TAGS = ('AssetsCurrent', 'LiabilitiesCurrent')
+TOTAL_TAGS = ('Assets', 'Liabilities')
+EXT_INSTANT_TAGS = CASH_TAGS + SHORT_TERM_INVESTMENT_TAGS + LIQUIDITY_TAGS + TOTAL_TAGS
+DA_TAGS = ('DepreciationDepletionAndAmortization', 'DepreciationAmortizationAndAccretionNet',
+           'DepreciationAndAmortization')
+INTEREST_TAGS = ('InterestExpense', 'InterestExpenseNonoperating')
+RND_TAGS = ('ResearchAndDevelopmentExpense',)
+DA_PARTS = ('Depreciation', 'AmortizationOfIntangibleAssets')       # fallback: D&A = their sum (both required)
+EXT_DURATION_TAGS = DA_TAGS + DA_PARTS + INTEREST_TAGS + RND_TAGS
+EPS_TAGS = ('EarningsPerShareDiluted',)                                   # unit 'USD/shares'
+SHARES_OUTSTANDING_TAG = 'EntityCommonStockSharesOutstanding'            # dei, unit 'shares', cover page
 PERIODIC_FORMS = ('10-K', '10-Q', '10-K/A', '10-Q/A', '10-KT', '10-QT')
 DURATION_MONTHS = (3, 6, 9, 12)
 DATE_TOLERANCE_DAYS = 10     # 52/53-week fiscal years shift period ends by a few days
@@ -140,6 +161,38 @@ def facts_to_observations(ticker, companyfacts, acceptance_by_accession=None,
             rows.append({'entity': ticker, 'metric': metric, 'as_of_date': fact['end'],
                          'value': float(fact['val']), 'value_text': start, 'unit': unit,
                          'published_at': published, 'published_at_basis': basis})
+    return rows
+
+
+def shares_outstanding_observations(ticker, companyfacts, acceptance_by_accession=None):
+    """
+    Cover-page shares outstanding (dei EntityCommonStockSharesOutstanding, 10-K / 10-Q) as observations
+    'dei:SharesOutstanding' (as_of_date = the cover date). A filing that reports several values for the same
+    date (one per share class; company facts carry no class label) is stored as the sum ONLY when the values
+    are distinct and none is repeated, with value_text 'sum of N values (share classes)'; the valuation flags it.
+    """
+    acceptance_by_accession = acceptance_by_accession or {}
+    facts = (((companyfacts or {}).get('facts') or {}).get('dei') or {}).get(SHARES_OUTSTANDING_TAG) or {}
+    by_filing = {}
+    for f in (facts.get('units') or {}).get('shares', []):
+        if f.get('form') not in PERIODIC_FORMS or f.get('val') is None or not f.get('end') or not f.get('accn'):
+            continue
+        by_filing.setdefault((f['accn'], f['end']), []).append(f)
+    rows = []
+    for (accession, end), fs in by_filing.items():
+        values = [float(f['val']) for f in fs]
+        if len(values) > 1 and len(set(values)) != len(values):
+            continue                                    # repeated value: classes not distinguishable
+        if accession in acceptance_by_accession:
+            published, basis = acceptance_by_accession[accession]
+        elif fs[0].get('filed'):
+            published = end_of_us_trading_day_utc(fs[0]['filed'])
+            basis = 'end of SEC filed date (conservative; acceptance time not matched)'
+        else:
+            continue
+        rows.append({'entity': ticker, 'metric': 'dei:SharesOutstanding', 'as_of_date': end, 'value': sum(values),
+                     'value_text': None if len(values) == 1 else f'sum of {len(values)} values (share classes)',
+                     'unit': 'shares', 'published_at': published, 'published_at_basis': basis})
     return rows
 
 

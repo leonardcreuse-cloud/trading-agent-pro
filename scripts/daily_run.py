@@ -7,7 +7,9 @@ Runs, with this Python interpreter, in the project folder:
   2. python main.py analyze   prices, SEC filings, Form 4 and the daily signal run
   3. python main.py prospective   on Saturdays and Sundays: stage 3 weekly signal record (made once per week,
                               before the next session opens) and its evaluation
-  4. python main.py weekly    on Saturdays (local date) unless --no-weekly; --weekly forces it
+  4. python main.py paper     every day: paper strategy PT1 (orders from a new stage 3 record, fills, stops, marks;
+                              paper only, no real order)
+  5. python main.py weekly    on Saturdays (local date) unless --no-weekly; --weekly forces it
 One failing step does not stop the next ones. Each step writes data/logs/<YYYY-MM-DD>_<step>.log and the run
 writes data/logs/last_run.json; the exit code is 1 when a step failed (Task Scheduler "Last Run Result").
 
@@ -36,6 +38,7 @@ def plan(today, weekly=None):
     steps = ['collect', 'analyze']
     if today.weekday() in (SATURDAY, SUNDAY):
         steps.append('prospective')         # the record is made once per week; Sunday catches a missed Saturday
+    steps.append('paper')                   # paper strategy PT1: orders from a new record, then fills / marks
     if weekly or (weekly is None and today.weekday() == SATURDAY):
         steps.append('weekly')
     return steps

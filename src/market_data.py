@@ -11,6 +11,7 @@ raw CSV in data/raw/ and stores daily observations:
              stored version is only known from its retrieval time (strict_vintage).
   close_raw  close as reported by Yahoo (split-adjusted only), value_revisable=1.
   open / high / low  adjusted like close (auto_adjust), value_revisable=1 (master mission P2: ATR, ADX, candles)
+  open_raw / high_raw / low_raw  as reported (split-adjusted only), value_revisable=1 (P4: paper fills and stops)
   volume
 published_at = 21:00 UTC on the session date (16:00 New York in winter, conservative in
 summer). Sessions whose close is after the retrieval time (bar still in progress) are
@@ -100,6 +101,10 @@ class PriceFeed:
         raw_close = _column(unadjusted, 'Close') if unadjusted is not None and not unadjusted.empty else None
         if raw_close is not None:
             frame['close_raw'] = raw_close
+            for name in ('Open', 'High', 'Low'):            # as-traded bars (split-adjusted by Yahoo), paper fills
+                col = _column(unadjusted, name)
+                if col is not None:
+                    frame[f'{name.lower()}_raw'] = col
         for name in ('Open', 'High', 'Low'):
             col = _column(adjusted, name)
             if col is not None:
@@ -120,7 +125,8 @@ class PriceFeed:
         for day, rec in frame.iterrows():
             published = session_close_utc(day)
             for metric, unit in (('close', 'USD'), ('close_raw', 'USD'), ('open', 'USD'), ('high', 'USD'),
-                                 ('low', 'USD'), ('volume', 'shares')):
+                                 ('low', 'USD'), ('open_raw', 'USD'), ('high_raw', 'USD'), ('low_raw', 'USD'),
+                                 ('volume', 'shares')):
                 if metric in rec and pd.notna(rec[metric]):
                     rows.append({'entity': ticker, 'metric': metric, 'as_of_date': day,
                                  'value': float(rec[metric]), 'unit': unit,

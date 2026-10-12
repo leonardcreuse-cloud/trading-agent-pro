@@ -82,6 +82,24 @@ def main():
         if action not in ('record', 'evaluate', 'all'):
             print_menu()
         sys.exit(code)
+    elif command == 'paper':
+        from src.paper import Paper
+        action = sys.argv[2].lower() if len(sys.argv) > 2 else 'all'
+        paper = Paper()
+        print("\n[PAPER] strategy PT1 (paper only, no real order; docs/research/PAPER_STRATEGY_PT1.md)")
+        if action in ('rebalance', 'all'):
+            out = paper.rebalance()
+            print(f"  rebalance: {out['status']}: {out['message']}")
+        if action in ('update', 'all'):
+            out = paper.update()
+            print(f"  update: {out['status']}: {out['message']}")
+        if action in ('status', 'all'):
+            st = paper.status()
+            print('  status: ' + ', '.join(f'{k} {v}' for k, v in st.items() if k in (
+                'status', 'last_session', 'equity', 'total_return_pct', 'max_drawdown_pct', 'sharpe', 'benchmarks',
+                'pending_orders', 'cash')))
+        if action not in ('rebalance', 'update', 'status', 'all'):
+            print_menu()
     elif command == 'evaluate-heuristic':
         from src.heuristic_evaluation import run as evaluate_heuristic
         print("\n[HEURISTIC EVALUATION] descriptive metrics on the walk-forward sample")
@@ -116,6 +134,7 @@ def print_menu():
     print("                              (exit code 2 when a source is unavailable; see docs/LOCAL_RUN.md)")
     print("  python main.py prospective [record|evaluate] - Stage 3 weekly signal record (paper only)")
     print("                              and its evaluation on realised returns (default: both)")
+    print("  python main.py paper [rebalance|update|status] - Paper strategy PT1 (paper only, no real order)")
     print("  python main.py evaluate-heuristic - Descriptive metrics of the heuristic on the walk-forward sample")
     print("  python main.py dedupe    - Remove observation versions that repeat an earlier one (backup first)")
     print("  python main.py status    - Show configuration status")

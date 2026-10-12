@@ -144,7 +144,8 @@ class PipelineAudit:
         """
         Master mission P2 (market data validation): OHLC consistency, sessions missing against the benchmark
         calendar, zero / missing volumes, jumps of the adjusted / unadjusted ratio (dividend or split adjustments to
-        check) and splits reported by yfinance against jumps of the SEC cover-page share count.
+        check). The split cross-check (split_check) runs in run() after the SEC checks, which refresh the stored
+        cover-page share counts.
         """
         out, frame = [], prices.get('frame')
         if frame is None:
@@ -175,14 +176,24 @@ class PipelineAudit:
             big = [f'{d.date()}: {v:+.2%}' for d, v in jumps.items() if abs(v) > ADJUSTMENT_JUMP]
             out.append(check(f'adjusted / unadjusted ratio jumps > {ADJUSTMENT_JUMP:.0%} (large dividend or split '
                              'adjustment to check)', WARN if big else PASS, f'{len(big)}', big[:10]))
-        out.append(self.split_check(ticker))
         return out
 
     def split_check(self, ticker):
-        """yfinance splits (rank 2) vs >= 40% jumps of the SEC cover-page share count (rank 1) since the SEC series."""
+        """
+        yfinance splits (rank 2) vs >= 40% jumps of the SEC cover-page share count (rank 1) since the SEC series.
+          - a split matches a jump a -> b of the same ratio when it falls after a and no later than b or the
+            publication date of the filing for b (a filing made after a split reports the post-split count even
+            when its cover date is a few days earlier);
+          - a jump reverted by the next filing (ratios multiplying to ~1) is a one-filing outlier in the SEC data
+            (e.g. a count reported in thousands), listed apart: not a split;
+          - yfinance 'splits' closer to 1 than SPLIT_JUMP (spin-off or distribution adjustments) need no jump.
+        WARN lists what is not matched and the one-filing outliers; nothing is corrected here.
+        """
+        name = 'splits: yfinance vs SEC share count'
         shares = dict(self.db.series(ticker, 'dei:SharesOutstanding', source=SEC_SOURCE))
         if len(shares) < 2:
-            return check('splits: yfinance vs SEC share count', WARN, 'fewer than 2 cover-page share counts stored')
+            return check(name, WARN, f'fewer than 2 cover-page share counts stored ({len(shares)}): company facts '
+                                     'carry none or one usable value (per-class counts repeating a value are not stored)')
         try:
             import yfinance as yf
             events = yf.Ticker(ticker).splits
@@ -190,19 +201,36 @@ class PipelineAudit:
             self.db.record_fetch('yfinance', f'yfinance.Ticker({ticker}).splits', status='OK',
                                  raw=json.dumps(splits, sort_keys=True), raw_ext='json', n_records=len(splits))
         except Exception as e:  # noqa: BLE001 - reported
-            return check('splits: yfinance vs SEC share count', WARN, redact(f'yfinance splits: {type(e).__name__}: {e}'))
+            return check(name, WARN, redact(f'yfinance splits: {type(e).__name__}: {e}'))
         dates = sorted(shares)
+        published = {d: (shares[d].get('published_at') or d)[:10] for d in dates}
         jumps = [(a, b, shares[b]['value'] / shares[a]['value']) for a, b in zip(dates, dates[1:])
                  if shares[a]['value'] and abs(shares[b]['value'] / shares[a]['value'] - 1) >= SPLIT_JUMP]
-        unexplained = [f'{a} -> {b}: x{r:.2f} with no yfinance split in between' for a, b, r in jumps
-                       if not any(a < d <= b and abs(s / r - 1) <= SPLIT_RATIO_TOL for d, s in splits.items())]
-        unmatched = [f'{d}: split {s:g} with no matching SEC share-count jump' for d, s in splits.items()
-                     if dates[0] < d <= dates[-1] and s != 1 and
-                     not any(a < d <= b and abs(s / r - 1) <= SPLIT_RATIO_TOL for a, b, r in jumps)]
+        outliers, one_filing, i = set(), [], 0
+        while i < len(jumps) - 1:                   # left to right: a pair is a filing out of scale, then back
+            (a1, b1, r1), (a2, b2, r2) = jumps[i], jumps[i + 1]
+            if b1 == a2 and abs(r1 * r2 - 1) <= SPLIT_RATIO_TOL:
+                outliers |= {jumps[i], jumps[i + 1]}
+                one_filing.append(f'{b1}: x{r1:.2f}, then x{r2:.2f} at the next filing (one-filing outlier in the '
+                                  'SEC data, not a split)')
+                i += 2
+            else:
+                i += 1
+        real = [j for j in jumps if j not in outliers]
+
+        def matches(a, b, r, d, s):
+            return a < d <= max(b, published[b]) and abs(s / r - 1) <= SPLIT_RATIO_TOL
+        significant = {d: s for d, s in splits.items() if abs(s - 1) >= SPLIT_JUMP}
+        unexplained = [f'{a} -> {b}: x{r:.2f} with no yfinance split in between' for a, b, r in real
+                       if not any(matches(a, b, r, d, s) for d, s in significant.items())]
+        unmatched = [f'{d}: split {s:g} with no matching SEC share-count jump' for d, s in significant.items()
+                     if dates[0] < d <= dates[-1] and not any(matches(a, b, r, d, s) for a, b, r in real)]
         problems = unexplained + unmatched
-        return check('splits: yfinance vs SEC share count', WARN if problems else PASS,
-                     f'{len(jumps)} share-count jump(s), {len(splits)} yfinance split(s) in total; '
-                     f'{len(problems)} not matched', problems[:10])
+        small = len(splits) - len(significant)
+        return check(name, WARN if problems or one_filing else PASS,
+                     f'{len(real)} share-count jump(s), {len(significant)} yfinance split(s) of 40% or more '
+                     f'({small} smaller adjustment(s) not compared); {len(problems)} not matched; {len(one_filing)} '
+                     'one-filing outlier(s)', (problems + one_filing)[:10])
 
     # ------------------------------------------------------------------ SEC
 
@@ -351,8 +379,10 @@ class PipelineAudit:
                   'global': self.storage_checks() + self.walk_forward_checks(), 'tickers': {}}
         for n, ticker in enumerate(universe, 1):
             checks = []
+            # splits after sec: the SEC checks refresh the company facts, hence the cover-page share counts
             for name, func in (('prices', self.price_checks), ('sec', self.sec_checks),
-                               ('sec labels', self.label_checks), ('insider', self.insider_checks)):
+                               ('splits', lambda t: [self.split_check(t)]), ('sec labels', self.label_checks),
+                               ('insider', self.insider_checks)):
                 try:
                     checks += [dict(c, group=name) for c in func(ticker)]
                 except Exception as e:  # noqa: BLE001 - an audit crash is itself a failure

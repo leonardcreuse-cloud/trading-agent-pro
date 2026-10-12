@@ -153,6 +153,17 @@ def test_valuation_ratios_formulas_and_guards(sec):
     assert ratios(X, None, '2026-09-01')['market_cap']['value'] is None
 
 
+def test_peer_medians_leave_out_a_split_suspect_peer(sec):
+    from src.fundamentals_ext import extended
+    from src.valuation import peer_medians, ratios
+    X = extended(sec, 'AAA', '2026-09-01T00:00:00+00:00')
+    ok = [ratios(X, c, '2026-09-01') for c in (10.0, 20.0, 30.0)]               # P/B 2, 4, 6
+    suspect = ratios(dict(X, shares_outstanding_change_pct=-50.0), 100.0, '2026-09-01')
+    medians, excluded = peer_medians([('A', ok[0]), ('B', ok[1]), ('C', ok[2]), ('H', suspect)])
+    assert excluded == ['H'] and suspect['flags'][-1] == 'left out of the peer median'
+    assert medians['pb'] == (4.0, 3)                                           # 2, 4, 6; H (P/B 20) left out
+
+
 def test_history_stops_at_a_suspected_split():
     from src.valuation import history_points, percentile
     closes = {(date(2026, 9, 1) - timedelta(days=d)).isoformat(): 10.0 + d / 100 for d in range(0, 1900, 1)}

@@ -146,6 +146,47 @@ def test_bar_checks_and_split_cross_check(monkeypatch):
     assert checks['adjusted / unadjusted ratio jumps > 2%']['status'] == 'WARN'
 
 
+def test_split_check_classifies_restated_counts_outliers_and_small_adjustments(monkeypatch):
+    import yfinance
+    from src.database import Database
+    from src.pipeline_audit import PipelineAudit
+    db = Database()
+    # cover dates / filing dates: 2:1 split on 2025-07-10 reported in a filing made after it (cover date 07-01);
+    # one filing in thousands (2025-11-01); a 1.03 spin-off adjustment in yfinance (no share-count change)
+    counts = (('2025-01-01', 100.0, '2025-01-20'), ('2025-04-01', 101.0, '2025-04-20'),
+              ('2025-07-01', 202.0, '2025-07-25'), ('2025-11-01', 202000.0, '2025-11-20'),
+              ('2026-02-01', 203.0, '2026-02-20'), ('2026-05-01', 204.0, '2026-05-20'))
+    rows = [{'entity': 'AAA', 'metric': 'dei:SharesOutstanding', 'as_of_date': d, 'value': v, 'unit': 'shares',
+             'published_at': f'{p}T21:00:00+00:00', 'published_at_basis': 'test'} for d, v, p in counts]
+    db.upsert_observations(db.record_fetch('SEC EDGAR', 'test:dei', status='OK'), rows)
+
+    class Ticker:
+        def __init__(self, t):
+            self.splits = pd.Series([2.0, 1.03], index=pd.to_datetime(['2025-07-10', '2026-03-02']))
+    monkeypatch.setattr(yfinance, 'Ticker', Ticker)
+    c = PipelineAudit(db=db).split_check('AAA')
+    assert c['status'] == 'WARN' and c['evidence'] == [
+        '2025-11-01: x1000.00, then x0.00 at the next filing (one-filing outlier in the SEC data, not a split)']
+    assert c['detail'].startswith('1 share-count jump(s), 1 yfinance split(s) of 40% or more (1 smaller')
+    assert '0 not matched; 1 one-filing outlier(s)' in c['detail']
+
+
+def test_audit_runs_the_split_check_after_the_sec_checks(monkeypatch):
+    # the SEC checks refresh the company facts (cover-page share counts) that the split cross-check reads
+    from src.pipeline_audit import PipelineAudit, check
+    audit = PipelineAudit()
+    calls = []
+    for name in ('price_checks', 'sec_checks', 'label_checks', 'insider_checks', 'split_check'):
+        def record(ticker, name=name):
+            calls.append(name)
+            return check(name, 'PASS', '') if name == 'split_check' else []
+        monkeypatch.setattr(audit, name, record)
+    monkeypatch.setattr(audit, 'storage_checks', lambda: [])
+    monkeypatch.setattr(audit, 'walk_forward_checks', lambda: [])
+    audit.run(['AAA'])
+    assert calls == ['price_checks', 'sec_checks', 'split_check', 'label_checks', 'insider_checks']
+
+
 def test_option_skew_and_term_structure():
     from src import external_sources as ex
 

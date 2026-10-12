@@ -27,7 +27,7 @@ from ...intrinsic import MIN_BETA_WEEKS, dcf, settings
 from ...intrinsic import beta as beta_of
 from ...market_data import session_close_utc
 from ...sec_parser import SEC_SOURCE
-from ...valuation import FORMULAS, LABELS, RATIOS, history_points, peer_median, percentile, ratios, shares_for
+from ...valuation import FORMULAS, LABELS, RATIOS, history_points, peer_medians, percentile, ratios, shares_for
 from ..core import SectionResult, conclude, evidence, unavailable
 
 NAME = 'valuation'
@@ -256,19 +256,17 @@ def build(ctx, tickers=None, history=True):
         # peers
         peers = peers_cfg.get(t) or []
         if peers:
-            peer_rows, peer_vals = [], {k: [] for k in RATIOS}
+            computed = []
             for peer in peers:
                 pc, pday, _ = _close(ctx, peer)
-                if pc is None:
-                    peer_rows.append([peer] + [None] * len(HISTORY_KEYS) + ['no close at s_0'])
-                    continue
-                PR = ratios(ext(peer, tm.cutoff), pc, pday)
-                for k in RATIOS:
-                    peer_vals[k].append(PR[k]['value'])
-                peer_rows.append([peer] + [_fmt(PR[k]['value']) for k in HISTORY_KEYS] + ['; '.join(PR['flags']) or None])
+                computed.append((peer, None if pc is None else ratios(ext(peer, tm.cutoff), pc, pday)))
+            medians, excluded = peer_medians([(peer, PR) for peer, PR in computed if PR is not None])
+            peer_rows = [[peer] + [None] * len(HISTORY_KEYS) + ['no close at s_0'] if PR is None else
+                         [peer] + [_fmt(PR[k]['value']) for k in HISTORY_KEYS] + ['; '.join(PR['flags']) or None]
+                         for peer, PR in computed]
             med_row, readings = ['peer median (n)'], []
             for k in HISTORY_KEYS:
-                med, n = peer_median(peer_vals[k])
+                med, n = medians[k]
                 med_row.append(f'{_fmt(med)} ({n})' if med is not None else None)
                 if med is not None and R[k]['value'] is not None:
                     readings.append(f'{LABELS[k]} {R[k]["value"]} vs peer median {_fmt(med)} ({n} peers)')
@@ -277,7 +275,10 @@ def build(ctx, tickers=None, history=True):
                       [[t] + [_fmt(R[k]['value']) for k in HISTORY_KEYS] + ['; '.join(R['flags']) or None]]
                       + peer_rows + [med_row + [None]], scope=t, question=2,
                       note='Peers declared in config weekly.peers before any report. Ratios are not adjusted for '
-                           'differences in growth, margins or accounting. Descriptive only.')
+                           'differences in growth, margins or accounting. A peer whose share count moved by 40% or '
+                           'more in a year (possible split or large issuance; its market-cap ratios may mix pre- and '
+                           'post-split figures) is shown but left out of the median'
+                           + (f" (this week: {', '.join(excluded)})" if excluded else '') + '. Descriptive only.')
             if readings:
                 res.add(conclude(t, 2, f'{t}: ' + '; '.join(readings) + '. Relative position only: no judgement of '
                                        'cheap or expensive.', [p_item] + ([item] if item else []), 'market_fact',

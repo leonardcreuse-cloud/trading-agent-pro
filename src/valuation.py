@@ -72,6 +72,11 @@ def _div(num, den, name, revenue=None, per_share=None):
     return num / den, None
 
 
+# flag of a share count that moved by SPLIT_SUSPECT_PCT or more in a year: the market-cap-based ratios may mix pre- and
+# post-split figures (or sources that disagree on a split); such a peer is shown but left out of peer medians
+SHARE_COUNT_SUSPECT = 'possible split or large issuance'
+
+
 def shares_for(X, close_date):
     """(shares, basis, flags) for a close on close_date from extended fundamentals X."""
     flags = []
@@ -81,7 +86,7 @@ def shares_for(X, close_date):
             flags.append(f"shares: {X['shares_outstanding_note']}")
         change = X.get('shares_outstanding_change_pct')
         if change is not None and abs(change) >= SPLIT_SUSPECT_PCT:
-            flags.append(f'share count changed {change:+.1f}% in a year: possible split or large issuance')
+            flags.append(f'share count changed {change:+.1f}% in a year: {SHARE_COUNT_SUSPECT}')
         return so, f'cover-page shares outstanding on {so_date} (SEC dei)', flags
     if X.get('diluted_shares'):
         flags.append('approximation: diluted weighted-average shares of the period ending '
@@ -186,3 +191,18 @@ def peer_median(values):
         return None, 0
     n = len(xs)
     return (xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2), n
+
+
+def peer_medians(peer_ratios):
+    """
+    peer_ratios: [(ticker, ratios(...) output)]. Returns ({ratio key: (median, n)}, [excluded tickers]); a peer whose
+    share count is flagged SHARE_COUNT_SUSPECT is left out of every median (and marked in its flags).
+    """
+    kept, excluded = [], []
+    for ticker, R in peer_ratios:
+        if any(SHARE_COUNT_SUSPECT in f for f in R['flags']):
+            excluded.append(ticker)
+            R['flags'].append('left out of the peer median')
+        else:
+            kept.append(R)
+    return {k: peer_median([R[k]['value'] for R in kept]) for k in RATIOS}, excluded

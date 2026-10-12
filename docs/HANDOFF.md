@@ -38,6 +38,15 @@
   (40/40 tickers scored: 13 POSITIVE, 27 NEUTRAL). Its `code_version` reads `318ef56-dirty`: the only uncommitted
   changes were two docs files.
 
+- Master mission P0-P6 (2026-10-12): the analyst platform is complete and validated. Per-phase files, tests,
+  live results and limitations: `docs/MISSION_STATUS.md`; summary: `docs/CHANGELOG.md`.
+  - The weekly report has 22 parts and a COMPLETE / INCOMPLETE status.
+  - Fundamentals, valuation and DCF; technical analysis; risk engine.
+  - Hash-chained journals; paper strategy PT1 (started 2026-10-12, 8 market-on-open orders).
+  - Tests: 562 passed.
+  - Final audit: 0 FAIL, 19 explained WARNs.
+  - No predictive ability is demonstrated anywhere; stage 3 and PT1 are the only open tests.
+
 ## Saved result files (force-added although reports/*.json is ignored)
 `reports/walk_forward.json`, `reports/research_stage1.json`, `reports/research_stage2.json` feed the
 validation status of the signal; `reports/weekly/2026-10-09/` is the first weekly report.
@@ -98,12 +107,18 @@ answer 200; without a User-Agent www.sec.gov answers 403. BLS v2, BEA and EIA ke
    series (amendment in the pre-registration).
 
 ## Owner actions on the PC (in this order)
-1. `git fetch origin`, `git checkout claude/nifty-ramanujan-u1p317`, `git pull` (brings the code and the first
-   record + ledger; pull before the weekend run of 2026-10-17, see `docs/LOCAL_RUN.md` step 7).
+1. `git fetch origin`, `git checkout claude/nifty-ramanujan-u1p317`, `git pull`. This brings the code, the
+   first stage 3 record and ledger, and the PT1 journals. Pull BEFORE the next daily run on the PC
+   (23:00 Paris, from 2026-10-12): its `paper` step must continue the pushed journals, whose 8 orders fill at
+   the 2026-10-12 open. If a run already created `reports\paper\*.jsonl` locally, move those files to a
+   backup folder before pulling. Never merge two journals.
 2. `venv\Scripts\pip install -r requirements.txt`; add `BLS_API_KEY`, `BEA_API_KEY`, `EIA_API_KEY` to `.env`;
    `venv\Scripts\python main.py status`.
 3. `venv\Scripts\python scripts\daily_run.py --no-weekly` once, then
    `powershell -ExecutionPolicy Bypass -File scripts\install_windows_task.ps1` (untested on Windows: report any
    error message).
 4. Once: `venv\Scripts\python main.py dedupe`, then `venv\Scripts\python main.py audit` (expected 0 FAIL).
-5. Every week (e.g. Sunday): `git add reports/prospective`, `git commit -m "Stage 3 record <date>"`, `git push`.
+5. Every week (e.g. Sunday): `git add reports/prospective reports/paper`,
+   `git commit -m "Stage 3 record and PT1 journals <date>"`, `git push`.
+6. If `python main.py weekly` exits with 3, a critical section failed. The report is still written, with
+   status INCOMPLETE and the reason; read its "Report status" line.

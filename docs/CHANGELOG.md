@@ -1,5 +1,18 @@
 # Changelog
 
+## M-P6 — Master mission, phase P6: final validation (2026-10-12)
+
+Details: `docs/MISSION_STATUS.md` (P6).
+- Live checks of every production command, the audit, the stage 3 ledger and the PT1 journals; scan of the
+  production code for fabricated values.
+- Fixed:
+  - audit split check (order, restated counts, one-filing outliers, spin-off factors);
+  - peers whose share count disagrees with the price data are left out of peer medians (HON);
+  - insider USD sums state unpriced lines;
+  - demo blocks on invented inputs removed.
+- Stage 1 / 2 errata appended (missing values taken as 0 in two research features); results unchanged.
+- Tests: 562 passed.
+
 ## M-P5 — Master mission, phase P5: 22-part weekly report and automation (2026-10-12)
 
 Details and live results: `docs/MISSION_STATUS.md`.

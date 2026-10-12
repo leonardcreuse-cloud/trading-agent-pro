@@ -406,3 +406,117 @@ is kept.
 - The dashboard does not show the 22-part structure or the PT1 risk table; the weekly report is the reference.
 - Regime and synthesis rules are conventions that have not been validated. Changing them requires a new
   version label, never a silent edit.
+
+## P6 — Final validation (2026-10-12)
+
+### Checks run
+Live checks used the cloud database on clean commits. Results are as observed.
+
+| Check | Result |
+|---|---|
+| Test suite | 562 passed. Synthetic data only in tests, network blocked in tests |
+| `python main.py status` | exit 0, all 6 keys set |
+| `python main.py collect` | exit 0, 14 sources OK |
+| `python main.py analyze` | exit 0. Each signal is labelled heuristic, NOT DEMONSTRATED. The provisional backtest (34.7% 3-class accuracy) is printed next to its majority baseline (57.9%), which beats it |
+| `python main.py audit` | exit 0: 630 PASS, 19 WARN, 0 FAIL (each WARN explained below) |
+| `python main.py weekly`, twice, same commit | both COMPLETE, identical conclusions; only the retrieval times of the non-admissible earnings dates differed |
+| `python main.py weekly`, final commit | COMPLETE (105 strongly supported, 188 uncertain, 71 DATA UNAVAILABLE). Parts 1-20 and 22 covered; part 21 DATA UNAVAILABLE (correct at this cutoff) |
+| `python main.py paper status` | NO MARK, 8 pending orders, cash 100,000 (the first fills come after the 2026-10-12 session) |
+| `python main.py prospective record` | EXISTS: the record of 2026-10-09 is never overwritten |
+| Stage 3 ledger | chain OK, 1 record, SHA-256 of the record verified |
+| PT1 journals | transactions 10 entries, predictions 40, both chains OK, unchanged since their commits |
+| Scan for fabricated values (src/, scripts/, main.py; legacy/ excluded) | see below |
+
+### Scan for fabricated values
+- **Random numbers.** Only seeded sampling: audit samples and the pre-registered research universe. Two
+  `__main__` demos ran on invented inputs (random prices in `src/indicators.py`, an invented sentence in
+  `src/news_sentiment.py`). They were never called by production code and are now removed. No function
+  changed, so the stage 3 computation is identical.
+- **Neutral 50.** The remaining 50s are rule outputs on real inputs, documented in their modules:
+  - insider: "nothing informative traded";
+  - MACD histogram exactly 0;
+  - revenue growth in (0, 5]%;
+  - the RSI warm-up and flat-series deviations of the frozen `src/indicators.py`.
+  None replaces missing data.
+- **Missing values taken as 0.** Production code: none found. Research code of the completed stages 1 and 2:
+  - `insider_net_buy_to_mcap` counts an unpriced P/S line as 0 USD;
+  - EV takes a missing cash balance as 0.
+  These were not declared. Changing the code of a completed, pre-registered stage would change its
+  reproduction after its results were seen, so the code is left as it is. Dated errata are appended to
+  `docs/research/STAGE1_RESULTS.md` and `STAGE2_RESULTS.md`; the results are unchanged. Scale: 9 of 2,453
+  stored recent P/S lines have no price; C3 and C4 were not confirmed anyway.
+- **Insider USD sums.** In the production insider tracker these covered only the priced lines but were shown
+  as totals. Each display now states the lines without price (not valued). The score, which uses counts of
+  insiders, is unchanged.
+- **Scores and probabilities.** No score is converted into a probability. Brier score and calibration apply
+  only to the research models, which output real probabilities. The heuristic reports
+  `predicted_probability: NOT CALIBRATED`.
+- **No recommendations or broker access.** No BUY / SELL output, no broker library, no order path.
+
+### Problems found and fixed in P6
+1. **Audit order.** The split cross-check ran before the SEC checks refreshed the cover-page share counts.
+   On a database ingested before P1 this gave false "fewer than 2 counts" WARNs; 38 WARNs dropped to 19.
+   Fixed and tested.
+2. **Split cross-check precision.** It now accepts a split reported in a filing published after the split
+   (NFLX, FCX, NKE matched). It lists one-filing scale outliers in SEC data apart (×1000 then back:
+   ORCL 2012, CRM 2011, AMD 2012, QCOM 2011). It no longer compares yfinance spin-off factors (GE).
+3. **HON share count.** The SEC 10-Q of 2026-07-23 halves HON's share count and restates 2025. yfinance
+   shows no 2:1 split and no price jump: the sources disagree, and the system cannot tell which is right.
+   - HON's market-cap ratios are off by a factor of 2 under one of the two readings. HON was a peer of RKLB
+     and counted in its peer median.
+   - Rule now: a peer whose share count moved by 40% or more in a year is kept in the table but left out of
+     the median, unless a split of that ratio in the price data explains the change. CRWD's 4:1 split is
+     explained, so it is kept.
+
+### Audit WARNs remaining (19), explained
+| Ticker(s) | WARN | Explanation |
+|---|---|---|
+| MP | +50.6% on 2025-07-10 | Real move: SEC and price data agree, not a split |
+| MU | revenue +256% YoY | Matches the SEC 10-K |
+| COST | adjusted / unadjusted step 2023-12-27 | Special dividend ex-date |
+| DE, ISRG | debt / equity | No recognised debt concept in company facts (tag gaps) |
+| XOM | revenue TTM | No recognised debt concept in company facts (tag gaps) |
+| CRWD (1 line), LMT (8 of 9) | Form 4 lines without price | Stored as missing; sums say so |
+| NET, DDOG, GOOGL, META (0 counts), XOM (1 count) | cover-page share count | Company facts carry no usable count (several share classes) |
+| ORCL, CRM, AMD, QCOM | one-filing outliers in SEC data, 2011-2012 | Reported, not a split |
+| ALB | ×1.43 in 2014-15 | Share issuance for an acquisition, no split |
+| HON | ×0.50 in 2026 | Sources disagree, see above |
+
+### Validated
+Each item below is checked by tests and live runs. The mission's rules hold: no fabricated values, missing
+data shown as DATA UNAVAILABLE, point-in-time evidence.
+- **Data layer with provenance.** Fetch log, raw payloads, publication / retrieval timestamps, admissibility
+  at T. Redundant versions are not stored. Record-count and format-drop checks.
+- **Weekly report in 22 parts** with evidence levels, status COMPLETE / INCOMPLETE, a reproducible archive
+  and a manifest.
+- **Fundamentals, valuation and DCF.** Extended fundamentals, valuation ratios with history and peers, DCF
+  scenarios labelled with their reliability, and the reverse DCF.
+- **Macro and market context.** Macro, commodities, calendars, geopolitics (pre-declared rules), positioning
+  and options metrics where data exist.
+- **Technical analysis.** Reference indicators, objective price action, and market-data validation in the
+  audit.
+- **Quantitative metrics** (AUC, Brier, calibration, net-of-cost portfolios) and the descriptive heuristic
+  evaluation: no edge.
+- **Risk engine.** Sizing, limits and metrics; no global risk score.
+- **Journals.** Hash-chained prediction and transaction journals.
+- **Paper strategy PT1**, pre-registered, paper only.
+- **Stage 3 prospective record**, pre-registered and hash-chained: 1 of the 52 weekly records needed.
+
+### Limitations (not hidden)
+- **No predictive ability has been demonstrated.**
+  - Walk-forward: not demonstrated.
+  - Stage 1 and 2: 0 of 4 pre-registered hypotheses confirmed.
+  - Heuristic evaluation: top quintile below the equal-weight universe; AUC ~0.51.
+  - Stage 3 and PT1 have just started, and their tests need 52 weekly records (about October 2027).
+  - Nothing here is a trade recommendation.
+- **Prices.** They come from one secondary source (yfinance). The only independent cross-check is SPY vs
+  FRED SP500, and split events also come from yfinance.
+- **Unavailable sources.** Company guidance, PMI, analyst revisions and some agencies are unavailable (blocked
+  by the network policy or not public). News is an aggregator, and the sentiment lexicon is not validated or
+  used.
+- **Unvalidated rules.** Regime, synthesis, geopolitical themes and DCF assumptions are conventions with
+  version labels. Changing them needs a new version.
+- **Survivorship bias.** The research universes are current constituents.
+- **Paper costs.** Commission, slippage and spread are assumptions; there is no execution data.
+- **Windows scheduling is untested on Windows.** The Windows scheduled-task installer has not been run on the
+  PC yet.

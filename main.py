@@ -114,6 +114,12 @@ def main():
         from src.pipeline_audit import PipelineAudit
         report = PipelineAudit().run([t.upper() for t in sys.argv[2:]] or None)
         sys.exit(1 if report['status'] == 'FAIL' else 0)
+    elif command == 'sources':
+        from src.source_registry import print_report, run as check_sources
+        report = check_sources()
+        print_report(report)
+        s = report['summary']
+        sys.exit(0 if s['integrated_reachable'] == s['integrated_total'] else 2)    # 2: an integrated source failed
     elif command == 'status':
         print_status()
     else:
@@ -126,6 +132,7 @@ def print_menu():
     print("  python main.py walkforward [TICKER ...] - Walk-forward validation on the")
     print("                              validation universe (slow first run)")
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
+    print("  python main.py sources    - Probe every registered data source (HTTP status, terms, limits)")
     print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] [--recalc LABEL]")
     print("                              - Predictive-edge study; results are written once, a later run")
     print("                                needs --recalc LABEL (separate file, never the original)")

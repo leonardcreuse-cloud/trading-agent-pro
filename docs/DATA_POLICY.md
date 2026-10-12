@@ -18,7 +18,8 @@ number may be invented, mocked or simulated in an analysis output.
 | `PROVISIONAL` | Computed from real data, but the methodology is known to be incomplete (see `warning`) |
 | `DATA UNAVAILABLE` | Source unreachable, key missing, or data not ingested yet (see `reason`) |
 | `NOT IMPLEMENTED` | Feature does not exist yet; nothing is computed |
-| `INSUFFICIENT DATA` | Signal not produced: fewer than 2 of the 4 component scores (technical, fundamentals, news, insider) available |
+| `INSUFFICIENT DATA` | Signal not produced: fewer than 2 of the 3 component scores (technical, fundamentals, insider) available |
+| `NOT CALIBRATED` | A probability field exists but no model probability has been evaluated and calibrated out of sample |
 
 ## Quantitative signal terminology (P1.4)
 
@@ -26,9 +27,10 @@ Outputs are **quantitative signals**, never trade recommendations. POSITIVE / NE
 describe the direction of a heuristic score (thresholds 65 / 40). `validation.status` is
 `DEMONSTRATED` only when the walk-forward cross-sectional IC of the combined score is positive and
 significant (two-sided p < 0.05 / number of horizons) in a run less than 7 days old; otherwise
-`NOT DEMONSTRATED` (or `NOT VALIDATED` when no run exists), and the report says so. The live signal
-includes news (weight 0.20), which the walk-forward cannot evaluate: the live signal itself is therefore
-never "validated", only its ex-news variant is tested.
+`NOT DEMONSTRATED` (or `NOT VALIDATED` when no run exists), and the report says so. Since master mission P2
+(2026-10-12) the combined signal is ex-news (technical 0.25, fundamentals 0.40, insider 0.15, renormalised over
+the available components): the news lexicon could not be validated and is shown as a descriptive score only
+(`news_sentiment`, status NOT VALIDATED). This is the signal recorded by stage 3.
 
 ## Evidence levels for conclusions (weekly report, P3.0)
 
@@ -52,12 +54,15 @@ originators (an issuer's press release and its 8-K are one originator; syndicate
 |---|---|---|
 | **Data reliability** | Coverage of sources (`coverage`, `data_availability`), freshness, source rank | Coverage (P0.1); freshness and source rank (P0.2) |
 | **Signal strength** | Heuristic 0-100 score (`combined_score`) and `signal_agreement` (dispersion of sources) | Heuristic, weights not validated |
-| **Prediction probability** | P(up) from a model trained and calibrated out-of-sample | Not available until P1.6 |
-| **Prediction confidence** | Calibration quality and effective sample size of the model | Not available until P1.5 |
-| **Risk score** | Output of the risk engine | Not available until P3.1 |
+| **Prediction probability** | P(up) from a model trained and calibrated out of sample | `NOT CALIBRATED`: no model has passed out-of-sample validation; a 0-100 score is never shown as a probability |
+| **Prediction confidence** | Calibration quality and effective sample size of the model | NOT IMPLEMENTED (needs a calibrated model) |
+| **Risk score** | A single global score | NOT IMPLEMENTED: no global score is validated; the risk engine (`src/risk.py`) reports separate metrics (volatility, beta, correlation, drawdown, liquidity, concentration, sector, event and data risk) |
 
 `historical_up_frequency_pct` (module `prediction_engine`) is an unconditional historical
 base rate. It is **not** a P(up) prediction.
+
+Every provider, its endpoint, authentication, frequency, terms and rate limits: `src/source_registry.py`;
+`python main.py sources` probes them and writes `reports/source_check.json`.
 
 ## Provenance and time (P0.2)
 
@@ -99,7 +104,7 @@ Binary raw payloads (zip, xls) are stored byte for byte. A version that repeats 
 versions; history is never overwritten. Unverifiable legacy data is not migrated: it is backed up
 (`data/backups/`) and refilled from the sources.
 
-**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, CFTC 1, FINRA 1, Cboe 1 (Cboe-listed volume only), Federal Reserve Board 1, Federal Register 1, yfinance 2, GPR index 2 (academic, newspaper-based), NewsAPI 3, GDELT 3 (automated coding of news), S&P 500 list (datasets/s-and-p-500-companies, third-party compilation) 3.
+**Source rank** (lower = more authoritative): SEC EDGAR 1, FRED 1, CFTC 1, FINRA 1, Cboe 1 (Cboe-listed volume only), Federal Reserve Board 1, Federal Register 1, yfinance 2, Cboe delayed daily history 2 (second price source, cross-check only), GPR index 2 (academic, newspaper-based), NewsAPI 3, GDELT 3 (automated coding of news), S&P 500 list (datasets/s-and-p-500-companies, third-party compilation) 3.
 BLS, BEA and EIA (keyed APIs, `src/agency_apis.py`) are rank 1; their values are stored as published, entity
 `BLS:<series id>`, `BEA:<series code>`, `EIA:<series>`, metric `value`. A value the agency marks unavailable
 (e.g. BLS `-` for October 2025, "lapse in appropriations") is not stored.
@@ -116,7 +121,7 @@ limit: market sessions 5 days, daily series 7, short interest (semi-monthly) 30,
 | Debt / equity | Debt / `StockholdersEquity` at the same balance-sheet date; unavailable if equity ≤ 0 or no debt tag |
 | Margins, cash flow (P4.2) | TTM at the revenue period end, one XBRL tag per item: gross profit (`GrossProfit`, else revenue - cost of revenue, derived), operating income, net income (parent), operating cash flow, capital expenditure; free cash flow = operating cash flow - capital expenditure; margin = item / revenue TTM; a missing item is unavailable, never 0 |
 | Dilution (P4.2) | Diluted weighted-average shares of the latest 3-month (else 12-month) period vs the same period one year earlier |
-| Valuation (P4.2) | Unadjusted close (yfinance, rank 2) x diluted weighted shares (approximation of shares outstanding; cash and debt ignored) -> P/S, P/E, P/FCF; `n/m` when the denominator is not positive; `market_fact` + `ESTIMATE`, never a cheap / expensive judgement |
+| Valuation (master mission P1, `src/valuation.py`) | Market cap = unadjusted close (yfinance, rank 2) x cover-page shares outstanding (SEC dei; diluted weighted shares only as a flagged approximation); EV = market cap + debt - cash and short-term investments; P/E, P/B, ROE, P/S, P/FCF, EV/sales, EV/EBITDA, FCF yield, each with its formula in the module; a ratio whose denominator is negative or below 2% of revenue is not meaningful (reason shown); `market_fact` + `ESTIMATE`, never a cheap / expensive judgement. A peer whose share count moved >= 40% in a year without a split of that ratio in the price data is left out of peer medians |
 | Form 4 coverage (P4.2) | every document read is stored as a `form4:document` event (possibly with 0 non-derivative transactions); a Form 4 listed by SEC in a window without that marker is "not ingested" |
 | Insider score | Heuristic 0–100 from open-market Form 4 purchases (P) and discretionary sales (S) over 90 days; 10b5-1 planned sales, grants, exercises and tax withholding are not scored |
 

@@ -127,9 +127,19 @@ def test_mixed_conventions_are_not_converted(monkeypatch, labels):
 
 # ---------------------------------------------------------------- redundant versions (dedupe) and the audit
 
-def store(db, rows, retrieved):
+def store(db, rows, retrieved, legacy=False):
+    """legacy=True: insert as the code before P0 (2026-10-12) did, without the redundancy check at insertion."""
     fetch = dict(db.record_fetch('SEC EDGAR', f'test:{retrieved}', status='OK'), retrieved_at=retrieved)
-    db.upsert_observations(fetch, rows)
+    if not legacy:
+        return db.upsert_observations(fetch, rows)
+    with db.connect() as conn:
+        for r in rows:
+            conn.execute('INSERT INTO observations (source, source_rank, entity, metric, as_of_date, value, value_text, '
+                         'unit, published_at, published_at_basis, value_revisable, retrieved_at, fetch_id) '
+                         'VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
+                         ('SEC EDGAR', r['entity'], r['metric'], r['as_of_date'], r.get('value'), r.get('value_text'),
+                          r.get('unit'), r['published_at'], r['published_at_basis'], retrieved, fetch['fetch_id']))
+    return len(rows)
 
 
 def fact(metric, value, published, as_of='2026-06-30', **kw):
@@ -142,7 +152,9 @@ def test_redundant_versions_only_when_the_earlier_version_dominates():
     db = Database()
     # re-stored later with a later label (old SEC behaviour): redundant
     store(db, [fact('xbrl:Revenues', 100.0, '2026-08-01T00:00:00+00:00')], '2026-08-02T00:00:00+00:00')
-    store(db, [fact('xbrl:Revenues', 100.0, '2026-08-01T04:00:00+00:00')], '2026-10-11T00:00:00+00:00')
+    later = [fact('xbrl:Revenues', 100.0, '2026-08-01T04:00:00+00:00')]
+    assert store(db, later, '2026-10-11T00:00:00+00:00') == 0              # P0: no longer stored
+    store(db, later, '2026-10-11T00:00:00+00:00', legacy=True)            # as stored by earlier code
     # calibrated (earlier) time retrieved later: neither dominates, both kept
     store(db, [fact('xbrl:Assets', 5.0, '2026-08-01T04:00:00+00:00')], '2026-08-02T00:00:00+00:00')
     store(db, [fact('xbrl:Assets', 5.0, '2026-08-01T00:00:00+00:00')], '2026-10-11T00:00:00+00:00')
@@ -156,7 +168,8 @@ def test_redundant_versions_only_when_the_earlier_version_dominates():
     event = {'entity': 'AAA', 'metric': 'filing:4', 'as_of_date': '2026-08-01', 'value_text': '0001-26-000001',
              'published_at_basis': 'test'}
     store(db, [dict(event, published_at='2026-08-01T20:00:00+00:00')], '2026-08-02T00:00:00+00:00')
-    store(db, [dict(event, published_at='2026-08-02T00:00:00+00:00')], '2026-08-03T00:00:00+00:00')
+    assert store(db, [dict(event, published_at='2026-08-02T00:00:00+00:00')], '2026-08-03T00:00:00+00:00') == 0
+    store(db, [dict(event, published_at='2026-08-02T00:00:00+00:00')], '2026-08-03T00:00:00+00:00', legacy=True)
 
     redundant = db.redundant_versions()
     with db.connect() as conn:

@@ -991,7 +991,7 @@ def test_synthetic_helpers_refuse_the_project_database(monkeypatch):
     with pytest.raises(RuntimeError, match='must not be written'):
         isolated_database(str(PROJECT_ROOT / 'data' / 'trading_pro.db'))          # raises before opening it
     monkeypatch.delenv('TRADING_AGENT_DATA_DIR')
-    with pytest.raises(RuntimeError, match='must not be written'):
+    with pytest.raises(RuntimeError, match='must not be written|must not use the production folder'):
         isolated_database()
 
 

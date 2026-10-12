@@ -36,6 +36,11 @@ PASS, WARN, FAIL = 'PASS', 'WARN', 'FAIL'
 MAX_DAILY_MOVE = 0.40
 MAX_GAP_DAYS = 7
 RAW_SAMPLE = 60
+# sources whose parsed counts should be stable or growing between runs (news / document counts vary naturally)
+FORMAT_CHECK_SOURCES = ('FRED', 'BLS', 'BEA', 'EIA', 'CFTC', 'FINRA', 'Cboe', 'Federal Reserve Board',
+                        'GPR index (Caldara-Iacoviello)', 'yfinance', 'SEC EDGAR')
+# endpoints whose counts depend on a moving request window (FRED release calendars list upcoming dates)
+FORMAT_CHECK_EXCLUDE = ('/fred/release/dates',)
 LABEL_SAMPLE = 2          # filings per ticker whose acceptance time is re-checked on the EDGAR index page
 
 
@@ -91,6 +96,12 @@ class PipelineAudit:
                 continue
             if any(s.encode('utf-8') in (data or b'') for s in secrets):
                 leaked.append(f'fetch {fetch_id}')
+        drops = self.db.record_count_drops(FORMAT_CHECK_SOURCES, exclude=FORMAT_CHECK_EXCLUDE,
+                                           dated_sources=('Cboe',))
+        out.append(check('parsed record count dropped (possible source format change)', WARN if drops else PASS,
+                         f'{len(drops)} endpoints (latest fetch 0 or < half the median of earlier fetches)',
+                         [f"{d['source']} {d['endpoint']}: {d['n_records']} vs median {d['median']} "
+                          f"(fetch {d['fetch_id']})" for d in drops[:20]]))
         redundant = self.db.redundant_versions()
         out.append(check('redundant observation versions (same value re-stored later)', WARN if redundant else PASS,
                          f'{len(redundant)} rows' + ('; remove them with `python main.py dedupe` (the database is '

@@ -718,14 +718,20 @@ def option_snapshot(chain_frames, spot, expiry_days):
     chain_frames: [(expiry date, calls DataFrame, puts DataFrame)]. ATM IV: mean implied volatility of
     the call and put nearest to spot at the expiry closest to 30 days (>= 7 days), quotes with
     bid > 0 and ask > 0 only. None values when the quality conditions are not met.
+    Open interest / volume: sums over the quotes that report a value; a ratio is None when either side has no
+    reported value at all (a missing side is never read as zero); missing quotes are counted.
     """
-    oi_c = oi_p = vol_c = vol_p = 0.0
+    tot = {k: 0.0 for k in ('oi_c', 'oi_p', 'vol_c', 'vol_p')}
+    seen = dict.fromkeys(tot, 0)
+    missing = {'openInterest': 0, 'volume': 0}
     best = None
     for exp, calls, puts in chain_frames:
-        oi_c += float(calls['openInterest'].fillna(0).sum())
-        oi_p += float(puts['openInterest'].fillna(0).sum())
-        vol_c += float(calls['volume'].fillna(0).sum())
-        vol_p += float(puts['volume'].fillna(0).sum())
+        for key, frame, col in (('oi_c', calls, 'openInterest'), ('oi_p', puts, 'openInterest'),
+                                ('vol_c', calls, 'volume'), ('vol_p', puts, 'volume')):
+            values = frame[col]
+            tot[key] += float(values.sum(skipna=True))
+            seen[key] += int(values.notna().sum())
+            missing[col] += int(values.isna().sum())
         d = expiry_days[exp]
         if d >= 7 and (best is None or abs(d - 30) < abs(expiry_days[best[0]] - 30)):
             best = (exp, calls, puts)
@@ -738,9 +744,11 @@ def option_snapshot(chain_frames, spot, expiry_days):
                 row = q.iloc[(q['strike'] - spot).abs().argsort().iloc[0]]
                 ivs.append(float(row['impliedVolatility']))
         atm_iv = sum(ivs) / len(ivs) if len(ivs) == 2 else None
+    def ratio(num, den):
+        return tot[num] / tot[den] if seen[num] and seen[den] and tot[den] else None
     return {'atm_iv': atm_iv, 'expiry': best[0] if best else None,
-            'put_call_oi': oi_p / oi_c if oi_c else None,
-            'put_call_volume': vol_p / vol_c if vol_c else None}
+            'put_call_oi': ratio('oi_p', 'oi_c'), 'put_call_volume': ratio('vol_p', 'vol_c'),
+            'quotes_missing_open_interest': missing['openInterest'], 'quotes_missing_volume': missing['volume']}
 
 
 def collect_options(db, tickers, today=None, max_days=60):

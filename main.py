@@ -55,7 +55,8 @@ def main():
     elif command == 'research':
         from src.research.experiment import Study
         stage = int(sys.argv[sys.argv.index('--stage') + 1]) if '--stage' in sys.argv else 1
-        study = Study(stage=stage)
+        recalc = sys.argv[sys.argv.index('--recalc') + 1] if '--recalc' in sys.argv else None
+        study = Study(stage=stage, recalc=recalc)
         if '--prefetch-insider' in sys.argv:
             study.prefetch_insider()
         else:
@@ -102,7 +103,9 @@ def print_menu():
     print("  python main.py walkforward [TICKER ...] - Walk-forward validation on the")
     print("                              validation universe (slow first run)")
     print("  python main.py audit [TICKER ...] - Validate stored data and point-in-time rules")
-    print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] - Predictive-edge study")
+    print("  python main.py research [--stage 1|2] [--rebuild] [--prefetch-insider] [--recalc LABEL]")
+    print("                              - Predictive-edge study; results are written once, a later run")
+    print("                                needs --recalc LABEL (separate file, never the original)")
     print("  python main.py weekly [--cutoff ISO] - Weekly analyst report (source-verified)")
     print("  python main.py collect   - Download external sources (CFTC, FINRA, Cboe, Fed, BLS,")
     print("                              BEA, EIA, Federal Register, GPR, GDELT, options); run it daily")

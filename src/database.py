@@ -30,6 +30,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -408,9 +409,12 @@ class Database:
         Store observations produced by `fetch` (dict returned by record_fetch).
         rows: dicts with entity, metric, as_of_date, value and/or value_text, and optional
         unit, published_at, published_at_basis, value_revisable.
-        A version identical to the latest stored one (same key and value) is skipped;
-        a different value is stored as a new version - history is never overwritten.
+        A version that repeats its predecessor (same value, available and retrieved no earlier; see
+        _REDUNDANT_SQL) is skipped; a different value is stored as a new version - history is never
+        overwritten.
         published_at later than retrieval is clamped to retrieval (it was public by then).
+        The number of parsed rows (new or not) is recorded as the fetch's n_records when the fetch has none
+        yet (the audit compares it with earlier fetches of the same endpoint to detect format changes).
         Returns the number of new rows.
         """
         source = fetch['source']
@@ -426,27 +430,48 @@ class Database:
             prepared.append((r['entity'], r['metric'], str(r['as_of_date'])[:10],
                              None if value is None else float(value), r.get('value_text'),
                              r.get('unit'), published, basis, int(bool(r.get('value_revisable')))))
+        if fetch.get('fetch_id') is not None:
+            with self.connect() as conn:
+                conn.execute('UPDATE source_fetches SET n_records = ? WHERE fetch_id = ? AND n_records IS NULL',
+                             (len(prepared), fetch['fetch_id']))
         if not prepared:
             return 0
 
+        # Versions of each fact (source, entity, metric, as_of_date, event text) in availability order, as in
+        # _REDUNDANT_SQL: a new version whose predecessor has the same value, text, unit and revisability and was
+        # retrieved no later is redundant and is not stored (re-ingesting a source never re-creates what
+        # `dedupe` removed; an SEC fact repeated by later filings keeps its first publication only).
         keys = {(p[0], p[1]) for p in prepared}
-        latest = {}
+        versions = {}
         with self.connect() as conn:
             for entity, metric in keys:
                 for row in conn.execute(
-                        '''SELECT as_of_date, COALESCE(published_at, '') AS pub, value, value_text
-                           FROM observations WHERE source=? AND entity=? AND metric=?
-                           ORDER BY retrieved_at''', (source, entity, metric)):
+                        '''SELECT as_of_date, COALESCE(published_at, retrieved_at) AS avail, retrieved_at, obs_id,
+                                  value, value_text, unit, value_revisable
+                           FROM observations WHERE source=? AND entity=? AND metric=?''',
+                        (source, entity, metric)):
                     event_id = row['value_text'] if row['value'] is None else ''
-                    latest[(entity, metric, row['as_of_date'], row['pub'], event_id)] = \
-                        (row['value'], row['value_text'])
+                    versions.setdefault((entity, metric, row['as_of_date'], event_id), []).append(
+                        ((row['avail'], row['retrieved_at'], row['obs_id']),
+                         (row['value'], row['value_text'], row['unit'], row['value_revisable']), row['retrieved_at']))
+            for v in versions.values():
+                v.sort(key=lambda x: x[0])
 
-            new = []
-            for p in prepared:
-                key = (p[0], p[1], p[2], p[6] or '', p[4] if p[3] is None else '')
-                if key in latest and latest[key] == (p[3], p[4]):
+            new, next_id = [], 10 ** 15                      # new rows sort after every stored obs_id
+            # within one fetch, earlier publications first (the first publication is the one kept)
+            for p in sorted(prepared, key=lambda p: (p[0], p[1], p[2], p[6] or retrieved_at)):
+                fact = (p[0], p[1], p[2], p[4] if p[3] is None else '')
+                next_id += 1
+                order = (p[6] or retrieved_at, retrieved_at, next_id)
+                content = (p[3], p[4], p[5], p[8])
+                fact_versions = versions.setdefault(fact, [])
+                before = [v for v in fact_versions if v[0] <= order]
+                if before and before[-1][1] == content and before[-1][2] <= retrieved_at:
                     continue
-                latest[key] = (p[3], p[4])
+                if any(v[0][0] == order[0] and v[1] == content for v in fact_versions):
+                    continue                                   # identical version already stored
+                fact_versions.append((order, content, retrieved_at))
+                fact_versions.sort(key=lambda x: x[0])
                 new.append((source, rank, *p, retrieved_at, fetch['fetch_id']))
             conn.executemany(
                 '''INSERT INTO observations (source, source_rank, entity, metric, as_of_date, value,
@@ -469,6 +494,37 @@ class Database:
                          ORDER BY COALESCE(published_at, retrieved_at), retrieved_at, obs_id))
         WHERE p_id IS NOT NULL AND value IS p_value AND value_text IS p_text AND unit IS p_unit
           AND value_revisable = p_rev AND p_retrieved <= retrieved_at'''
+
+    def record_count_drops(self, sources, min_history=3, ratio=0.5, exclude=(), dated_sources=()):
+        """
+        Possible source format changes: per source and endpoint (the same resource fetched again; for
+        `dated_sources`, whose endpoints carry the date of a daily file, digits are replaced by # so that the
+        daily files are compared with each other), the latest OK fetch whose parsed record count (n_records) is
+        0 or below `ratio` x the median of the earlier fetches (at least `min_history` of them).
+        Returns [{source, endpoint, fetch_id, n_records, median}].
+        """
+        marks = ','.join('?' * len(sources))
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT fetch_id, source, endpoint, n_records FROM source_fetches "
+                                f"WHERE status='OK' AND n_records IS NOT NULL AND source IN ({marks}) "
+                                f"ORDER BY completed_at, fetch_id", list(sources)).fetchall()
+        groups = {}
+        for r in rows:
+            if any(x in r['endpoint'] for x in exclude):
+                continue
+            endpoint = re.sub(r'\d+', '#', r['endpoint']) if r['source'] in dated_sources else r['endpoint']
+            groups.setdefault((r['source'], endpoint), []).append(r)
+        out = []
+        for (source, pattern), rs in groups.items():
+            if len(rs) <= min_history:
+                continue
+            *before, last = rs
+            counts = sorted(r['n_records'] for r in before)
+            median = counts[len(counts) // 2]
+            if median > 0 and (last['n_records'] == 0 or last['n_records'] < ratio * median):
+                out.append({'source': source, 'endpoint': pattern, 'fetch_id': last['fetch_id'],
+                            'n_records': last['n_records'], 'median': median})
+        return out
 
     def redundant_versions(self):
         """

@@ -1,6 +1,19 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Indicators - Real technical indicators (RSI, MACD, Bollinger Bands) - CLEAN
+Indicators of the FROZEN heuristic signal (PriceTechnical.score_closes) - do not change during stage 3
+
+These functions define the technical component of the heuristic that the walk-forward, the research stages and
+the stage 3 prospective record (protocol stage3-v1, docs/research/STAGE3_PREREGISTRATION.md) evaluate. Changing
+them would change the recorded signal mid-experiment, so their known deviations from the textbook definitions
+are documented here instead of fixed (master mission P0 audit, 2026-10-12):
+  calculate_rsi    the first average uses period + 1 deltas divided by period (Wilder: period deltas); the
+                   first `period` values are filled with the first RSI (warm-up values are not undefined); when
+                   the smoothed average loss is 0 the RSI is set to 50 (Wilder: 100 when gains > 0, undefined
+                   when the price is flat). score_closes reads the last value of 150 closes only, where the seed
+                   has decayed by a factor (13/14)^136 and the zero-loss case requires 150 closes without a
+                   single down day.
+  calculate_macd   pandas ewm(span) with adjust=True (the recursive EMA uses adjust=False).
+Reference implementations for descriptive technical analysis are in src/technicals.py.
 """
 
 import numpy as np

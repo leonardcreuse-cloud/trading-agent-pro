@@ -1,5 +1,18 @@
 # Changelog
 
+## M-P0 — Master mission, phase P0: integrity and calculation safety (2026-10-12)
+
+Details, live results and remaining points: `docs/MISSION_STATUS.md`.
+- Pre-registered results are written once: a rerun needs `--recalc LABEL` (separate file, marked exploratory).
+- 19 never-called modules (several with fabricated defaults) and 10 ad-hoc scripts quarantined in `legacy/`.
+- Production data folders refused under pytest; option put/call ratios no longer read missing sides as 0.
+- Insertion skips redundant versions (same rule as `dedupe`): live, 0 redundant versions after re-ingestion
+  (39,381 were re-created at each SEC ingestion before).
+- Every stored download records its parsed count; the audit flags sudden drops (possible format changes).
+- Dashboard: NOT IMPLEMENTED / NOT CALIBRATED labels; daily report: Form 4 window counts labelled correctly.
+- Frozen heuristic indicators documented (not changed during stage 3).
+- Tests 490 → 495.
+
 ## P5.0 — Stage 3: prospective weekly record (step 5 of the handoff, paper only)
 
 - Pre-registration first (`docs/research/STAGE3_PREREGISTRATION.md`, its own commit before any code that

@@ -45,9 +45,12 @@ class Dashboard:
                 f'<div>Signal strength: {_cell(sig.get("signal_strength"))}/100 '
                 f'(coverage {_cell(sig.get("coverage"))})</div>'
                 f'<div>Validation: {_cell((sig.get("validation") or {}).get("status"))}</div>'
-                f'<div>Model prediction: {_cell(None)} <span class="small">(not validated, not used)</span></div>'
-                f'<div>Prediction confidence: {_cell(None)} <span class="small">(no calibrated model)</span></div>'
-                f'<div>Risk score: {_cell(None)} <span class="small">(risk engine: phase P3.1)</span></div>'
+                f'<div>Model prediction: NOT IMPLEMENTED <span class="small">(no model with demonstrated '
+                f'out-of-sample skill)</span></div>'
+                f'<div>Prediction confidence: NOT CALIBRATED <span class="small">(no calibrated model: no '
+                f'probability is produced)</span></div>'
+                f'<div>Risk score: NOT IMPLEMENTED <span class="small">(no validated global risk score; see the '
+                f'risk section of the weekly report)</span></div>'
                 f'<div class="small">Unavailable: {escape(", ".join(missing) or "none")}</div>'
                 '</div>')
         if not cards:

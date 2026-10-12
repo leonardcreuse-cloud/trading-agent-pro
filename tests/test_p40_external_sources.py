@@ -207,6 +207,10 @@ def test_option_snapshot_logic():
     assert snap['put_call_oi'] == pytest.approx(30 / 120)
     no_quotes = ex.option_snapshot([('e2', *chain(0.4, 0.5, bid=0.0))], 101.0, {'e2': 33})
     assert no_quotes['atm_iv'] is None
+    calls, puts = chain(0.4, 0.5)
+    no_put_oi = ex.option_snapshot([('e2', calls, puts.assign(openInterest=float('nan')))], 101.0, {'e2': 33})
+    assert no_put_oi['put_call_oi'] is None                       # missing side: not a ratio of 0
+    assert no_put_oi['quotes_missing_open_interest'] == 3 and no_put_oi['put_call_volume'] == pytest.approx(9 / 6)
 
 
 # ------------------------------------------------------------------ provenance and failures

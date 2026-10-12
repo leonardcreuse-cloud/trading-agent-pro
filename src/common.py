@@ -18,6 +18,7 @@ P0.2 additions:
 import json
 import os
 import re
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -95,9 +96,21 @@ def secret_env(name):
     return value, None
 
 
+def _not_production_under_tests(path, default):
+    """
+    Synthetic test data must never reach the real database or reports: under pytest (tests/conftest.py points
+    both directories to a temporary folder) the production folders are refused.
+    """
+    if 'pytest' in sys.modules and path.resolve() == default.resolve():
+        raise RuntimeError(f'tests must not use the production folder {default} (set TRADING_AGENT_DATA_DIR / '
+                           'TRADING_AGENT_REPORTS_DIR to a temporary folder)')
+    return path
+
+
 def data_dir():
     """Directory holding the SQLite database (override with TRADING_AGENT_DATA_DIR)."""
-    path = Path(os.getenv('TRADING_AGENT_DATA_DIR', PROJECT_ROOT / 'data'))
+    path = _not_production_under_tests(Path(os.getenv('TRADING_AGENT_DATA_DIR', PROJECT_ROOT / 'data')),
+                                       PROJECT_ROOT / 'data')
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -121,7 +134,8 @@ def backups_dir():
 
 def reports_dir():
     """Directory for generated reports (override with TRADING_AGENT_REPORTS_DIR)."""
-    path = Path(os.getenv('TRADING_AGENT_REPORTS_DIR', PROJECT_ROOT / 'reports'))
+    path = _not_production_under_tests(Path(os.getenv('TRADING_AGENT_REPORTS_DIR', PROJECT_ROOT / 'reports')),
+                                       PROJECT_ROOT / 'reports')
     path.mkdir(parents=True, exist_ok=True)
     return path
 

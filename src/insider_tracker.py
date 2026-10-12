@@ -257,7 +257,12 @@ class InsiderTracker:
         signal = 'POSITIVE' if score >= 60 else 'NEGATIVE' if score <= 40 else 'NEUTRAL'
         status = 'PROVISIONAL' if failures else 'OK'
         filings = self.sec._filings_cache.get(ticker) or {}
-        print(f"  Form 4 filings ingested ({LOOKBACK_DAYS + INGEST_MARGIN_DAYS}d): {n_filings} (parsed {n_parsed})")
+        end = summary['window_end']
+        start = to_utc_iso(datetime.fromisoformat(end) - timedelta(days=LOOKBACK_DAYS))
+        in_window = sum(1 for f in filings.get('filings', [])
+                        if f['form'] == '4' and f['published_at'] and start < f['published_at'] <= end)
+        print(f"  Form 4 filings ingested ({LOOKBACK_DAYS + INGEST_MARGIN_DAYS}d): {n_filings} (parsed {n_parsed}); "
+              f"in the {LOOKBACK_DAYS}-day window: {in_window}")
         print(f"  Open-market buys:  {summary['insider_buys']} "
               f"({summary['distinct_buyers']} insiders, {summary['buy_value_usd']:,.0f} USD)")
         print(f"  Open-market sells: {summary['insider_sells']} "
@@ -269,8 +274,10 @@ class InsiderTracker:
             'ticker': ticker,
             'status': status,
             'source': 'SEC Form 4',
-            'form4_filings_window': n_filings,
-            'form4_parsed': n_parsed,
+            'form4_filings_window': in_window,                    # filings in the scored 90-day window
+            'form4_filings_ingested': n_filings,                  # documents listed in the ingest window
+            'form4_parsed': n_parsed,                             # of those, read
+            'ingest_window_days': LOOKBACK_DAYS + INGEST_MARGIN_DAYS,
             'failures': failures[:5],
             'warning': (f'{len(failures)} Form 4 document(s) could not be read; '
                         'score computed from the others') if failures else None,

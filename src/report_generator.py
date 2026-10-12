@@ -213,8 +213,10 @@ class ReportGenerator:
 
         ins = m.get('insider', {})
         out.append('<h3>Insider activity (SEC Form 4)</h3><table>'
-                   f"<tr><td>Form 4 filings / parsed ({cell(ins.get('window_days'))}d)</td>"
-                   f"<td>{cell(ins.get('form4_filings_window'))} / {cell(ins.get('form4_parsed'))}</td></tr>"
+                   f"<tr><td>Form 4 filings in the scored window ({cell(ins.get('window_days'))}d)</td>"
+                   f"<td>{cell(ins.get('form4_filings_window'))}</td></tr>"
+                   f"<tr><td>Form 4 documents ingested / read ({cell(ins.get('ingest_window_days'))}d)</td>"
+                   f"<td>{cell(ins.get('form4_filings_ingested'))} / {cell(ins.get('form4_parsed'))}</td></tr>"
                    f"<tr><td>Open-market buys</td><td>{cell(ins.get('insider_buys'))} "
                    f"({cell(ins.get('distinct_buyers'))} insiders, {cell(ins.get('buy_value_usd'), ',.0f')} USD)</td></tr>"
                    f"<tr><td>Open-market sells</td><td>{cell(ins.get('insider_sells'))} "

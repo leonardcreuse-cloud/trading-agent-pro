@@ -22,9 +22,11 @@ Protocol (fixed before results; see factors.py for hypotheses):
 Nothing is selected on historical return: every pre-registered test is reported.
 """
 
+import hashlib
 import json
 import math
 import pickle
+import re
 from datetime import date
 
 import numpy as np
@@ -209,9 +211,25 @@ def walk_forward_models(rows, horizon, calendar, benchmark, names, features=FEAT
 
 # ---------------------------------------------------------------- run
 
+def results_paths(stage, recalc=None):
+    """
+    (json, md) result paths. The original (pre-registered) results of a stage are written once and never
+    overwritten: a later run must carry a recalculation label and goes to research_stage<N>_recalc_<label>.*,
+    so the original experiment stays distinguishable from results recomputed after a data fix.
+    """
+    if recalc is None:
+        return reports_dir() / f'research_stage{stage}.json', reports_dir() / f'research_stage{stage}.md'
+    if not re.fullmatch(r'[A-Za-z0-9-]{1,40}', recalc):
+        raise ValueError('recalculation label: 1-40 letters, digits or dashes')
+    base = f'research_stage{stage}_recalc_{recalc}'
+    return reports_dir() / f'{base}.json', reports_dir() / f'{base}.md'
+
+
 class Study:
-    def __init__(self, stage=1, db=None):
+    def __init__(self, stage=1, db=None, recalc=None):
         self.stage = stage
+        self.recalc = recalc
+        self.out, self.md = results_paths(stage, recalc)
         self.db = db or Database()
         self.features = features_for(stage)
         self.cache = data_dir() / 'research' / f'panel_stage{stage}.pkl'
@@ -258,7 +276,17 @@ class Study:
             pickle.dump(cached, fh)
         return cached, universe
 
+    def check_writable(self):
+        """Refuse (before any work) to replace existing results; see results_paths()."""
+        if self.out.exists():
+            raise FileExistsError(
+                f'{self.out.name} already exists: stage {self.stage} results are never overwritten. '
+                + ('Run a labelled recalculation instead: python main.py research --stage '
+                   f'{self.stage} --recalc <label> (written to research_stage{self.stage}_recalc_<label>.json).'
+                   if self.recalc is None else 'Choose another recalculation label.'))
+
     def run(self, rebuild=False):
+        self.check_writable()
         panel, universe = self.panel(rebuild)
         rows, calendar, benchmark = panel['rows'], panel['calendar'], panel['benchmark']
         dates = by_date(rows)
@@ -349,10 +377,20 @@ class Study:
             'ticker_info': panel['info'],
         }
         report['conclusion'] = conclusion(report)
-        out = reports_dir() / f'research_stage{self.stage}.json'
-        out.write_text(redact(json.dumps(report, indent=1, default=str)), encoding='utf-8')
+        if self.recalc is not None:
+            original, _ = results_paths(self.stage)
+            report['recalculation'] = {
+                'label': self.recalc,
+                'original_file': original.name,
+                'original_sha256': hashlib.sha256(original.read_bytes()).hexdigest() if original.exists() else None,
+                'note': 'Recalculated after the original run; NOT the pre-registered confirmatory result, which '
+                        'stays in the original file and its committed results document.'}
+        self.check_writable()
+        out = self.out
+        with open(out, 'x', encoding='utf-8') as fh:                # never overwrite
+            fh.write(redact(json.dumps(report, indent=1, default=str)))
         print_summary(report)
-        md = write_markdown(report, reports_dir() / f'research_stage{self.stage}.md')
+        md = write_markdown(report, self.md)
         print(f"\n  Results: {out}\n  Summary: {md}")
         return report
 
@@ -419,8 +457,13 @@ def write_markdown(report, path):
     """Human-readable results (every pre-registered test, nothing filtered by performance)."""
     s, u = report['sample'], report['universe']
     lines = [f"# Research study — stage {report['stage']} results", '',
-             f"Computed {report['computed_at']}. Generated from `reports/research_stage{report['stage']}.json` "
-             "by `src/research/experiment.py`; the protocol is fixed in code before results.", '',
+             f"Computed {report['computed_at']}. Generated from `reports/{path.with_suffix('.json').name}` "
+             "by `src/research/experiment.py`; the protocol is fixed in code before results.", '']
+    if report.get('recalculation'):
+        r = report['recalculation']
+        lines += [f"**Recalculation `{r['label']}`** — {r['note']} Original: `reports/{r['original_file']}` "
+                  f"(sha256 {r['original_sha256']}).", '']
+    lines += [
              '## Conclusion', ''] + [f'- {c}' for c in report['conclusion']] + [
              '', '## Sample', '',
              f"- Universe: {u['rule']}.",

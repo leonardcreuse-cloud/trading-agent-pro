@@ -303,9 +303,35 @@ def yfinance_calendar(ticker):
     return yfinance.Ticker(ticker).calendar
 
 
+def _recent_call(db, endpoint, since):
+    """The latest logged yfinance calendar call of `endpoint` completed at or after `since` (any status), as
+    {'status', 'value', 'reason', 'fetch', 'reused': True}, or None. Reusing it (as the FRED calendar is reused)
+    keeps reports generated within REUSE_HOURS identical instead of depending on a repeated live call."""
+    if not hasattr(db, 'connect') or not hasattr(db, 'read_raw'):
+        return None
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM source_fetches WHERE source=? AND endpoint=? AND completed_at >= ? "
+                           "ORDER BY completed_at DESC, fetch_id DESC LIMIT 1", (YF_SOURCE, endpoint, since)).fetchone()
+    if not row:
+        return None
+    fetch = {'fetch_id': row['fetch_id'], 'source': YF_SOURCE, 'retrieved_at': row['completed_at']}
+    if row['status'] != 'OK':
+        return {'status': DATA_UNAVAILABLE, 'value': None, 'reason': row['error'], 'fetch': fetch, 'reused': True}
+    try:
+        value = json.loads(db.read_raw(row['fetch_id']))
+    except (RuntimeError, ValueError, TypeError, OSError):
+        return None
+    return {'status': 'OK', 'value': value, 'reason': None, 'fetch': fetch, 'reused': True}
+
+
 def _earnings_calendar(ctx, ticker, calendar_fn):
-    """{'status', 'value', 'reason', 'fetch'}; an empty result is DATA UNAVAILABLE."""
+    """{'status', 'value', 'reason', 'fetch'}; an empty result is DATA UNAVAILABLE. A call logged less than
+    REUSE_HOURS before G is reused (no second live call)."""
     endpoint = f'yfinance.Ticker({ticker}).calendar'
+    since = to_utc_iso(datetime.fromisoformat(ctx.tm.generated_at) - timedelta(hours=REUSE_HOURS))
+    reused = _recent_call(ctx.db, endpoint, since)
+    if reused is not None:
+        return reused
     value, error = None, None
     try:
         value = calendar_fn(ticker)

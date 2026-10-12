@@ -830,16 +830,28 @@ def test_catalysts_without_key_or_with_http_error(monkeypatch):
 
 
 def test_catalysts_earnings_calendar_empty_or_failing_is_unavailable(monkeypatch):
-    out = run_cat(cat_ctx(), calendar_fn=no_calendar)
+    db = isolated_database()
+
+    def age_calls():                                    # older than REUSE_HOURS: the next run calls again
+        with db.connect() as conn:
+            conn.execute("UPDATE source_fetches SET requested_at = '2000-01-01T00:00:00+00:00', "
+                         "completed_at = '2000-01-01T00:00:00+00:00' "
+                         "WHERE endpoint LIKE 'yfinance.Ticker(%'")
+    out = run_cat(cat_ctx(db=db), calendar_fn=no_calendar)
     r = {u['item']: u['reason'] for u in out['unavailable'] if u['scope'] == 'AAA'}
     assert 'empty result' in r['next earnings date'] and 'not as "none"' in r['next earnings date']
 
     def boom(_t):
         raise ConnectionError('crumb host blocked')
-    out = run_cat(cat_ctx(), calendar_fn=boom)
+    out = run_cat(cat_ctx(db=db), calendar_fn=boom)                   # within REUSE_HOURS: the logged call is reused
+    r = {u['item']: u['reason'] for u in out['unavailable'] if u['scope'] == 'AAA'}
+    assert 'empty result' in r['next earnings date']
+    age_calls()
+    out = run_cat(cat_ctx(db=db), calendar_fn=boom)
     r = {u['item']: u['reason'] for u in out['unavailable'] if u['scope'] == 'AAA'}
     assert 'ConnectionError' in r['next earnings date']
-    out = run_cat(cat_ctx(), calendar_fn=lambda _t: {'Earnings Date': [date(2026, 10, 20)]})
+    age_calls()
+    out = run_cat(cat_ctx(db=db), calendar_fn=lambda _t: {'Earnings Date': [date(2026, 10, 20)]})
     t = next(t for t in out['tables'] if t['title'].startswith('AAA — company catalysts'))
     row = next(r for r in t['rows'] if r[0] == 'next earnings date')
     assert row[1].startswith('REPORTED') and row[3] == '2026-10-20'

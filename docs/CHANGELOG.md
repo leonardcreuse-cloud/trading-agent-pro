@@ -1,5 +1,15 @@
 # Changelog
 
+## M-P2 — Master mission, phase P2: technical analysis and sentiment (2026-10-12)
+
+Details and live results: `docs/MISSION_STATUS.md`.
+- `src/technicals.py` (reference indicators and objective price action) and a weekly `technicals` section;
+  OHLC stored; audit checks for bars, calendar, volumes, adjustments and splits (yfinance vs SEC).
+- The unvalidated news lexicon is removed from the combined signal (descriptive only); news clusters get event
+  classes, materiality and novelty; options get skew, term slope and an IV percentile (unavailable until a year
+  of snapshots).
+- Tests 514 → 530.
+
 ## M-P1 — Master mission, phase P1: fundamentals, valuation, macro, commodities (2026-10-12)
 
 Details and live results: `docs/MISSION_STATUS.md`.

@@ -148,3 +148,74 @@ a pre-declared keyword map (interpretation); no headline becomes a signal.
 - Company guidance and issuer-announced earnings dates in 8-K exhibits are not parsed.
 - EV excludes minority interests, preferred stock and leases.
 - The DCF treats FCF as free cash flow to equity and ignores net borrowing.
+
+## P2 — Technical analysis and sentiment (2026-10-12)
+
+### Files
+- New: `src/technicals.py`, `src/weekly/sections/technicals.py`, `tests/test_p62_technicals.py`.
+- Changed:
+  - `src/market_data.py`: adjusted open, high and low kept and stored.
+  - `src/pipeline_audit.py`: market-data checks.
+  - `src/external_sources.py`: option skew and term structure.
+  - `src/weekly/sections/positioning.py`, `news.py`, `quant.py`; `src/weekly/report.py`.
+  - `src/scoring_signal_fixed.py`: news removed from the combined signal.
+
+### Regression risk handled
+`src/indicators.py`, the frozen heuristic's RSI / MACD / Bollinger, is unchanged: the new indicators are a
+separate module. Price-feed columns were added; `close` is unchanged.
+
+### What exists now
+
+**Technical indicators** (reference implementations, warm-up values undefined, no filled bars):
+- Moving averages: SMA and EMA 20/50/200.
+- Oscillators and bands: Wilder RSI, MACD 12/26/9, Bollinger 20/2 (population standard deviation).
+- Wilder ATR and ADX.
+- Volatility: 20- and 60-day historical.
+- Momentum: 1/3/6/12 months and 12-1.
+- Drawdowns, relative volume, relative strength against SPY and against the sector ETF.
+- A trend rule with persistence.
+
+**Price action** (objective rules):
+- Swing pivots, known only k bars later, so no look-ahead.
+- Support and resistance from pivots clustered within half an ATR.
+- 55-session breakouts, the 52-week range, the volatility regime (HV20 percentile over 3 years), five
+  candle patterns.
+- Dow theory, Elliott waves and SMC/ICT: NOT IMPLEMENTED (not reproducible).
+
+**Market-data validation** (audit):
+- OHLC consistency, sessions missing against the SPY calendar, zero volumes.
+- Jumps in the adjusted/unadjusted ratio.
+- yfinance splits checked against jumps in the SEC cover-page share count. Live: the CRWD 4:1 split (2026)
+  and NVDA's 2021 and 2024 splits matched.
+
+**Sentiment**:
+- The word lexicon could not be validated: Hugging Face is blocked and third-party repositories are out of
+  scope, so no labelled financial text was available. It also has no negation handling and uses ambiguous
+  words.
+- It is now descriptive only and **no longer part of the combined signal**. The daily signal is the ex-news
+  variant, the one the walk-forward evaluated and stage 3 records. Weights and thresholds are unchanged.
+
+**News**: per story cluster, pre-declared event classes, a materiality per class, and novelty against the
+previous window's stored query. The existing deduplication (canonical URL, normalised titles, clusters)
+is kept.
+
+**Options**:
+- New: skew (90% put IV minus 110% call IV at about 30 days) and term slope.
+- ATM quotes must be within 5% of spot. Outside US hours Yahoo returns zero bid/ask, and those quotes are
+  refused.
+- IV percentile: DATA UNAVAILABLE until 252 daily snapshots exist (no historical option source).
+- Already present: COT, put/call, short interest with days to cover, VIX.
+
+### Tests and live results
+- Tests: 530 passed. Indicators are checked against hand-computed values: the Wilder RSI of the classic
+  20-close example, ATR, the seeded EMA, Bollinger, historical volatility.
+- Weekly report v7 for 2026-10-09: 14 sections, none failed.
+- Live CRWD on 2026-10-09: RSI 64.9, 3-month momentum +46%, trend rule "up" with a strong ADX, volatility
+  regime normal (80th percentile).
+
+### Remaining after P2
+- Sentiment validation needs a labelled dataset reachable under the network policy.
+- The IV percentile needs a year of snapshots.
+- Option skew is only measured from snapshots taken while quotes are live (the evening run).
+- A second independent price source (Stooq, Alpha Vantage) is blocked: only the SPY / FRED SP500
+  cross-check exists.

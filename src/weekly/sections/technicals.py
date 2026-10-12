@@ -54,6 +54,10 @@ def _shown(key, v):
     return round(v * 100, 2) if key in PCT_KEYS else round(v, 4) if abs(v) < 10 else round(v, 2)
 
 
+def _day(d):
+    return d.date().isoformat() if hasattr(d, 'date') else str(d)[:10]
+
+
 def build(ctx, tickers=None):
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
@@ -124,6 +128,10 @@ def build(ctx, tickers=None):
                                   'no resistance above'))
         if pa.get('breakout'):
             desc.append(f"close {pa['breakout']}")
+        rt = pa.get('retracement')
+        if rt:
+            desc.append(f"{rt['retraced_pct']:.0f}% of the last {rt['leg']} swing retraced ({_day(rt['from'][0])} "
+                        f"{rt['from'][1]:.2f} -> {_day(rt['to'][0])} {rt['to'][1]:.2f}; confirmed pivots, k = 5)")
         if pa.get('candles'):
             desc.append('last bar: ' + ', '.join(pa['candles']))
         if desc:

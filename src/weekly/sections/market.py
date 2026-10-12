@@ -40,6 +40,7 @@ from datetime import date
 
 import pandas as pd
 
+from ...database import source_rank
 from ...macro_fred import SP500_BASIS
 from ...market_data import session_close_utc
 from ..core import SectionResult, conclude, evidence, unavailable
@@ -392,6 +393,56 @@ def _sp500_crosscheck(ctx, res, bench_name, bench, bench_px, s_m5, s0):
     return {'exact': exact, 'agree': agree, 'fred_r': fred_r, 'items': items, 'row': row}
 
 
+SECOND_SOURCE_SESSIONS = 21
+SECOND_SOURCE_TOL = 0.005
+
+
+def _second_source(ctx, res, tickers):
+    """
+    yfinance close_raw vs Cboe delayed daily closes (both split-adjusted as served), the last SECOND_SOURCE_SESSIONS
+    sessions up to s_0 stored and known at T_c. Both redistribute the same exchange closing prices: agreement checks
+    the data pipelines, it is not an independent originator, so no evidence level is raised by it.
+    """
+    from ...external_sources import CBOE_HISTORY_SOURCE
+    if not hasattr(ctx, 'db') or not hasattr(ctx.db, 'series'):
+        return
+    tm = ctx.tm
+    rows, checked, differing, items = [], [], [], []
+    for t in tickers:
+        yf = {d: r['value'] for d, r in ctx.db.series(t, 'close_raw', known_at=tm.cutoff, source='yfinance') if d <= tm.s0}
+        cb_rows = {d: r for d, r in ctx.db.series(t, 'close', known_at=tm.cutoff, source=CBOE_HISTORY_SOURCE)
+                   if d <= tm.s0}
+        common = sorted(d for d in yf if d in cb_rows)[-SECOND_SOURCE_SESSIONS:]
+        if not common:
+            rows.append([t, 0, None, None, 'no Cboe close stored and known at T_c'])
+            continue
+        diffs = {d: yf[d] / cb_rows[d]['value'] - 1 for d in common}
+        bad = [d for d, v in diffs.items() if abs(v) > SECOND_SOURCE_TOL]
+        worst = max(abs(v) for v in diffs.values())
+        rows.append([t, len(common), round(worst * 100, 4), len(bad), ', '.join(bad[:5]) or None])
+        checked.append(t)
+        if bad:
+            differing.append(t)
+        last = cb_rows[common[-1]]
+        items.append(evidence(tm, CBOE_HISTORY_SOURCE, source_rank(CBOE_HISTORY_SOURCE),
+                              f'{t}: Cboe delayed close {last["value"]:g} on {common[-1]}', as_of=common[-1],
+                              published_at=last['published_at'], retrieved_at=last['retrieved_at'],
+                              fetch_id=last['fetch_id'], basis=last['published_at_basis']))
+    res.table(f'Second price source: yfinance vs Cboe delayed closes (last {SECOND_SOURCE_SESSIONS} sessions to s_0)',
+              ['ticker', 'sessions compared', 'largest |difference| %', f'sessions above {SECOND_SOURCE_TOL:.1%}',
+               'dates'], rows, question=Q,
+              note='Both sources redistribute the exchanges\' closing prices (split-adjusted as served): agreement '
+                   'checks the pipelines and catches transcription or adjustment errors; it is not an independent '
+                   'originator and raises no evidence level. Full history check: python main.py audit.')
+    if checked:
+        res.add(conclude('overall', Q, f'Second price source: yfinance closes agree with Cboe within '
+                                       f'{SECOND_SOURCE_TOL:.1%} on the last {SECOND_SOURCE_SESSIONS} sessions for '
+                                       f'{len(checked) - len(differing)} of {len(checked)} tickers compared'
+                                       + (f"; differences for {', '.join(differing)}" if differing else '')
+                                       + '. A pipeline check, not an independent originator.', items[:5],
+                         'system_output'))
+
+
 def build(ctx):
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
@@ -465,6 +516,7 @@ def build(ctx):
     else:
         res.add(unavailable('overall', Q, 'equal-weight universe weekly return',
                             'no ticker of the universe has adjusted closes for both s_-5 and s_0'))
+    _second_source(ctx, res, [bench_name] + [t for t in ctx.universe if t != bench_name])
     res.notes.append(f'Week {s_m5} close -> {s0} close; cutoff {tm.cutoff}; benchmark {bench_name}; thresholds '
                      f'{thresholds_version(ctx)}. Company price facts have a single rank-2 source '
                      '(yfinance): UNCERTAIN by rule. Timing only, no causal link is asserted.')

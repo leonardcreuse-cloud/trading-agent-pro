@@ -77,12 +77,22 @@ class Context:
                 got = {d.date().isoformat(): float(r) for d, r in events.items()} if events is not None else {}
                 fetch = self.db.record_fetch('yfinance', f'yfinance.Ticker({ticker}).splits', status='OK',
                                              raw=json.dumps(got, sort_keys=True), raw_ext='json', n_records=len(got))
-                self._splits[ticker] = {'status': 'OK', 'splits': {d: r for d, r in got.items() if d <= self.tm.s0},
+                listed = {d: r for d, r in got.items() if d <= self.tm.s0}
+                self._splits[ticker] = {'status': 'OK', 'splits': listed, 'implied': self._implied_splits(ticker, listed),
                                         'fetch': fetch, 'reason': None}
             except Exception as e:  # noqa: BLE001 - reported, never filled
                 self._splits[ticker] = {'status': DATA_UNAVAILABLE, 'splits': None, 'fetch': None,
                                         'reason': redact(f'yfinance splits: {type(e).__name__}: {e}')}
         return self._splits[ticker]
+
+    def _implied_splits(self, ticker, listed):
+        """Splits implied by the Cboe / yfinance close ratio (valuation.implied_splits), stored values known at T_c."""
+        from ..external_sources import CBOE_HISTORY_SOURCE
+        from ..valuation import implied_splits
+        series = {src: {d: r['value'] for d, r in self.db.series(ticker, metric, known_at=self.tm.cutoff, source=src)
+                        if d <= self.tm.s0}
+                  for src, metric in (('yfinance', 'close_raw'), (CBOE_HISTORY_SOURCE, 'close'))}
+        return implied_splits(series['yfinance'], series[CBOE_HISTORY_SOURCE], listed)
 
     # ------------------------------------------------------------------ FRED
 

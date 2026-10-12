@@ -1,0 +1,5 @@
+# Development and verification only (not needed to run the system).
+# stockstats: independent reference implementation of RSI, MACD, ATR, Bollinger, DI / DX,
+# used by tests/test_p73_reference_indicators.py (skipped when absent).
+stockstats==0.6.2
+pytest

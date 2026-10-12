@@ -53,6 +53,8 @@ SOURCES = {
     'CFTC': {'rank': 1, 'kind': 'official statistics (U.S. Commodity Futures Trading Commission, COT)'},
     'FINRA': {'rank': 1, 'kind': 'self-regulatory organisation data (FINRA equity short interest)'},
     'Cboe': {'rank': 1, 'kind': 'exchange operator statistics (Cboe-listed volume only)'},
+    'Cboe delayed quotes': {'rank': 2, 'kind': 'delayed daily bars redistributed by an exchange operator '
+                                                '(split-adjusted as served); second price source for cross-checks'},
     'Federal Reserve Board': {'rank': 1, 'kind': 'official central bank publication (FOMC calendar)'},
     'BLS': {'rank': 1, 'kind': 'official statistics agency (U.S. Bureau of Labor Statistics)'},
     'BEA': {'rank': 1, 'kind': 'official statistics agency (U.S. Bureau of Economic Analysis)'},

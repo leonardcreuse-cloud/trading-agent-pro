@@ -79,6 +79,23 @@ SHARE_COUNT_SUSPECT = 'possible split or large issuance'
 SPLIT_MATCH_TOL = 0.15          # split ratio vs share-count ratio (issuance / buybacks in between), as in the audit
 
 
+def implied_splits(yf_closes, cboe_closes, yf_splits=None, jump=SPLIT_SUSPECT_PCT / 100):
+    """
+    Splits implied by a step in the ratio Cboe close / yfinance close_raw between consecutive common sessions
+    (both are split-adjusted as served, so the ratio is flat unless the two disagree on an adjustment).
+    {date: ratio}: the yfinance split of that date (1 when none) x ratio after / ratio before, in the yfinance
+    convention (new shares per old share). Only steps of at least `jump` count.
+    """
+    yf_splits = yf_splits or {}
+    days = sorted(d for d in yf_closes if d in cboe_closes and yf_closes[d] and cboe_closes[d])
+    out = {}
+    for a, b in zip(days, days[1:]):
+        r1, r2 = cboe_closes[a] / yf_closes[a], cboe_closes[b] / yf_closes[b]
+        if abs(r2 / r1 - 1) >= jump:
+            out[b] = round(yf_splits.get(b, 1.0) * r2 / r1, 6)
+    return out
+
+
 def split_explained(X, splits):
     """
     True when the yearly change of the cover-page share count in X equals (within SPLIT_MATCH_TOL) the product of

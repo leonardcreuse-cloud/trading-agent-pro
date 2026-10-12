@@ -44,6 +44,8 @@ FORMAT_CHECK_EXCLUDE = ('/fred/release/dates',)
 BENCHMARK = 'SPY'
 OHLC_TOLERANCE = 0.005          # adjusted OHLC from Yahoo can disagree by rounding
 ADJUSTMENT_JUMP = 0.02          # adjusted / unadjusted ratio step larger than a usual dividend
+CROSS_SOURCE_TOL = 0.005        # yfinance vs Cboe close (both split-adjusted as served): 0.5 %
+CROSS_SOURCE_SESSIONS = 252
 SPLIT_JUMP = 0.40               # cover-page share count change between filings suggesting a split
 SPLIT_RATIO_TOL = 0.15          # split ratio vs share-count ratio (issuance / buybacks in between)
 LABEL_SAMPLE = 2          # filings per ticker whose acceptance time is re-checked on the EDGAR index page
@@ -178,6 +180,84 @@ class PipelineAudit:
                              'adjustment to check)', WARN if big else PASS, f'{len(big)}', big[:10]))
         return out
 
+    def identifier_check(self, ticker):
+        """
+        Identifier changes (master mission 4.1): the ticker must still resolve to a CIK in the SEC ticker file, and every
+        stored SEC company-facts / submissions fetch for this ticker must come from that same CIK (a reassigned
+        ticker would mix two companies under one name). Name changes of the last 5 years (submissions 'formerNames')
+        are reported for information.
+        """
+        import re as _re
+        name = 'identifiers: ticker -> SEC CIK'
+        cik = self.sec.get_cik(ticker)
+        with self.db.connect() as conn:
+            endpoints = [r[0] for r in conn.execute(
+                "SELECT DISTINCT f.endpoint FROM observations o JOIN source_fetches f ON o.fetch_id = f.fetch_id "
+                "WHERE o.entity = ? AND o.source = ? AND (f.endpoint LIKE '%companyfacts%' OR f.endpoint LIKE "
+                "'%submissions%')", (ticker, SEC_SOURCE))]
+        stored = sorted({m for e in endpoints for m in _re.findall(r'CIK(\d{10})', e)})
+        if cik is None:
+            return check(name, WARN, 'ticker not in the current SEC ticker file (delisted, renamed or not an SEC '
+                                     f"registrant); stored SEC data came from CIK {', '.join(stored) or 'none'}")
+        problems = [f'stored SEC data from CIK {c}, while the ticker now resolves to {cik}' for c in stored if c != cik]
+        renamed = []
+        data = self.sec._get_json(f'{self.sec.SEC_API}/submissions/CIK{cik}.json', max_age=timedelta(days=7))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=5 * 365)).date().isoformat()
+        for f in (data or {}).get('formerNames') or []:
+            if (f.get('to') or '')[:10] >= cutoff:
+                renamed.append(f"formerly '{f.get('name')}' until {(f.get('to') or '')[:10]}")
+        return check(name, WARN if problems else PASS,
+                     f"CIK {cik}; stored SEC data from {len(stored)} CIK(s)"
+                     + (f"; name changes in 5 years: {'; '.join(renamed)}" if renamed else ''), problems)
+
+    def second_source_check(self, ticker):
+        """
+        Stored yfinance closes (close_raw: split-adjusted, not dividend-adjusted) vs stored Cboe delayed daily closes
+        (split-adjusted as served) over the last CROSS_SOURCE_SESSIONS common sessions: sessions differing by more
+        than CROSS_SOURCE_TOL, and sessions present in one source only inside the common date range. Both
+        redistribute the same exchange closing prices: agreement checks the pipelines, not an independent
+        originator.
+        """
+        from .external_sources import CBOE_HISTORY_SOURCE
+        name = 'second price source: yfinance vs Cboe closes'
+        yf = {d: r['value'] for d, r in self.db.series(ticker, 'close_raw', source='yfinance')}
+        cb = {d: r['value'] for d, r in self.db.series(ticker, 'close', source=CBOE_HISTORY_SOURCE)}
+        if not yf or not cb:
+            return check(name, WARN, f"no stored {'Cboe' if yf else 'yfinance'} closes (python main.py collect / analyze)")
+        lo, hi = max(min(yf), min(cb)), min(max(yf), max(cb))
+        common = sorted(d for d in yf if d in cb and lo <= d <= hi)[-CROSS_SOURCE_SESSIONS:]
+        if not common:
+            return check(name, WARN, 'no common session')
+        start = common[0]
+        diffs = [(d, yf[d] / cb[d] - 1) for d in common if cb[d]]
+        bad = [f'{d}: yfinance {yf[d]:g} vs Cboe {cb[d]:g} ({v:+.2%})' for d, v in diffs if abs(v) > CROSS_SOURCE_TOL]
+        only_yf = [d for d in yf if start <= d <= hi and d not in cb]
+        only_cb = [d for d in cb if start <= d <= hi and d not in yf]
+        worst = max((abs(v) for _, v in diffs), default=0.0)
+        from .valuation import implied_splits
+        steps = implied_splits(yf, cb, self._yf_splits(ticker))
+        problems = ([f'{d}: the close ratio steps; Cboe implies a split of {r:g} that yfinance does not list'
+                     for d, r in steps.items()] + bad[:5] + [f'{d}: yfinance only' for d in only_yf[:5]]
+                    + [f'{d}: Cboe only' for d in only_cb[:5]])
+        return check(name, WARN if problems else PASS,
+                     f'{len(common)} common sessions from {start} to {common[-1]}: {len(bad)} differ by more than '
+                     f'{CROSS_SOURCE_TOL:.1%} (largest {worst:.3%}); {len(only_yf)} yfinance-only, {len(only_cb)} '
+                     'Cboe-only sessions', problems[:10])
+
+    def _yf_splits(self, ticker):
+        """yfinance splits from the latest logged fetch of this audit run (split_check), else {}."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT fetch_id FROM source_fetches WHERE source='yfinance' AND endpoint=? AND "
+                               "status='OK' ORDER BY fetch_id DESC LIMIT 1",
+                               (f'yfinance.Ticker({ticker}).splits',)).fetchone()
+        if not row:
+            return {}
+        raw = self.db.read_raw_bytes(row['fetch_id'])
+        try:
+            return {d: float(r) for d, r in json.loads(raw).items()} if raw else {}
+        except (TypeError, ValueError):
+            return {}
+
     def split_check(self, ticker):
         """
         yfinance splits (rank 2) vs >= 40% jumps of the SEC cover-page share count (rank 1) since the SEC series.
@@ -221,16 +301,26 @@ class PipelineAudit:
         def matches(a, b, r, d, s):
             return a < d <= max(b, published[b]) and abs(s / r - 1) <= SPLIT_RATIO_TOL
         significant = {d: s for d, s in splits.items() if abs(s - 1) >= SPLIT_JUMP}
+        # splits implied by a step of the Cboe / yfinance close ratio (a split one source applied and the other did not)
+        from .external_sources import CBOE_HISTORY_SOURCE
+        from .valuation import implied_splits
+        implied = implied_splits({d: r['value'] for d, r in self.db.series(ticker, 'close_raw', source='yfinance')},
+                                 {d: r['value'] for d, r in self.db.series(ticker, 'close', source=CBOE_HISTORY_SOURCE)},
+                                 splits)
+        matched_implied = [f'{d}: SEC share-count jump matched by the split {s:g} implied by Cboe (yfinance does not '
+                           'list it)' for d, s in implied.items()
+                           if any(matches(a, b, r, d, s) for a, b, r in real)]
         unexplained = [f'{a} -> {b}: x{r:.2f} with no yfinance split in between' for a, b, r in real
-                       if not any(matches(a, b, r, d, s) for d, s in significant.items())]
+                       if not any(matches(a, b, r, d, s) for d, s in {**significant, **implied}.items())]
         unmatched = [f'{d}: split {s:g} with no matching SEC share-count jump' for d, s in significant.items()
                      if dates[0] < d <= dates[-1] and not any(matches(a, b, r, d, s) for a, b, r in real)]
         problems = unexplained + unmatched
         small = len(splits) - len(significant)
-        return check(name, WARN if problems or one_filing else PASS,
+        return check(name, WARN if problems or one_filing or matched_implied else PASS,
                      f'{len(real)} share-count jump(s), {len(significant)} yfinance split(s) of 40% or more '
                      f'({small} smaller adjustment(s) not compared); {len(problems)} not matched; {len(one_filing)} '
-                     'one-filing outlier(s)', (problems + one_filing)[:10])
+                     f'one-filing outlier(s); {len(matched_implied)} matched only by a Cboe-implied split',
+                     (problems + matched_implied + one_filing)[:10])
 
     # ------------------------------------------------------------------ SEC
 
@@ -381,7 +471,9 @@ class PipelineAudit:
             checks = []
             # splits after sec: the SEC checks refresh the company facts, hence the cover-page share counts
             for name, func in (('prices', self.price_checks), ('sec', self.sec_checks),
-                               ('splits', lambda t: [self.split_check(t)]), ('sec labels', self.label_checks),
+                               ('splits', lambda t: [self.split_check(t)]),
+                               ('second source', lambda t: [self.second_source_check(t)]),
+                               ('identifiers', lambda t: [self.identifier_check(t)]), ('sec labels', self.label_checks),
                                ('insider', self.insider_checks)):
                 try:
                     checks += [dict(c, group=name) for c in func(ticker)]

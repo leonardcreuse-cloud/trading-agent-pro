@@ -37,6 +37,10 @@ Price action (objective rules)
                       = highest level below the close, resistance = lowest level above it (estimates, not prices
                       that will hold)
   breakout(55)        close above the highest high of the previous 55 sessions / below the lowest low
+  retracement         last completed swing = the latest confirmed pivot and the opposite pivot before it (k = 5);
+                      retraced % = share of that leg given back by the close: up leg (high - close) / (high - low),
+                      down leg (close - low) / (high - low); 0 = at the leg's end, 100 = back at its start, > 100
+                      beyond it. Measured only; Fibonacci ratios are conventions and are not used as levels
   range_position      52-week (252-session) high and low of the closes and the distance of the close to each
   volatility regime   percentile of HV20 within its values over the last 756 sessions: < 20 low, > 80 high, else
                       normal (at least 252 values required)
@@ -233,6 +237,19 @@ def levels(points, tolerance):
     return [{'level': float(np.mean(c['prices'])), 'touches': len(c['prices']), 'last': c['last']} for c in out]
 
 
+def retracement(points, close):
+    """{'leg', 'from': (date, price), 'to': (date, price), 'retraced_pct'} of the last completed swing, or None."""
+    pts = sorted(points, key=lambda p: p[0])
+    if not pts:
+        return None
+    last = pts[-1]
+    prev = next((p for p in reversed(pts[:-1]) if p[1] != last[1]), None)
+    if prev is None or last[2] == prev[2]:
+        return None
+    return {'leg': 'up' if last[1] == 'high' else 'down', 'from': (prev[0], prev[2]), 'to': (last[0], last[2]),
+            'retraced_pct': round((last[2] - close) / (last[2] - prev[2]) * 100, 1)}
+
+
 def candle(o, h, l, c, prev=None):
     """Patterns of one bar (see module docstring); prev = (open, close) of the previous bar or None."""
     found = []
@@ -310,6 +327,8 @@ def analyze(frame, bench=None):
             pa['support'] = max(below, key=lambda x: x['level']) if below else None
             pa['resistance'] = min(above, key=lambda x: x['level']) if above else None
             pa['n_pivots'] = len(pts)
+        if pts:
+            pa['retracement'] = retracement(pts, float(close.iloc[-1]))
         if len(frame) > BREAKOUT_N:
             hh = float(high.iloc[-1 - BREAKOUT_N:-1].max())
             ll = float(low.iloc[-1 - BREAKOUT_N:-1].min())

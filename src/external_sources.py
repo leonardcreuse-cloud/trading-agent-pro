@@ -384,6 +384,69 @@ def collect_cboe(db, days):
                    '; '.join(problems) or None)
 
 
+# ---------------------------------------------------------------- Cboe delayed daily history (second price source)
+
+CBOE_HISTORY_SOURCE = 'Cboe delayed quotes'
+CBOE_HISTORY_URL = 'https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/{}.json'
+CBOE_HISTORY_BASIS = ('Cboe delayed daily bar (split-adjusted as served): public after the session; conservative '
+                      'end of the US trading day (05:00 UTC the next day)')
+CBOE_HISTORY_OVERLAP_DAYS = 45      # routine runs re-read this many days before the last stored bar (late fixes)
+
+
+def cboe_history_rows(ticker, payload, start):
+    """close / volume rows dated >= start (ISO) from a Cboe historical payload; malformed or non-positive values
+    are skipped, never filled. Values are revisable: Cboe re-adjusts its history after a split."""
+    rows = []
+    for r in (payload or {}).get('data') or []:
+        day = str(r.get('date') or '')[:10]
+        if len(day) != 10 or day < start:
+            continue
+        for metric, unit in (('close', 'USD'), ('volume', 'shares')):
+            v = _num(r.get(metric))
+            if v is not None and v > 0:
+                rows.append({'entity': ticker, 'metric': metric, 'as_of_date': day, 'value': v, 'unit': unit,
+                             'value_revisable': 1, 'published_at': end_of_us_trading_day_utc(day),
+                             'published_at_basis': CBOE_HISTORY_BASIS})
+    return rows
+
+
+def collect_cboe_history(db, tickers, since):
+    """Daily close / volume of each ticker since `since` (first run) or since the last stored bar minus
+    CBOE_HISTORY_OVERLAP_DAYS; the stored raw payload is the excerpt the rows were parsed from."""
+    stored, problems = 0, []
+    for t in tickers:
+        have = db.series(t, 'close', source=CBOE_HISTORY_SOURCE)
+        start = since if not have else max(since, date.fromisoformat(have[-1][0]) - timedelta(days=CBOE_HISTORY_OVERLAP_DAYS))
+        start_iso = start.isoformat()
+        parsed = {}
+
+        def excerpt(content, start_iso=start_iso, parsed=parsed):
+            try:
+                data = json.loads(content)
+            except ValueError:
+                parsed['error'] = 'payload is not JSON'
+                return content[:2000]
+            parsed['payload'] = {'symbol': data.get('symbol'), 'timestamp': data.get('timestamp'),
+                                 'data': [r for r in data.get('data') or [] if str(r.get('date') or '')[:10] >= start_iso]}
+            return json.dumps(parsed['payload'])
+        got = http_fetch(db, CBOE_HISTORY_SOURCE, CBOE_HISTORY_URL.format(t), raw=excerpt)
+        if got['status'] != 'OK':
+            problems.append(f"{t}: {got['reason']}")
+            if 'network policy' in (got['reason'] or ''):
+                break                     # a refused host refuses every ticker
+            continue
+        if 'payload' not in parsed:
+            problems.append(f"{t}: {parsed.get('error', 'unreadable payload')}")
+            continue
+        rows = cboe_history_rows(t, parsed['payload'], start_iso)
+        if not rows:
+            problems.append(f'{t}: no bar since {start_iso}')
+            continue
+        stored += db.upsert_observations(got['fetch'], rows)
+    return _result('cboe_price_history', 'OK' if not problems else DATA_UNAVAILABLE, stored,
+                   '; '.join(problems[:5]) or None)
+
+
 # ---------------------------------------------------------------- Federal Reserve FOMC calendar
 
 FED_SOURCE = 'Federal Reserve Board'
@@ -904,6 +967,8 @@ def collect_all(db=None, tickers=None, today=None, history_days=400):
     since = today - timedelta(days=history_days)
     recent = [today - timedelta(days=k) for k in range(15, 0, -1)]
     cboe_days = [d for d in (today - timedelta(days=k) for k in range(90, -1, -1)) if d.weekday() < 5]
+    from .common import validation_universe
+    price_tickers = sorted(set(tickers) | set(validation_universe()) | {'SPY'})
     jobs = [('cftc_cot', lambda: collect_cot(db, since)),
             ('finra_short_interest', lambda: collect_finra(db, tickers)),
             ('cboe_put_call', lambda: collect_cboe(db, cboe_days)),
@@ -917,7 +982,8 @@ def collect_all(db=None, tickers=None, today=None, history_days=400):
             ('gdelt_events', lambda: collect_gdelt(db, recent)),
             ('fred_release_calendars', lambda: collect_fred_calendars(db, today)),
             ('options_snapshot', lambda: collect_options(db, tickers)),
-            ('earnings_calendar', lambda: collect_earnings_calendars(db, tickers))]
+            ('earnings_calendar', lambda: collect_earnings_calendars(db, tickers)),
+            ('cboe_price_history', lambda: collect_cboe_history(db, price_tickers, since))]
     results = []
     for name, job in jobs:
         try:

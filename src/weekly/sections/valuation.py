@@ -205,11 +205,20 @@ def _split_note(ctx, ticker, X, R):
         return None
     sp = ctx.splits(ticker) if hasattr(ctx, 'splits') else {'splits': None, 'reason': 'no split accessor'}
     ok = split_explained(X, sp.get('splits'))
-    R['flags'].append('the change matches the split(s) in the price data (yfinance): market cap on one basis'
-                      if ok else 'no split of that ratio in the price data (yfinance): share count and price may '
-                                 'be on different bases' if ok is False else
-                      f"split data unavailable ({sp.get('reason') or 'no prior count'})")
-    return ok
+    implied = split_explained(X, sp.get('implied')) if not ok and sp.get('implied') else None
+    if ok:
+        R['flags'].append('the change matches the split(s) listed by yfinance: market cap on one basis')
+    elif implied:
+        R['flags'].append('yfinance lists no split of that ratio, but the step in the Cboe / yfinance close ratio '
+                          f"implies one ({', '.join(f'{d}: {r:g}' for d, r in sp['implied'].items())}), matching the "
+                          'SEC share count: market cap on one basis (yfinance split-adjusted history before that date '
+                          'is not)')
+    elif ok is False:
+        R['flags'].append('no split of that ratio in the price data (yfinance, Cboe): share count and price may be on '
+                          'different bases')
+    else:
+        R['flags'].append(f"split data unavailable ({sp.get('reason') or 'no prior count'})")
+    return ok or bool(implied)
 
 
 def build(ctx, tickers=None, history=True):

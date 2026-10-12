@@ -305,7 +305,8 @@ def test_collect_all_reports_every_source_without_raising(monkeypatch):
     assert [r['collector'] for r in results] == ['cftc_cot', 'finra_short_interest', 'cboe_put_call',
                                                  'fed_fomc_calendar', 'bls_schedules', 'bls_api', 'bea_nipa',
                                                  'eia_energy', 'federal_register', 'gpr_index', 'gdelt_events',
-                                                 'fred_release_calendars', 'options_snapshot', 'earnings_calendar']
+                                                 'fred_release_calendars', 'options_snapshot', 'earnings_calendar',
+                                                 'cboe_price_history']
     assert all(r['status'] == DATA_UNAVAILABLE and r['stored'] == 0 for r in results)
 
 

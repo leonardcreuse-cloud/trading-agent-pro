@@ -176,15 +176,17 @@ def test_audit_runs_the_split_check_after_the_sec_checks(monkeypatch):
     from src.pipeline_audit import PipelineAudit, check
     audit = PipelineAudit()
     calls = []
-    for name in ('price_checks', 'sec_checks', 'label_checks', 'insider_checks', 'split_check'):
+    singles = ('split_check', 'second_source_check', 'identifier_check')
+    for name in ('price_checks', 'sec_checks', 'label_checks', 'insider_checks') + singles:
         def record(ticker, name=name):
             calls.append(name)
-            return check(name, 'PASS', '') if name == 'split_check' else []
+            return check(name, 'PASS', '') if name in singles else []
         monkeypatch.setattr(audit, name, record)
     monkeypatch.setattr(audit, 'storage_checks', lambda: [])
     monkeypatch.setattr(audit, 'walk_forward_checks', lambda: [])
     audit.run(['AAA'])
-    assert calls == ['price_checks', 'sec_checks', 'split_check', 'label_checks', 'insider_checks']
+    assert calls == ['price_checks', 'sec_checks', 'split_check', 'second_source_check', 'identifier_check',
+                     'label_checks', 'insider_checks']
 
 
 def test_option_skew_and_term_structure():
@@ -225,3 +227,14 @@ def test_lexicon_is_descriptive_only_in_the_combined_signal():
     b = ScoringSignalFixed().analyze('X', {'technical_score': 60}, {'fundamental_score': 70}, {'news_score': 0},
                                      {'insider_score': 40})
     assert a['signal_strength'] == b['signal_strength'] and 'news' not in a['component_scores']
+
+
+def test_retracement_of_the_last_swing():
+    from src.technicals import retracement
+    pts = [(pd.Timestamp('2026-01-05'), 'low', 100.0), (pd.Timestamp('2026-02-02'), 'high', 150.0)]
+    up = retracement(pts, 125.0)
+    assert up['leg'] == 'up' and up['retraced_pct'] == 50.0 and up['from'][1] == 100.0 and up['to'][1] == 150.0
+    down = retracement(pts + [(pd.Timestamp('2026-03-02'), 'low', 110.0)], 120.0)
+    assert down['leg'] == 'down' and down['retraced_pct'] == 25.0                      # (120 - 110) / (150 - 110)
+    assert retracement(pts, 90.0)['retraced_pct'] == 120.0                             # beyond the leg's start
+    assert retracement(pts[:1], 100.0) is None and retracement([], 1.0) is None

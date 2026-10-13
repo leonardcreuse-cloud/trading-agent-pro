@@ -1,5 +1,15 @@
 # Changelog
 
+## HTTP 429 handling for external sources (2026-10-13)
+
+- Problem, first scheduled run on the PC: the Cboe CDN answered HTTP 429 (rate limit) for part of the 40
+  tickers of the second price source.
+- `src/external_sources.py`: an HTTP 429 is now retried after a pause. The pause is the server's `Retry-After`
+  (capped at 120 s) when given, otherwise 15, 30 and 60 s.
+- Calls to `cdn.cboe.com` are spaced 1.5 s apart.
+- A 429 that persists is still reported as DATA UNAVAILABLE.
+- Test: `test_rate_limit_is_waited_out_then_reported`.
+
 ## PT1 sector lookup fix (2026-10-12)
 
 - `src/paper.py` `_sector`: now reads the SIC code from `get_filings(...)['raw']['sic']`. Before this fix, every

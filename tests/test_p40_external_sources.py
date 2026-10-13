@@ -249,6 +249,31 @@ def test_dropped_connection_is_retried_once_but_not_a_proxy_refusal(monkeypatch)
     assert got['status'] == DATA_UNAVAILABLE and proxy.calls == 1 and 'network policy' in got['reason']
 
 
+def test_rate_limit_is_waited_out_then_reported(monkeypatch):
+    """Live 2026-10-13: the Cboe CDN answered HTTP 429 to part of the 40 tickers; a 429 is retried after a pause
+    (the server's Retry-After when given), and still reported DATA UNAVAILABLE when it persists."""
+    waits = []
+    monkeypatch.setattr(ex.time, 'sleep', waits.append)
+    monkeypatch.setattr(ex, '_throttle', lambda url: None)
+    db = Database()
+
+    class Limited:
+        def __init__(self, n_429, headers=None):
+            self.n_429, self.headers, self.calls = n_429, headers or {}, 0
+
+        def get(self, *a, **k):
+            self.calls += 1
+            return Resp('', status=429, headers=self.headers) if self.calls <= self.n_429 else Resp('{}')
+    once = Limited(1, {'Retry-After': '7'})
+    assert ex.http_fetch(db, 'Cboe', 'https://cdn.cboe.com/x.json', session=once)['status'] == 'OK'
+    assert once.calls == 2 and waits == [7.0]
+    waits.clear()
+    always = Limited(99)
+    got = ex.http_fetch(db, 'Cboe', 'https://cdn.cboe.com/x.json', session=always)
+    assert got['status'] == DATA_UNAVAILABLE and 'HTTP 429' in got['reason']
+    assert always.calls == 1 + len(ex.RATE_LIMIT_PAUSES) and waits == list(ex.RATE_LIMIT_PAUSES)
+
+
 def test_unchanged_values_keep_their_stored_publication():
     """Live 2026-10-11: the same GPR file came with two Last-Modified values, and Federal Register documents
     dated in the future were clamped to each retrieval; neither may create a new version."""

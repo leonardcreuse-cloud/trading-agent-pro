@@ -59,7 +59,9 @@ from .database import Database
 NEW_YORK = ZoneInfo('America/New_York')
 DEFAULT_TIMEOUT = 45
 RETRY_PAUSE = 2.0                 # seconds before the single retry of a dropped connection
-MIN_INTERVAL = {'publicreporting.cftc.gov': 1.0, 'api.finra.org': 1.0, 'www.cboe.com': 1.0,
+RATE_LIMIT_PAUSES = (15, 30, 60)  # seconds before each retry of an HTTP 429 (a server Retry-After, capped, wins)
+RATE_LIMIT_MAX_WAIT = 120
+MIN_INTERVAL = {'publicreporting.cftc.gov': 1.0, 'api.finra.org': 1.0, 'www.cboe.com': 1.0, 'cdn.cboe.com': 1.5,
                 'data.gdeltproject.org': 2.0, 'www.bls.gov': 1.0, 'api.bls.gov': 1.0, 'apps.bea.gov': 1.0}
 _LAST_CALL = {}
 
@@ -131,7 +133,15 @@ def endpoint_of(url, params=None, body=None):
     return out + ('#' + json.dumps(body, sort_keys=True) if body is not None else '')
 
 
-def _request(http, url, params, body, hdrs):
+def _rate_limit_wait(response, attempt):
+    """Seconds to wait after an HTTP 429: the server's Retry-After (seconds, capped) or the next fixed pause."""
+    try:
+        return min(max(float(response.headers.get('Retry-After')), 1.0), RATE_LIMIT_MAX_WAIT)
+    except (TypeError, ValueError):
+        return RATE_LIMIT_PAUSES[attempt]
+
+
+def _send(http, url, params, body, hdrs):
     """One GET / POST, retried once after a dropped connection or a timeout (never after a proxy refusal)."""
     for attempt in range(2):
         _throttle(url)
@@ -144,6 +154,16 @@ def _request(http, url, params, body, hdrs):
             if attempt or isinstance(e, ProxyError):
                 raise
             time.sleep(RETRY_PAUSE)
+
+
+def _request(http, url, params, body, hdrs):
+    """_send, and after an HTTP 429 (rate limit) wait and send again, at most len(RATE_LIMIT_PAUSES) times; the
+    last response is returned whatever its status."""
+    for attempt in range(len(RATE_LIMIT_PAUSES) + 1):
+        response = _send(http, url, params, body, hdrs)
+        if getattr(response, 'status_code', None) != 429 or attempt == len(RATE_LIMIT_PAUSES):
+            return response
+        time.sleep(_rate_limit_wait(response, attempt))
 
 
 def http_fetch(db, source, url, *, params=None, body=None, binary=False, raw_ext='json', raw=None,

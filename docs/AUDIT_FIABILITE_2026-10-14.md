@@ -98,8 +98,9 @@ Avec un rééquilibrage hebdomadaire, ces frais réels peuvent dépasser netteme
 5. **Augmenter réellement les chances de conclure.** Ce serait un nouveau protocole fixé à l'avance (« Stage 3b »),
    sans modifier le Stage 3 :
    - le même signal enregistré chaque semaine sur environ 500 titres au lieu de 40 ;
-   - la marge d'erreur serait environ 3,5 fois plus petite ;
-   - une corrélation de 0,03 deviendrait détectable à 5 jours avec environ 80 % de chances.
+   - la marge d'erreur théorique serait environ 3,5 fois plus petite ;
+   - chances de confirmer une corrélation de 0,03, selon la dispersion réelle des corrélations hebdomadaires
+     (inconnue) : **56 à 100 % à 5 jours**, contre 19 % aujourd'hui, et 15 à 57 % à 20 jours, contre 6 %.
    C'est le levier principal pour que les 52 semaines servent à quelque chose.
 6. **Tester des effets documentés sur plusieurs décennies** (momentum, qualité, faible volatilité) plutôt qu'une
    heuristique, par de nouveaux protocoles fixés à l'avance.

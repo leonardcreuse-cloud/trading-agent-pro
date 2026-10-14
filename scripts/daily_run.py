@@ -5,8 +5,11 @@ Daily local run (Windows Task Scheduler or cron): `python scripts/daily_run.py [
 Runs, with this Python interpreter, in the project folder:
   1. python main.py collect   external sources and agency APIs (each value stored with its retrieval time)
   2. python main.py analyze   prices, SEC filings, Form 4 and the daily signal run
-  3. python main.py prospective   on Saturdays and Sundays: stage 3 weekly signal record (made once per week,
-                              before the next session opens) and its evaluation
+  3. python main.py prospective   on Saturdays, Sundays and Mondays: stage 3 weekly signal record (made once per
+                              week, before the next session opens) and its evaluation. Monday covers a weekend
+                              with the PC off: the missed run, started by Windows when the PC is turned on
+                              (StartWhenAvailable), still records the week if it is before Monday's open; the
+                              recorder writes nothing once the open may have passed
   4. python main.py paper     every day: paper strategy PT1 (orders from a new stage 3 record, fills, stops, marks;
                               paper only, no real order)
   5. python main.py sources, then audit, then weekly   on Sundays (local date) unless --no-weekly; --weekly forces
@@ -37,14 +40,16 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TIMEOUT_SECONDS = 3 * 3600
-SATURDAY, SUNDAY = 5, 6
+MONDAY, SATURDAY, SUNDAY = 0, 5, 6
 
 
 def plan(today, weekly=None):
     """Steps to run on `today` (a date); weekly None = on Sundays only."""
     steps = ['collect', 'analyze']
-    if today.weekday() in (SATURDAY, SUNDAY):
-        steps.append('prospective')         # the record is made once per week; Sunday catches a missed Saturday
+    if today.weekday() in (SATURDAY, SUNDAY, MONDAY):
+        # the record is made once per week; Sunday catches a missed Saturday, and Monday a weekend with the PC off
+        # (valid only before Monday's open: the recorder refuses later, writing nothing)
+        steps.append('prospective')
     steps.append('paper')                   # paper strategy PT1: orders from a new record, then fills / marks
     if weekly or (weekly is None and today.weekday() == SUNDAY):
         steps += ['sources', 'audit', 'weekly']  # source availability and data checks right before the report

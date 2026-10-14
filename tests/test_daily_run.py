@@ -37,7 +37,11 @@ def test_plan_runs_the_weekly_report_on_saturdays_and_the_record_on_weekends():
     assert daily_run.plan(date(2026, 10, 11)) == ['collect', 'analyze', 'prospective', 'paper'] + weekly + ['dashboard']
     assert daily_run.plan(date(2026, 10, 11), weekly=False) == ['collect', 'analyze', 'prospective', 'paper',
                                                                 'dashboard']
-    assert daily_run.plan(date(2026, 10, 12), weekly=True) == ['collect', 'analyze', 'paper'] + weekly + ['dashboard']
+    assert daily_run.plan(date(2026, 10, 12), weekly=True) == ['collect', 'analyze', 'prospective', 'paper'] + weekly \
+        + ['dashboard']
+    # Monday: a weekend missed with the PC off is caught up if Windows starts the run before the open
+    assert daily_run.plan(date(2026, 10, 12)) == ['collect', 'analyze', 'prospective', 'paper', 'dashboard']
+    assert daily_run.plan(date(2026, 10, 13)) == ['collect', 'analyze', 'paper', 'dashboard']             # Tuesday
 
 
 def test_steps_logs_summary_and_exit_code(project):

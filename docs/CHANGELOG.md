@@ -1,5 +1,20 @@
 # Changelog
 
+## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
+
+- `docs/AUDIT_FIABILITE_2026-10-14.md` (in French, for the owner) covers:
+  - the sources that feed the signal, PT1 and the report, with their measured reliability: yfinance vs Cboe
+    agreement of 100% on closes, 99.4% on lows and 39% on opens (opens differ by 9.5 bps on average, no bias);
+    0 revisions of raw values;
+  - the power of stage 3 (about 6% / 19% at an IC of 0.03);
+  - the noise of PT1 (about 23% of excess return needed after 52 weeks);
+  - operational risks and an action plan.
+- `scripts/daily_run.py` now runs `prospective` on Mondays too. When the PC is off all weekend, Windows starts the
+  missed run at the next power-on (StartWhenAvailable), and that run is dated Monday; it can now still record the
+  week before Monday's open. The recorder refuses, writing nothing, once the open may have passed (unchanged).
+  Test updated.
+- Signal, stage 3 rules and PT1 rules are unchanged.
+
 ## Stage 4 proposal v4: sample-size and precision rule, power, corrected standard error (2026-10-14)
 
 - New: `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v4.md`, with `CHANGES_v3_to_v4.md`. This is

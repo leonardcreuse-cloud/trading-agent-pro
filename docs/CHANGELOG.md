@@ -1,5 +1,20 @@
 # Changelog
 
+## Stage 4 proposal v3: timestamp assumptions and their statistical consequences (2026-10-14)
+
+- New: `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v3.md`, with `CHANGES_v2_to_v3.md`. v1 and v2
+  are unchanged.
+- The announcement day comes from the 8-K cover-page `reportDate`.
+- Only events whose session alignment is determined by SEC records are in the primary test. After-close and
+  intraday filings are excluded.
+- v2's claim that misalignment only attenuates is withdrawn: the bias can have either sign. It is bounded by a
+  stricter audit gate (G1b: π ≤ 5% at 95%) under a stated assumption.
+- `timing_rule.py` is the reference implementation of the rule; `tests/test_p78_stage4_timing_rule.py` tests it
+  on hypothetical timestamps.
+- `feasibility_v3.py` / `.json`: 300 events timed (filings only). The primary set is about 57% of events, about
+  9,100, below the unchanged 10,000 minimum. Owner decision pending.
+- NOT RUN: no price was downloaded. Signal, stage 3 and PT1 are unchanged.
+
 ## Stage 4 proposal v2: timestamps and trading sessions (2026-10-14)
 
 - New: `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v2.md`. It answers the owner's

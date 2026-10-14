@@ -72,6 +72,18 @@
     windows start at the close before the release; the release-time audit checks session alignment (gates G1a,
     G1b, G1b-POST, G1c); the test is specified in full.
   - NOT RUN: it waits for the owner's approval.
+- 2026-10-14, owner's second clarification request (timestamp assumptions and their statistical consequences):
+  proposal v3, `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v3.md`.
+  - v1 and v2 are unchanged; the differences are in `CHANGES_v2_to_v3.md`.
+  - The announcement day now comes from the 8-K cover-page reportDate.
+  - The primary test keeps only events whose session alignment the SEC records determine (`timing_rule.py`,
+    tested).
+  - After-close filings are excluded (descriptive only), and the claim "misalignment only attenuates" is
+    withdrawn.
+  - G1b is stricter: at most 1 misaligned event of 100.
+  - Feasibility, filings only (`feasibility_v3.json`): primary set about 57% of events, about 9,100. Under the
+    unchanged 10,000-event minimum, the likely result is INSUFFICIENT DATA.
+  - Owner decision pending (section 15: options A, B or C). NOT RUN.
   - Blocked sources review: `docs/SOURCE_ACCESS_REVIEW.md`. It recommends USGS minerals data (priority 1) and,
     optionally, Treasury FiscalData; nothing else.
 

@@ -1,0 +1,28 @@
+{
+ "computed_at": "2026-10-14T07:27:48+00:00",
+ "nature": "feasibility count only: SEC filing lists and index pages; no price",
+ "firms_counted": 60,
+ "feeds_unavailable": [],
+ "candidate_events": 1911,
+ "timed_sample_size": 300,
+ "timed_seed": 20261014,
+ "index_pages_without_time": 0,
+ "classes": {
+  "V-PRE": 172,
+  "POST": 97,
+  "INTRADAY": 21,
+  "SPANNING": 10
+ },
+ "acceptance_day_minus_report_date_days": {
+  "0": 287,
+  "1": 5,
+  "2": 3,
+  "3": 3,
+  "5": 1,
+  "9": 1
+ },
+ "primary_share": 0.573,
+ "extrapolated_candidate_events_full_list": 15925,
+ "extrapolated_primary_events_full_list": 9130,
+ "list_members_with_cik": 500
+}

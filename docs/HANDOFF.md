@@ -84,6 +84,16 @@
   - Feasibility, filings only (`feasibility_v3.json`): primary set about 57% of events, about 9,100. Under the
     unchanged 10,000-event minimum, the likely result is INSUFFICIENT DATA.
   - Owner decision pending (section 15: options A, B or C). NOT RUN.
+- 2026-10-14, the owner chose option B: proposal v4,
+  `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v4.md`.
+  - v1–v3 are unchanged; the differences are in `CHANGES_v3_to_v4.md`.
+  - The 10,000-event minimum is replaced by V1 (at least 32 quarters with 100 or more events) and V2 (planned 95%
+    CI half-width ≤ δ* = 0.03), both evaluated on event counts only.
+  - Power at 0.03 is about 50%. V2 is expected to be met only at the margin.
+  - The power evaluation (`power_v4.py`, synthetic data) found that the v1–v3 Newey–West lag-1 test gives about 8%
+    false positives under the planning dependence. v4 corrects the standard error: truncated lag 1, floored,
+    × M/(M − 2), with t(⌊M/2⌋ − 1).
+  - Waiting for the owner's explicit approval before freezing. NOT RUN, no price downloaded.
   - Blocked sources review: `docs/SOURCE_ACCESS_REVIEW.md`. It recommends USGS minerals data (priority 1) and,
     optionally, Treasury FiscalData; nothing else.
 

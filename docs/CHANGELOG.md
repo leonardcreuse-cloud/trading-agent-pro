@@ -1,5 +1,19 @@
 # Changelog
 
+## Stage 4 proposal v4: sample-size and precision rule, power, corrected standard error (2026-10-14)
+
+- New: `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v4.md`, with `CHANGES_v3_to_v4.md`. This is
+  the owner's option B; v1–v3 are unchanged.
+- The 10,000-event minimum is replaced by V1 (at least 32 quarters with 100 or more events) and V2 (planned 95% CI
+  half-width ≤ 0.03), both computed from event counts only.
+- Power of the actual test, analytic and simulated: about 0.50 at a correlation of 0.03; the 80%-power detectable
+  effect is 0.043. INSUFFICIENT DATA has roughly even odds.
+- The simulation showed that the v1–v3 Newey–West (Bartlett, lag 1) test gives about 8% false positives under the
+  planning dependence. v4 uses a truncated lag-1 HAC, floored, × M/(M − 2), with t(⌊M/2⌋ − 1): about 5%. This
+  needs the owner's approval.
+- `power_v4.py` / `power_v4.json`: event counts and synthetic data only.
+- NOT RUN: no price was downloaded. Signal, stage 3 and PT1 are unchanged.
+
 ## Stage 4 proposal v3: timestamp assumptions and their statistical consequences (2026-10-14)
 
 - New: `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v3.md`, with `CHANGES_v2_to_v3.md`. v1 and v2

@@ -1,5 +1,20 @@
 # Changelog
 
+## Stage 4 proposal v2: timestamps and trading sessions (2026-10-14)
+
+- New: `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v2.md`. It answers the owner's
+  clarification request:
+  - release time vs SEC acceptance;
+  - five timing classes on the exact NYSE (XNYS) schedule;
+  - the reaction start and end prices of each class;
+  - entry at the open of s*+2;
+  - intraday releases excluded from the primary analysis;
+  - a release-time audit that also checks session alignment (G1a kept; G1b, G1b-POST and G1c added);
+  - the full statistical test.
+- v1 is unchanged, renamed `..._v1.md` (same SHA-256 as commit 72bd52b). The differences are in
+  `CHANGES_v1_to_v2.md`.
+- NOT RUN: no price was downloaded, nothing was computed. Signal, stage 3 and PT1 are unchanged.
+
 ## HTTP 429 handling for external sources (2026-10-13)
 
 - Problem, first scheduled run on the PC: the Cboe CDN answered HTTP 429 (rate limit) for part of the 40

@@ -63,8 +63,15 @@
   - Stage 3 and PT1 continue unchanged. With the current code, the 40 scores of the 2026-10-09 record
     recompute identically, and the journals and ledger chains verify.
   - Stage 4 pre-registration PROPOSAL (post-earnings drift after the market's reaction):
-    `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL.md`, with a filings-only feasibility count.
-    NOT RUN: it waits for the owner's approval.
+    `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v1.md`, with a filings-only feasibility
+    count. NOT RUN: it waits for the owner's approval.
+- 2026-10-14, owner's clarification request on timestamps and trading sessions: proposal v2,
+  `docs/research/stage4_proposal/STAGE4_PREREGISTRATION_PROPOSAL_v2.md`.
+  - v1 is kept unchanged; the differences are in `CHANGES_v1_to_v2.md`.
+  - What changed: five timing classes on the exact NYSE (XNYS) schedule; intraday releases excluded; POST
+    windows start at the close before the release; the release-time audit checks session alignment (gates G1a,
+    G1b, G1b-POST, G1c); the test is specified in full.
+  - NOT RUN: it waits for the owner's approval.
   - Blocked sources review: `docs/SOURCE_ACCESS_REVIEW.md`. It recommends USGS minerals data (priority 1) and,
     optionally, Treasury FiscalData; nothing else.
 

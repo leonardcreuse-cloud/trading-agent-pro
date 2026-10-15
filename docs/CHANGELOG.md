@@ -1,5 +1,32 @@
 # Changelog
 
+## Phase 0 of the consigne of 2026-10-14 (version 3), from 2026-10-15
+
+Governing documents:
+- `docs/REGLES_FONDATRICES.md`: version 1, validated by the owner as is, including every value marked "(proposée)".
+  SHA-256 `53997a1c15ab268be3ac5c75bbe82452757bdc84eb28a93cf78131e350d21d42`, commit eadef14.
+- `docs/CONSIGNE_AGENT_2026-10-14.md`: version 3.
+
+Every change below is dated here before it becomes active. On the PC, a change becomes active at the first nightly
+run after the owner pulls the code. Nothing below changes the signal, PT1, stage 3, their parameters, universes or
+journals.
+
+- **0.2 Reproduction of the audit figures.**
+  - `scripts/reproduce_audit_figures.py` recomputes from stored raw files only; output in
+    `docs/research/reproduction_audit_2026-10-15.json`.
+  - Closes agree in 100.0% of sessions excluding HON (98.2% including HON). Yahoo's "raw" HON prices are
+    split-adjusted and Cboe's are as traded; the audit's 100% excluded HON without saying so.
+  - Opens agree in 39.0% of sessions excluding HON (38.4% including HON).
+  - The stage 1 accruals IC at 252 sessions (+0.054) is **not reproducible from stored files**. Its panel and raw
+    inputs were produced in an earlier environment on 2026-10-07, and the current database starts on 2026-10-11.
+- **0.3a Nightly journal backup** (`src/backup.py`, `python main.py backup`, last step of `scripts/daily_run.py`).
+  - Commits only the changed journal files under `reports/paper` and `reports/prospective`.
+  - Pushes them to the branch `sauvegarde/journaux-pc` (fast-forward only), then to the working branch when GitHub
+    has nothing newer.
+  - Never `--force`, never a pull or a rebase: the backup never changes the code that runs on the PC.
+  - Checked with real git on a local test repository: a staged file outside the journals stays out; GitHub having
+    newer commits gives PARTIAL; after the owner's `git pull`, the backup fast-forwards again.
+
 ## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
 
 - `docs/AUDIT_FIABILITE_2026-10-14.md` (in French, for the owner) covers:

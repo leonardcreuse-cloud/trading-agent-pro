@@ -158,6 +158,13 @@ def main():
         from src.dashboard import Dashboard
         d = Dashboard()
         print(f"[DASHBOARD] {d.save_dashboard_html(d.create_live_dashboard_html())}")
+    elif command == 'backup':
+        from src.backup import run as backup
+        out = backup()
+        print(f"\n[BACKUP] journals to GitHub: {out['status']}")
+        for m in out['messages']:
+            print(f"  {m}")
+        sys.exit(0 if out['backup_branch'] else 1)
     elif command == 'status':
         print_status()
     else:
@@ -185,6 +192,8 @@ def print_menu():
     print("  python main.py paper [rebalance|update|status|report] - Paper strategy PT1 (paper only, no real order)")
     print("  python main.py evaluate-heuristic - Descriptive metrics of the heuristic on the walk-forward sample")
     print("  python main.py dedupe    - Remove observation versions that repeat an earlier one (backup first)")
+    print("  python main.py backup    - Commit the journals (reports/paper, reports/prospective) and push them")
+    print("                              to GitHub, never with --force (last step of the nightly run)")
     print("  python main.py status    - Show configuration status")
 
 

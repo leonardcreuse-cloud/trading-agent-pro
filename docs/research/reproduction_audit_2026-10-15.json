@@ -1,0 +1,62 @@
+{
+ "computed_at": "2026-10-15T06:48:35+00:00",
+ "period": [
+  "2025-10-01",
+  "2026-10-09"
+ ],
+ "tickers_cboe": 41,
+ "tickers_both": 41,
+ "close": {
+  "all": {
+   "sessions": 10578,
+   "exact_pct": 98.2,
+   "above_0.5pct_pct": 1.75,
+   "max_gap_pct": 50.58
+  },
+  "excluding_HON": {
+   "sessions": 10320,
+   "exact_pct": 100.0,
+   "above_0.5pct_pct": 0.0,
+   "max_gap_pct": 0.01
+  }
+ },
+ "open": {
+  "all": {
+   "sessions": 10578,
+   "exact_pct": 38.4,
+   "above_0.5pct_pct": 4.76,
+   "max_gap_pct": 50.67
+  },
+  "excluding_HON": {
+   "sessions": 10320,
+   "exact_pct": 39.0,
+   "above_0.5pct_pct": 3.04,
+   "max_gap_pct": 1.74
+  }
+ },
+ "low": {
+  "excluding_HON": {
+   "sessions": 10320,
+   "exact_pct": 99.4,
+   "above_0.5pct_pct": 0.0,
+   "max_gap_pct": 0.03
+  }
+ },
+ "stage1_accruals_252": {
+  "stored_result": {
+   "mean": 0.054383,
+   "se": 0.018941,
+   "t_stat": 2.871,
+   "n_dates": 407,
+   "n_observations": 47453,
+   "period": [
+    "2017-09-01",
+    "2025-10-01"
+   ]
+  },
+  "stage1_computed_at": "2026-10-07T12:15:45+00:00",
+  "panel_cache_present": false,
+  "recomputed": null,
+  "reason": "not reproducible from stored files: the stage 1 panel cache and its raw inputs (prices of 148 stocks 2016-2026, SEC facts) were produced in an earlier environment on 2026-10-07; the current database starts on 2026-10-11 and holds prices for only a few of the stage 1 tickers"
+ }
+}

@@ -32,16 +32,16 @@ def project(tmp_path, monkeypatch):
 
 def test_plan_runs_the_weekly_report_on_saturdays_and_the_record_on_weekends():
     weekly = ['sources', 'audit', 'weekly']
-    assert daily_run.plan(date(2026, 10, 9)) == ['collect', 'analyze', 'paper', 'dashboard']             # Friday
-    assert daily_run.plan(date(2026, 10, 10)) == ['collect', 'analyze', 'prospective', 'paper', 'dashboard']
-    assert daily_run.plan(date(2026, 10, 11)) == ['collect', 'analyze', 'prospective', 'paper'] + weekly + ['dashboard']
+    assert daily_run.plan(date(2026, 10, 9)) == ['collect', 'analyze', 'paper', 'dashboard', 'backup']             # Friday
+    assert daily_run.plan(date(2026, 10, 10)) == ['collect', 'analyze', 'prospective', 'paper', 'dashboard', 'backup']
+    assert daily_run.plan(date(2026, 10, 11)) == ['collect', 'analyze', 'prospective', 'paper'] + weekly + ['dashboard', 'backup']
     assert daily_run.plan(date(2026, 10, 11), weekly=False) == ['collect', 'analyze', 'prospective', 'paper',
-                                                                'dashboard']
+                                                                'dashboard', 'backup']
     assert daily_run.plan(date(2026, 10, 12), weekly=True) == ['collect', 'analyze', 'prospective', 'paper'] + weekly \
-        + ['dashboard']
+        + ['dashboard', 'backup']
     # Monday: a weekend missed with the PC off is caught up if Windows starts the run before the open
-    assert daily_run.plan(date(2026, 10, 12)) == ['collect', 'analyze', 'prospective', 'paper', 'dashboard']
-    assert daily_run.plan(date(2026, 10, 13)) == ['collect', 'analyze', 'paper', 'dashboard']             # Tuesday
+    assert daily_run.plan(date(2026, 10, 12)) == ['collect', 'analyze', 'prospective', 'paper', 'dashboard', 'backup']
+    assert daily_run.plan(date(2026, 10, 13)) == ['collect', 'analyze', 'paper', 'dashboard', 'backup']             # Tuesday
 
 
 def test_steps_logs_summary_and_exit_code(project):
@@ -49,11 +49,11 @@ def test_steps_logs_summary_and_exit_code(project):
     code = daily_run.main([], runner=runner, now=datetime(2026, 10, 11, 23, 0))
     assert code == 1                                         # analyze failed; weekly still ran
     assert [c[0][-1] for c in runner.calls] == ['collect', 'analyze', 'prospective', 'paper', 'sources', 'audit',
-                                                'weekly', 'dashboard']
+                                                'weekly', 'dashboard', 'backup']
     assert all(c[0][1] == 'main.py' and c[1]['cwd'] == project for c in runner.calls)
     assert all(c[1]['env']['PYTHONIOENCODING'] == 'utf-8' for c in runner.calls)
     summary = json.loads((project / 'data' / 'logs' / 'last_run.json').read_text())
-    assert summary['ok'] is False and [s['exit_code'] for s in summary['steps']] == [0, 1, 0, 0, 0, 0, 0, 0]
+    assert summary['ok'] is False and [s['exit_code'] for s in summary['steps']] == [0, 1, 0, 0, 0, 0, 0, 0, 0]
     log = (project / 'data' / 'logs' / '2026-10-11_collect.log').read_text()
     assert 'python main.py collect' in log and 'fake output of collect' in log
     assert daily_run.main(['--no-weekly'], runner=Runner(), now=datetime(2026, 10, 10, 23, 0)) == 0
@@ -64,4 +64,4 @@ def test_timeout_is_reported_not_raised(project):
         raise subprocess.TimeoutExpired(cmd, 1)
     assert daily_run.main(['--no-weekly'], runner=slow, now=datetime(2026, 10, 9, 23, 0)) == 1
     summary = json.loads((project / 'data' / 'logs' / 'last_run.json').read_text())
-    assert [s['exit_code'] for s in summary['steps']] == ['timeout'] * 4
+    assert [s['exit_code'] for s in summary['steps']] == ['timeout'] * 5

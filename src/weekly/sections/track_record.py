@@ -23,7 +23,8 @@ import pandas as pd
 
 from ...common import history_dir, stamp, to_utc_iso
 from ...journal import Journal
-from ...paper_report import CALIBRATION_STATUS, backtest_vs_paper, known_at, outcomes_by_horizon, performance, trades
+from ...paper_report import (CALIBRATION_STATUS, backtest_vs_paper, known_at, outcomes_by_horizon, performance,
+                             price_crosscheck, trades)
 from ...risk import RISK_SCORE_STATUS, days_to_exit, portfolio_metrics, settings
 from ..core import SectionResult, conclude, evidence, unavailable
 from .market import prices_aligned
@@ -116,6 +117,7 @@ def _paper(ctx, res, base):
         question=11, note='Fill prices are as-traded opens adjusted for slippage and spread; cost basis includes '
                           'commission. Worst position value vs cost uses the daily marks (close x shares, split-invariant; '
                           'intraday lows are not marked). A stop does not guarantee its price: a gap fills at the open.')
+    _price_crosscheck(ctx, res, known)
     rebalances = sum(1 for e in known if e['type'] == 'rebalance')
     ev = _evaluation_known(tm)
     res.table('Descriptive backtest beside the prospective paper results (not comparable yet)',
@@ -124,6 +126,24 @@ def _paper(ctx, res, base):
               note='The backtest is in-sample of one run of a heuristic whose weights were never fitted; the paper '
                    'record is prospective. Differences are expected from the selection (top quintile vs top 8), '
                    'sizing, costs and sample length; the pre-registered PT1 evaluation needs 52 weekly rebalances.')
+
+
+def _price_crosscheck(ctx, res, known):
+    """Every price PT1 used vs Cboe's delayed bars known at T_c (rule R2; read-only, PT1's prices are unchanged)."""
+    if not hasattr(ctx, 'db'):
+        return
+    out = price_crosscheck(known, ctx.db, known_at=ctx.tm.cutoff)
+    sm = out['summary']
+    shown = [r for r in out['rows'] if r['flagged'] or r['cboe'] is None] or out['rows'][-12:]
+    res.table('Paper strategy PT1 — prices used vs a second source (Cboe delayed bars)',
+              ['session', 'ticker', 'price used', 'PT1 (yfinance)', 'Cboe', 'gap %', f"above {sm['tolerance_pct']:g}%"],
+              [[r['session'], r['ticker'], r['price'], r['pt1'], r['cboe'], r['gap_pct'], 'YES' if r['flagged'] else '']
+               for r in shown], question=11,
+              note=f"{sm['compared']} of {sm['prices_used']} prices compared, {sm['above_tolerance']} above "
+                   f"{sm['tolerance_pct']:g}%, largest gap {sm['largest_gap_pct']}%; {sm['missing_cboe']} without a "
+                   'Cboe value known at the cutoff. Shown: the flagged and missing prices, otherwise the latest '
+                   'ones. Opening prices differ by vendor (opening auction or first trade), so a fill-price gap '
+                   'measures execution uncertainty. Read-only check: the prices PT1 uses are unchanged.')
 
 
 def _closes_to(ctx, ticker, session):

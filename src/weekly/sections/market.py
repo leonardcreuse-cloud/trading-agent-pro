@@ -399,41 +399,69 @@ SECOND_SOURCE_TOL = 0.005
 
 def _second_source(ctx, res, tickers):
     """
-    yfinance close_raw vs Cboe delayed daily closes (both split-adjusted as served), the last SECOND_SOURCE_SESSIONS
-    sessions up to s_0 stored and known at T_c. Both redistribute the same exchange closing prices: agreement checks
-    the data pipelines, it is not an independent originator, so no evidence level is raised by it.
+    yfinance as-reported prices (close_raw, open_raw, low_raw, high_raw: split-adjusted) vs Cboe delayed daily bars
+    (split-adjusted as served), the last SECOND_SOURCE_SESSIONS sessions up to s_0 stored and known at T_c.
+    - The conclusion is about closes, as before.
+    - Opens, lows and highs are shown beside them (consigne of 2026-10-14, phase 0.3). The opening price differs by
+      vendor (opening auction or first trade), and PT1 fills at the open.
+    - Both sources redistribute exchange prices: agreement checks the data pipelines. It is not an independent
+      originator, so no evidence level is raised by it.
     """
     from ...external_sources import CBOE_HISTORY_SOURCE
     if not hasattr(ctx, 'db') or not hasattr(ctx.db, 'series'):
         return
     tm = ctx.tm
     rows, checked, differing, items = [], [], [], []
+    open_gaps = []
     for t in tickers:
-        yf = {d: r['value'] for d, r in ctx.db.series(t, 'close_raw', known_at=tm.cutoff, source='yfinance') if d <= tm.s0}
-        cb_rows = {d: r for d, r in ctx.db.series(t, 'close', known_at=tm.cutoff, source=CBOE_HISTORY_SOURCE)
-                   if d <= tm.s0}
-        common = sorted(d for d in yf if d in cb_rows)[-SECOND_SOURCE_SESSIONS:]
-        if not common:
-            rows.append([t, 0, None, None, 'no Cboe close stored and known at T_c'])
+        stats = {}
+        for field in ('close', 'open', 'low', 'high'):
+            yf = {d: r['value'] for d, r in ctx.db.series(t, f'{field}_raw', known_at=tm.cutoff, source='yfinance')
+                  if d <= tm.s0}
+            cb_rows = {d: r for d, r in ctx.db.series(t, field, known_at=tm.cutoff, source=CBOE_HISTORY_SOURCE)
+                       if d <= tm.s0}
+            common = sorted(d for d in yf if d in cb_rows)[-SECOND_SOURCE_SESSIONS:]
+            diffs = {d: yf[d] / cb_rows[d]['value'] - 1 for d in common if cb_rows[d]['value']}
+            stats[field] = {'common': common, 'cb': cb_rows, 'diffs': diffs,
+                            'bad': [d for d, v in diffs.items() if abs(v) > SECOND_SOURCE_TOL],
+                            'worst': max((abs(v) for v in diffs.values()), default=None)}
+        close = stats['close']
+        if not close['common']:
+            rows.append([t, 0, None, None, None, None, None, None, 'no Cboe close stored and known at T_c'])
             continue
-        diffs = {d: yf[d] / cb_rows[d]['value'] - 1 for d in common}
-        bad = [d for d, v in diffs.items() if abs(v) > SECOND_SOURCE_TOL]
-        worst = max(abs(v) for v in diffs.values())
-        rows.append([t, len(common), round(worst * 100, 4), len(bad), ', '.join(bad[:5]) or None])
+
+        def pct(field):
+            w = stats[field]['worst']
+            return None if w is None else round(w * 100, 4)
+
+        def above(field):
+            return len(stats[field]['bad']) if stats[field]['common'] else None
+        rows.append([t, len(close['common']), pct('close'), above('close'), pct('open'), above('open'), pct('low'),
+                     pct('high'), ', '.join(close['bad'][:5]) or None])
+        if stats['open']['bad']:
+            open_gaps.append(f"{t} ({len(stats['open']['bad'])})")
         checked.append(t)
-        if bad:
+        if close['bad']:
             differing.append(t)
-        last = cb_rows[common[-1]]
+        last = close['cb'][close['common'][-1]]
         items.append(evidence(tm, CBOE_HISTORY_SOURCE, source_rank(CBOE_HISTORY_SOURCE),
-                              f'{t}: Cboe delayed close {last["value"]:g} on {common[-1]}', as_of=common[-1],
-                              published_at=last['published_at'], retrieved_at=last['retrieved_at'],
-                              fetch_id=last['fetch_id'], basis=last['published_at_basis']))
-    res.table(f'Second price source: yfinance vs Cboe delayed closes (last {SECOND_SOURCE_SESSIONS} sessions to s_0)',
-              ['ticker', 'sessions compared', 'largest |difference| %', f'sessions above {SECOND_SOURCE_TOL:.1%}',
-               'dates'], rows, question=Q,
-              note='Both sources redistribute the exchanges\' closing prices (split-adjusted as served): agreement '
-                   'checks the pipelines and catches transcription or adjustment errors; it is not an independent '
-                   'originator and raises no evidence level. Full history check: python main.py audit.')
+                              f"{t}: Cboe delayed close {last['value']:g} on {close['common'][-1]}",
+                              as_of=close['common'][-1], published_at=last['published_at'],
+                              retrieved_at=last['retrieved_at'], fetch_id=last['fetch_id'],
+                              basis=last['published_at_basis']))
+    res.table(f'Second price source: yfinance vs Cboe delayed bars (last {SECOND_SOURCE_SESSIONS} sessions to s_0)',
+              ['ticker', 'sessions compared', 'close: largest |difference| %',
+               f'close: sessions above {SECOND_SOURCE_TOL:.1%}', 'open: largest |difference| %',
+               f'open: sessions above {SECOND_SOURCE_TOL:.1%}', 'low: largest |difference| %',
+               'high: largest |difference| %', 'close dates above the tolerance'], rows, question=Q,
+              note='Both sources redistribute exchange prices (split-adjusted as served). Agreement checks the '
+                   'pipelines and catches transcription or adjustment errors; it is not an independent originator '
+                   'and raises no evidence level. Opening prices differ by vendor (opening auction or first trade): '
+                   'PT1 fills at the yfinance open, so an open gap is a measure of fill-price uncertainty. Cboe opens, '
+                   'lows and highs are stored from 2026-10-15 (their history is filled at the first collection). '
+                   'Full history check: '
+                   'python main.py audit.' + (f" Opens above the tolerance: {', '.join(open_gaps)}." if open_gaps
+                                               else ''))
     if checked:
         res.add(conclude('overall', Q, f'Second price source: yfinance closes agree with Cboe within '
                                        f'{SECOND_SOURCE_TOL:.1%} on the last {SECOND_SOURCE_SESSIONS} sessions for '

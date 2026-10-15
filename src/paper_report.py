@@ -15,6 +15,10 @@ paper strategy PT1 (docs/research/PAPER_STRATEGY_PT1.md):
                                others, share of positive returns, and the mean weekly Spearman rank correlation between
                                the score and the realised return (descriptive; the pre-registered stage 3 test is the
                                only test). Calibration: NOT CALIBRATED (no probability is predicted)
+  price_crosscheck(...)        every price PT1 used, compared with Cboe's delayed daily bars (consigne of
+                               2026-10-14, phase 0.3; rule R2): fill opens, stop-exit opens and lows, mark closes,
+                               and the lows the stops were checked against. Gaps above 0.5% are flagged. Read-only:
+                               the prices PT1 uses are unchanged
   backtest_vs_paper(...)       the descriptive walk-forward evaluation of the heuristic (top quintile, net of its
                                cost assumption) beside the prospective paper results, each with its sample size; the
                                two are not comparable until the paper record is long enough (52 weekly rebalances
@@ -165,3 +169,60 @@ def known_at(entries, cutoff):
         nxt = own or nxt
         dated.append((e, own or nxt))
     return [e for e, when in reversed(dated) if when is not None and when <= cutoff]
+
+
+CROSSCHECK_TOL = 0.005
+
+
+def _cboe_first(db, ticker, metric, known_at=None):
+    """{session: value}: the first stored Cboe version of each session (the closest to the as-traded price: Cboe
+    re-adjusts its history after a split), optionally only versions retrieved at or before known_at."""
+    from .external_sources import CBOE_HISTORY_SOURCE
+    sql = ('SELECT as_of_date, value FROM observations WHERE source=? AND entity=? AND metric=?'
+           + (' AND retrieved_at <= ?' if known_at else '') + ' ORDER BY retrieved_at DESC, fetch_id DESC')
+    args = [CBOE_HISTORY_SOURCE, ticker, metric] + ([known_at] if known_at else [])
+    with db.connect() as conn:
+        return {str(d)[:10]: v for d, v in conn.execute(sql, args)}      # later rows overwritten by earlier ones
+
+
+def _yf_low(db, ticker, session, known_at=None):
+    rows = db.series(ticker, 'low_raw', known_at=known_at, source='yfinance', start=session, end=session)
+    return rows[-1][1]['value'] if rows else None
+
+
+def price_crosscheck(entries, db, known_at=None, tol=CROSSCHECK_TOL):
+    """
+    Every price PT1 used, compared with Cboe's first stored version of the same session.
+    Returns {'rows': [...], 'summary': {...}}. Each row is {session, ticker, price, pt1, cboe, gap_pct, flagged};
+    cboe is None when Cboe has no value stored (known at known_at).
+    Read-only: nothing is written and PT1's prices are unchanged.
+    """
+    wanted = []
+    for e in entries:
+        t, s = e.get('ticker'), e.get('session')
+        if e.get('type') == 'fill' and e.get('open') is not None:
+            wanted.append((s, t, f"{e.get('side', '')} fill: open".strip(), 'open', e['open']))
+        elif e.get('type') == 'stop_exit':
+            wanted.append((s, t, 'stop exit: open', 'open', e.get('open')))
+            wanted.append((s, t, 'stop exit: low', 'low', e.get('low')))
+        elif e.get('type') == 'mark':
+            for ticker, p in (e.get('positions') or {}).items():
+                wanted.append((s, ticker, 'mark: close', 'close', p.get('close')))
+                wanted.append((s, ticker, 'stop check: low', 'low', _yf_low(db, ticker, s, known_at)))
+    cache, rows = {}, []
+    for s, t, label, metric, value in wanted:
+        if value is None:
+            continue
+        if (t, metric) not in cache:
+            cache[(t, metric)] = _cboe_first(db, t, metric, known_at)
+        cb = cache[(t, metric)].get(s)
+        gap = None if not cb else value / cb - 1
+        rows.append({'session': s, 'ticker': t, 'price': label, 'pt1': round(float(value), 4),
+                     'cboe': None if cb is None else round(float(cb), 4),
+                     'gap_pct': None if gap is None else round(gap * 100, 3),
+                     'flagged': gap is not None and abs(gap) > tol})
+    compared = [r for r in rows if r['gap_pct'] is not None]
+    summary = {'prices_used': len(rows), 'compared': len(compared), 'missing_cboe': len(rows) - len(compared),
+               'above_tolerance': sum(r['flagged'] for r in compared), 'tolerance_pct': tol * 100,
+               'largest_gap_pct': max((abs(r['gap_pct']) for r in compared), default=None)}
+    return {'rows': rows, 'summary': summary}

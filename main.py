@@ -121,6 +121,16 @@ def main():
                       f"held {p['holding_sessions']}  worst {p['worst_drawdown_pct']}%")
             for h, r in outcomes_by_horizon(paper.pred.entries()).items():
                 print(f'  predictions, {h} sessions: {r}')
+            from src.paper_report import price_crosscheck
+            check = price_crosscheck(paper.tx.entries(), paper.db)
+            sm = check['summary']
+            print(f"  prices used vs Cboe (second source): {sm['compared']} of {sm['prices_used']} compared, "
+                  f"{sm['above_tolerance']} above {sm['tolerance_pct']:g}%, largest gap {sm['largest_gap_pct']}%, "
+                  f"{sm['missing_cboe']} without a Cboe value")
+            for r in check['rows']:
+                if r['flagged'] or r['cboe'] is None:
+                    print(f"    {r['session']} {r['ticker']:6} {r['price']:16} PT1 {r['pt1']}  Cboe {r['cboe']}  "
+                          f"gap {r['gap_pct']}%" + ('  ABOVE TOLERANCE' if r['flagged'] else ''))
         if action not in ('rebalance', 'update', 'status', 'report', 'all'):
             print_menu()
     elif command == 'evaluate-heuristic':

@@ -73,3 +73,34 @@ def test_backtest_vs_paper_rows():
     assert rows['Sharpe'] == [0.97, None] and rows['annualised return %'][1] == 'fewer than 20 sessions'
     assert rows['comparable?'][1].startswith('no: fewer than 52')
     assert backtest_vs_paper(None, {'status': 'NO MARK'}, 0)[0][1] is None
+
+
+def test_price_crosscheck_compares_every_price_used_with_the_first_cboe_version():
+    """SYNTHETIC prices: fills at the open, stop exits, mark closes and the lows checked against the stops."""
+    from src.database import Database
+    from src.external_sources import CBOE_HISTORY_SOURCE
+    from src.paper_report import price_crosscheck
+    db = Database()
+    first = db.record_fetch(CBOE_HISTORY_SOURCE, 'cboe-1', status='OK', raw='{}')
+    rows = [('AAA', 'open', '2026-10-12', 100.0), ('AAA', 'close', '2026-10-12', 101.0), ('AAA', 'low', '2026-10-12', 99.0),
+            ('BBB', 'open', '2026-10-13', 50.0), ('BBB', 'low', '2026-10-13', 47.0)]
+    db.upsert_observations(first, [{'entity': t, 'metric': m, 'as_of_date': d, 'value': v,
+                                    'published_at': f'{d}T21:00:00+00:00'} for t, m, d, v in rows])
+    later = db.record_fetch(CBOE_HISTORY_SOURCE, 'cboe-2', status='OK', raw='{}')    # re-adjusted after a split
+    db.upsert_observations(later, [{'entity': 'AAA', 'metric': 'open', 'as_of_date': '2026-10-12', 'value': 50.0,
+                                    'published_at': '2026-10-12T21:00:00+00:00'}])
+    yf = db.record_fetch('yfinance', 'yf', status='OK', raw='x')
+    db.upsert_observations(yf, [{'entity': 'AAA', 'metric': 'low_raw', 'as_of_date': '2026-10-12', 'value': 99.0,
+                                 'published_at': '2026-10-12T21:00:00+00:00'}])
+    entries = [{'type': 'fill', 'side': 'buy', 'ticker': 'AAA', 'session': '2026-10-12', 'open': 100.3},
+               {'type': 'mark', 'session': '2026-10-12', 'positions': {'AAA': {'close': 101.0, 'shares': 1}}},
+               {'type': 'stop_exit', 'ticker': 'BBB', 'session': '2026-10-13', 'open': 50.0, 'low': 46.0},
+               {'type': 'fill', 'side': 'buy', 'ticker': 'CCC', 'session': '2026-10-13', 'open': 10.0}]
+    out = price_crosscheck(entries, db)
+    by = {(r['ticker'], r['price']): r for r in out['rows']}
+    assert by[('AAA', 'buy fill: open')]['cboe'] == 100.0 and by[('AAA', 'buy fill: open')]['gap_pct'] == 0.3
+    assert by[('AAA', 'mark: close')]['gap_pct'] == 0.0 and by[('AAA', 'stop check: low')]['gap_pct'] == 0.0
+    assert by[('BBB', 'stop exit: low')]['flagged'] and not by[('BBB', 'stop exit: open')]['flagged']   # 46 vs 47
+    assert by[('CCC', 'buy fill: open')]['cboe'] is None
+    assert out['summary'] == {'prices_used': 6, 'compared': 5, 'missing_cboe': 1, 'above_tolerance': 1,
+                              'tolerance_pct': 0.5, 'largest_gap_pct': 2.128}

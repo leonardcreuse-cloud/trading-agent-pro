@@ -26,6 +26,18 @@ journals.
   - Never `--force`, never a pull or a rebase: the backup never changes the code that runs on the PC.
   - Checked with real git on a local test repository: a staged file outside the journals stays out; GitHub having
     newer commits gives PARTIAL; after the owner's `git pull`, the backup fast-forwards again.
+- **0.3b Cboe open / high / low and gaps with yfinance in the reports.**
+  - `collect_cboe_history` also stores Cboe open, high and low. A ticker stored without them is fetched again
+    from the collection start once, so that its history is filled.
+  - Weekly report, market section: the second-source table shows closes as before (same conclusion), plus opens,
+    lows and highs.
+  - `paper_report.price_crosscheck` compares every price PT1 used with the first stored Cboe version of the same
+    session: fill opens, stop-exit opens and lows, mark closes, and the lows checked against the stops. Gaps
+    above 0.5% are flagged.
+  - The cross-check is shown in the weekly report (track record) and in `python main.py paper report`. It is
+    read-only: the prices PT1 uses are unchanged.
+  - Live check on 2026-10-15 (cloud): 12 of 12 prices compared. Closes and lows are equal; the three fill opens
+    differ by −0.05%, −0.03% and +0.17%; none is above 0.5%.
 
 ## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
 

@@ -15,8 +15,10 @@ def test_rows_skip_malformed_values_and_respect_the_start():
     rows = cboe_history_rows('AAA', payload([('2026-10-07', 10.0, 100), ('2026-10-08', None, 0),
                                              ('2026-10-09', 11.0, 120), ('2026-09-01', 9.0, 90)]), '2026-10-01')
     assert [(r['as_of_date'], r['metric'], r['value']) for r in rows] == [
-        ('2026-10-07', 'close', 10.0), ('2026-10-07', 'volume', 100.0), ('2026-10-09', 'close', 11.0),
-        ('2026-10-09', 'volume', 120.0)]                                   # missing close and zero volume skipped
+        ('2026-10-07', 'close', 10.0), ('2026-10-07', 'volume', 100.0), ('2026-10-07', 'open', 10.0),
+        ('2026-10-07', 'high', 10.0), ('2026-10-07', 'low', 10.0), ('2026-10-09', 'close', 11.0),
+        ('2026-10-09', 'volume', 120.0), ('2026-10-09', 'open', 11.0), ('2026-10-09', 'high', 11.0),
+        ('2026-10-09', 'low', 11.0)]                                       # missing prices and zero volume skipped
     assert rows[0]['published_at'] == '2026-10-08T05:00:00+00:00' and rows[0]['value_revisable'] == 1
     assert rows[0]['published_at_basis'] == CBOE_HISTORY_BASIS
 
@@ -37,10 +39,34 @@ def test_collector_stores_once_and_reports_failures(monkeypatch):
         return {'status': 'OK', 'content': json.dumps(served[t]), 'fetch': fetch, 'reason': None}
     monkeypatch.setattr(ex, 'http_fetch', fake_fetch)
     first = ex.collect_cboe_history(db, ['AAA', 'BBB'], date(2026, 1, 1))
-    assert first['stored'] == 4 and first['status'] == 'DATA UNAVAILABLE' and 'BBB: HTTP 404' in first['reason']
+    assert first['stored'] == 10 and first['status'] == 'DATA UNAVAILABLE' and 'BBB: HTTP 404' in first['reason']
     again = ex.collect_cboe_history(db, ['AAA'], date(2026, 1, 1))
     assert again == {'collector': 'cboe_price_history', 'status': 'OK', 'stored': 0, 'reason': None}
     assert [d for d, _ in db.series('AAA', 'close', source=ex.CBOE_HISTORY_SOURCE)] == ['2026-10-08', '2026-10-09']
+    assert [r['value'] for _, r in db.series('AAA', 'low', source=ex.CBOE_HISTORY_SOURCE)] == [10.0, 11.0]
+
+
+def test_closes_stored_before_open_high_low_existed_are_backfilled_once(monkeypatch):
+    from datetime import date
+    from src import external_sources as ex
+    from src.database import Database
+    db = Database()
+    old = db.record_fetch(ex.CBOE_HISTORY_SOURCE, 'old', status='OK', raw='{}')
+    db.upsert_observations(old, [{'entity': 'AAA', 'metric': 'close', 'as_of_date': '2026-10-09', 'value': 11.0,
+                                  'published_at': '2026-10-10T05:00:00+00:00'}])
+    starts = []
+
+    def fake_fetch(db_, source, url, raw=None, **kw):
+        body = payload([('2026-01-05', 9.0, 90), ('2026-10-09', 11.0, 120)])
+        stored = raw(json.dumps(body))
+        starts.append(json.loads(stored)['data'][0]['date'])
+        return {'status': 'OK', 'content': json.dumps(body), 'fetch': db_.record_fetch(source, url, status='OK',
+                                                                                      raw=stored), 'reason': None}
+    monkeypatch.setattr(ex, 'http_fetch', fake_fetch)
+    ex.collect_cboe_history(db, ['AAA'], date(2026, 1, 1))
+    ex.collect_cboe_history(db, ['AAA'], date(2026, 1, 1))
+    assert starts == ['2026-01-05', '2026-10-09']        # full history once, then the usual overlap only
+    assert [d for d, _ in db.series('AAA', 'open', source=ex.CBOE_HISTORY_SOURCE)] == ['2026-01-05', '2026-10-09']
 
 
 def test_implied_split_from_a_step_of_the_close_ratio():

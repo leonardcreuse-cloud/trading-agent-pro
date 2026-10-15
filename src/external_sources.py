@@ -413,15 +413,23 @@ CBOE_HISTORY_BASIS = ('Cboe delayed daily bar (split-adjusted as served): public
 CBOE_HISTORY_OVERLAP_DAYS = 45      # routine runs re-read this many days before the last stored bar (late fixes)
 
 
+CBOE_HISTORY_METRICS = (('close', 'USD'), ('volume', 'shares'), ('open', 'USD'), ('high', 'USD'), ('low', 'USD'))
+
+
 def cboe_history_rows(ticker, payload, start):
-    """close / volume rows dated >= start (ISO) from a Cboe historical payload; malformed or non-positive values
-    are skipped, never filled. Values are revisable: Cboe re-adjusts its history after a split."""
+    """
+    close / volume / open / high / low rows dated >= start (ISO) from a Cboe historical payload.
+    - Malformed or non-positive values are skipped, never filled.
+    - Values are revisable: Cboe re-adjusts its history after a split.
+    - open / high / low (consigne of 2026-10-14, phase 0.3) serve only to cross-check the yfinance prices used by
+      the paper strategy and the reports; they are never a price source of PT1.
+    """
     rows = []
     for r in (payload or {}).get('data') or []:
         day = str(r.get('date') or '')[:10]
         if len(day) != 10 or day < start:
             continue
-        for metric, unit in (('close', 'USD'), ('volume', 'shares')):
+        for metric, unit in CBOE_HISTORY_METRICS:
             v = _num(r.get(metric))
             if v is not None and v > 0:
                 rows.append({'entity': ticker, 'metric': metric, 'as_of_date': day, 'value': v, 'unit': unit,
@@ -431,12 +439,18 @@ def cboe_history_rows(ticker, payload, start):
 
 
 def collect_cboe_history(db, tickers, since):
-    """Daily close / volume of each ticker since `since` (first run) or since the last stored bar minus
-    CBOE_HISTORY_OVERLAP_DAYS; the stored raw payload is the excerpt the rows were parsed from."""
+    """
+    Daily bars of each ticker since `since` (first run), or since the last stored bar minus
+    CBOE_HISTORY_OVERLAP_DAYS. The stored raw payload is the excerpt the rows were parsed from.
+    A ticker with closes but no stored open yet (stored before 2026-10-15) is fetched again from `since` once, so
+    that its open / high / low history is filled.
+    """
     stored, problems = 0, []
     for t in tickers:
         have = db.series(t, 'close', source=CBOE_HISTORY_SOURCE)
-        start = since if not have else max(since, date.fromisoformat(have[-1][0]) - timedelta(days=CBOE_HISTORY_OVERLAP_DAYS))
+        have_open = db.series(t, 'open', source=CBOE_HISTORY_SOURCE)
+        start = since if not (have and have_open) else max(
+            since, date.fromisoformat(have[-1][0]) - timedelta(days=CBOE_HISTORY_OVERLAP_DAYS))
         start_iso = start.isoformat()
         parsed = {}
 

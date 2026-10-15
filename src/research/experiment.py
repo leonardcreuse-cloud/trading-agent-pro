@@ -31,6 +31,7 @@ from datetime import date
 
 import numpy as np
 
+from ..labels import SELECTION_BIAS_LABEL, SURVIVORSHIP_LABEL  # noqa: F401
 from ..common import data_dir, redact, reports_dir, utc_now_iso
 from ..database import Database
 from .factors import (CONFIRMATORY, CONFIRMATORY_ALPHA, FEATURES, HORIZONS, UNAVAILABLE_GROUPS,
@@ -353,6 +354,7 @@ class Study:
 
         n_tests = len(feature_tests) + len(group_tests) + len(model_tests)
         report = {
+            'label_r10': SURVIVORSHIP_LABEL,
             'stage': self.stage, 'computed_at': utc_now_iso(),
             'universe': {'source': universe.fetch and universe.fetch['source'],
                          'fetch_id': panel['universe_fetch'] and panel['universe_fetch']['fetch_id'],

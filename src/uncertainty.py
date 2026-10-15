@@ -27,11 +27,7 @@ WEEKLY_EXCESS_SD = 0.01605         # scripts/estimate_pt1_noise.py, 2026-10-14 (
 WEEKLY_EXCESS_SD_SOURCE = 'scripts/estimate_pt1_noise.py (stored yfinance closes 2021-10 to 2026-10, 2,000 draws)'
 IC_GRID = (0.02, 0.03, 0.05, 0.10)
 
-# rule R10 of docs/REGLES_FONDATRICES.md (labels only: no figure is changed)
-SELECTION_BIAS_LABEL = ('Univers choisi en 2026 : biais de sélection (règle R10). The 40 tickers were chosen by hand '
-                        'in 2026; PT1 and stage 3 continue unchanged as controls.')
-SURVIVORSHIP_LABEL = ('Avec biais du survivant, période 2017–2026 : ne valide rien (règle R10). Current index members '
-                      'only, over a period already examined; descriptive.')
+from .labels import SELECTION_BIAS_LABEL, SURVIVORSHIP_LABEL  # noqa: F401 - re-exported (rule R10)
 
 
 def stage3_power():

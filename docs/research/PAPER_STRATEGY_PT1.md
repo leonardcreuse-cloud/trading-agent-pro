@@ -68,3 +68,9 @@ mission; it is not part of this work.
 - **When it applies.** From the next valid stage 3 record onwards.
 - **Classification.** A bug fix that makes the code follow the pre-registered rule, not a rule change. The owner may
   instead decide to close PT1 and start PT2. That decision is recorded here if taken.
+
+**2026-10-15. Bias label (rule R10 of `docs/REGLES_FONDATRICES.md`).**
+- Label: **univers choisi en 2026 : biais de sélection.** The 40 tickers were chosen by hand in 2026.
+- PT1 continues unchanged to its term as a control.
+- Nothing changed: no rule, setting, journal or figure.
+- The label is shown next to the PT1 figures in the reports.

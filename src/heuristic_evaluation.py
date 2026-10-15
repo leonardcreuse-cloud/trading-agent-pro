@@ -31,6 +31,7 @@ Writes reports/heuristic_evaluation.json (and an archived copy) and docs/researc
 import hashlib
 import json
 
+from .labels import SELECTION_BIAS_LABEL, SURVIVORSHIP_LABEL
 from .common import history_dir, reports_dir, stamp, utc_now_iso
 from .research.metrics import auc, confusion
 from .research.stats import COST_BPS, MIN_STOCKS, quintile_portfolios
@@ -85,6 +86,7 @@ def evaluate(walk_forward=None, spy_closes=None, now=None):
     dates = sorted({s['date'] for s in samples})
     benchmark = spy_forward(spy_closes, dates) if spy_closes else None
     result = {
+        'label_r10': SURVIVORSHIP_LABEL + ' ' + SELECTION_BIAS_LABEL,
         'computed_at': now or utc_now_iso(),
         'input': {'file': 'reports/walk_forward.json', 'computed_at': wf.get('computed_at'), 'method': wf.get('method'),
                   'sha256': hashlib.sha256(raw).hexdigest() if raw else None},
@@ -128,6 +130,7 @@ def markdown(result):
         return 'n/a' if v is None else f'{v:+.2f}%'
     s = result['sample']
     lines = ['# Heuristic signal: descriptive evaluation on the walk-forward sample', '',
+             f'> **{SURVIVORSHIP_LABEL} {SELECTION_BIAS_LABEL}**', '',
              f"Computed {result['computed_at']} by `python main.py evaluate-heuristic` from "
              f"`{result['input']['file']}` (walk-forward computed {result['input']['computed_at']}, sha256 "
              f"{result['input']['sha256']}).", '',

@@ -1,5 +1,7 @@
 # Heuristic signal: descriptive evaluation on the walk-forward sample
 
+> **Étiquette R10 (ajoutée le 15/10/2026, aucun chiffre modifié) : avec biais du survivant, période 2017–2026 : ne valide rien. Univers choisi en 2026 : biais de sélection.** Current index members only, over a period already examined and known to AI models; descriptive. See docs/REGLES_FONDATRICES.md (R4, R10) and docs/research/ETIQUETTES_R10.md.
+
 Computed 2026-10-12T07:49:31+00:00 by `python main.py evaluate-heuristic` from `reports/walk_forward.json` (walk-forward computed 2026-10-07T09:15:12+00:00, sha256 98e1f88fc6856500e71a1971c85bb1f71efdbda92ed63369bc1eed4995610f0e).
 
 **Nature**: descriptive, in-sample of one walk-forward run; nothing fitted; no new hypothesis tested; the confirmatory evidence is the walk-forward criterion and the pre-registered stage 3 test.

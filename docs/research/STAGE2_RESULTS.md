@@ -1,5 +1,7 @@
 # Research study — stage 2 results
 
+> **Étiquette R10 (ajoutée le 15/10/2026, aucun chiffre modifié) : avec biais du survivant, période 2017–2026 : ne valide rien.** Current index members only, over a period already examined and known to AI models; descriptive. See docs/REGLES_FONDATRICES.md (R4, R10) and docs/research/ETIQUETTES_R10.md.
+
 Computed 2026-10-11T13:21:34+00:00. Generated from `reports/research_stage2.json` by `src/research/experiment.py`; the protocol is fixed in code before results.
 
 ## Conclusion

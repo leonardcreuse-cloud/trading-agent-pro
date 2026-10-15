@@ -55,6 +55,15 @@ journals.
     `scripts/estimate_pt1_noise.py` (random 8-stock portfolios, stored closes 2021–2026, no signal and no PT1
     result).
   - Shown in the weekly report (stage 3 table and PT1 table), the dashboard and `python main.py paper report`.
+- **0.4 Bias labels (rule R10).** No figure was changed. The registry, with the SHA-256 of every unchanged file, is
+  `docs/research/ETIQUETTES_R10.md`.
+  - The result JSON files (`research_stage1/2.json`, `walk_forward.json`, `heuristic_evaluation.json`) are kept
+    byte-identical.
+  - Label at the top of `STAGE1_RESULTS.md`, `STAGE2_RESULTS.md` and `HEURISTIC_EVALUATION.md`; dated entry at the
+    end of `PAPER_STRATEGY_PT1.md`.
+  - Labels shown next to the PT1 and stage 3 figures in the reports; the stage 3 pre-registration is not modified.
+  - Future outputs of `experiment.py` and `heuristic_evaluation.py` carry a `label_r10` field (`src/labels.py`).
+    `walk_forward.py` is unchanged because stage 3 imports it.
 
 ## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
 

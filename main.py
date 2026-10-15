@@ -168,6 +168,16 @@ def main():
         from src.dashboard import Dashboard
         d = Dashboard()
         print(f"[DASHBOARD] {d.save_dashboard_html(d.create_live_dashboard_html())}")
+    elif command == 'freshness':
+        from src.freshness import check, summary
+        rows = check()
+        print('\n[FRESHNESS] sources the signal, PT1 and the reports depend on')
+        for r in rows:
+            print(f"  {r['source']:10} {r['status']:6} last download {r['last_ok']} ({r['fetch_age_h']} h)"
+                  + (f", last {r['last_close']}" if r['last_close'] else '')
+                  + (f" - {'; '.join(r['problems'])}" if r['problems'] else ''))
+        print(f'  {summary(rows)}')
+        sys.exit(0 if all(r['status'] == 'OK' for r in rows) else 1)
     elif command == 'backup':
         from src.backup import run as backup
         out = backup()
@@ -202,6 +212,7 @@ def print_menu():
     print("  python main.py paper [rebalance|update|status|report] - Paper strategy PT1 (paper only, no real order)")
     print("  python main.py evaluate-heuristic - Descriptive metrics of the heuristic on the walk-forward sample")
     print("  python main.py dedupe    - Remove observation versions that repeat an earlier one (backup first)")
+    print("  python main.py freshness - Alert when SEC, yfinance, Cboe or FRED data are stale (exit 1)")
     print("  python main.py backup    - Commit the journals (reports/paper, reports/prospective) and push them")
     print("                              to GitHub, never with --force (last step of the nightly run)")
     print("  python main.py status    - Show configuration status")

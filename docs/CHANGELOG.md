@@ -38,6 +38,14 @@ journals.
     read-only: the prices PT1 uses are unchanged.
   - Live check on 2026-10-15 (cloud): 12 of 12 prices compared. Closes and lows are equal; the three fill opens
     differ by −0.05%, −0.03% and +0.17%; none is above 0.5%.
+- **0.3c Freshness alerts** (`src/freshness.py`, `python main.py freshness`).
+  - Watched sources: SEC EDGAR, yfinance, Cboe and FRED.
+  - A source is STALE when it has had no successful download for 48 h, or (yfinance, Cboe) when more than one
+    completed weekday is missing from the stored SPY closes. NEVER means no successful download stored.
+  - The nightly run checks after every download step. A stale source makes the run end with result 1 (Task
+    Scheduler "Last Run Result", `last_run.json`).
+  - Shown in the dashboard and in the weekly report (data quality, part 20). The weekly report uses the state as
+    known at its cutoff.
 
 ## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
 

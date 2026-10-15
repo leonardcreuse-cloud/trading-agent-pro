@@ -19,7 +19,9 @@ Runs, with this Python interpreter, in the project folder:
                               session); on Sunday evening the NewsAPI window is complete (results end ~24 h before
                               retrieval; complete 26 h after the cutoff). weekly exits with 3 when a critical
                               section failed (report INCOMPLETE)
-  6. python main.py dashboard every day: reports/dashboard.html from every output
+  6. python main.py freshness every day: alert when SEC, yfinance, Cboe or FRED data are stale (exit 1, so the
+                              run's result is 1)
+     python main.py dashboard every day: reports/dashboard.html from every output
   7. python main.py backup    every day, last: commit of the journals (reports/paper, reports/prospective) and
                               push to GitHub, never with --force (src/backup.py)
 One failing step does not stop the next ones. Each step writes data/logs/<YYYY-MM-DD>_<step>.log and the run
@@ -55,6 +57,7 @@ def plan(today, weekly=None):
     steps.append('paper')                   # paper strategy PT1: orders from a new record, then fills / marks
     if weekly or (weekly is None and today.weekday() == SUNDAY):
         steps += ['sources', 'audit', 'weekly']  # source availability and data checks right before the report
+    steps.append('freshness')               # stale-source alerts, after every step that downloads
     steps.append('dashboard')               # rebuilt from every output of the day
     steps.append('backup')                  # journals to GitHub, after everything that writes them
     return steps

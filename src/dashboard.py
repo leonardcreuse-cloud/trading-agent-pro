@@ -116,6 +116,11 @@ def load_inputs(analysis_results=None, base=None):
         out['stage3'] = verify_ledger(base / 'prospective')
     except Exception as e:  # noqa: BLE001
         out['stage3_error'] = f'{type(e).__name__}: {e}'
+    try:
+        from .freshness import check
+        out['freshness'] = check()
+    except Exception as e:  # noqa: BLE001 - shown as unavailable with its reason
+        out['freshness_error'] = f'{type(e).__name__}: {e}'
     return out
 
 
@@ -200,6 +205,16 @@ def system_panels(inp):
             'Regime labels follow pre-declared rules (not validated); a description, not a forecast.'))
     else:
         out.append(_panel('Weekly report', [('Status', _na('no weekly report found (python main.py weekly)'))]))
+    fr = inp.get('freshness')
+    if fr:
+        out.append(_panel('Data freshness (alerts)', [
+            (r['source'], escape(f"{r['status']}: last download {r['last_ok']} ({r['fetch_age_h']} h)"
+                                 + (f", last close {r['last_close']}" if r['last_close'] else '')
+                                 + (f" — {'; '.join(r['problems'])}" if r['problems'] else '')))
+            for r in fr], 'STALE: no successful download for 48 h, or more than one completed weekday missing from '
+                          'the stored closes (src/freshness.py). The nightly run then ends with result 1.'))
+    else:
+        out.append(_panel('Data freshness (alerts)', [('Check', _na(inp.get('freshness_error', 'not computed')))]))
     s = inp['sources']
     if s:
         failing = [x['name'] for x in s['sources'] if x['integrated'] and not x['reachable']]

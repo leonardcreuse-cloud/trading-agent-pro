@@ -45,6 +45,21 @@ def _sources(ctx):
     return sorted(out.items())
 
 
+def _freshness(ctx, res):
+    """Freshness of SEC, yfinance, Cboe and FRED as known at T_c (src/freshness.py; rule R8)."""
+    if not hasattr(ctx.db, 'connect'):
+        return
+    from ...freshness import MAX_FETCH_AGE_H, MAX_SESSION_LAG, check
+    rows = check(ctx.db, now=ctx.tm.cutoff)
+    res.table('Data freshness at T_c (alerts)', ['source', 'status', 'last successful download <= T_c', 'age (h)',
+                                                  'last close (SPY)', 'weekdays missing', 'problems'],
+              [[r['source'], r['status'], r['last_ok'], r['fetch_age_h'], r['last_close'], r['sessions_missing'],
+                '; '.join(r['problems']) or None] for r in rows], question=12,
+              note=f'STALE: no successful download for {MAX_FETCH_AGE_H} h before T_c, or more than {MAX_SESSION_LAG} '
+                   'completed weekday missing from the stored closes. Values of a stale source in this report are '
+                   'older than usual; each value keeps its own publication and retrieval times.')
+
+
 def build(ctx, previous=None, audit_path=None):
     res = SectionResult(NAME, QUESTIONS)
     tm = ctx.tm
@@ -64,6 +79,7 @@ def build(ctx, previous=None, audit_path=None):
                                                        'this window (each value carries its own publication and '
                                                        'retrieval times)')
                                     + '.', [], 'system_output'))
+    _freshness(ctx, res)
     path = audit_path or reports_dir() / 'pipeline_audit.json'
     try:
         audit = json.loads(path.read_text(encoding='utf-8'))

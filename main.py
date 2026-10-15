@@ -121,6 +121,15 @@ def main():
                       f"held {p['holding_sessions']}  worst {p['worst_drawdown_pct']}%")
             for h, r in outcomes_by_horizon(paper.pred.entries()).items():
                 print(f'  predictions, {h} sessions: {r}')
+            from src.uncertainty import SELECTION_BIAS_LABEL, pt1_noise_text
+            marks = [e for e in paper.tx.entries() if e['type'] == 'mark']
+            if marks:
+                bench = marks[-1].get('bench_state') or {}
+                start = next(e for e in paper.tx.entries() if e['type'] == 'start')
+                total = (marks[-1]['equity'] / start['capital'] - 1) * 100
+                ew = bench.get('ew_return_pct')
+                print('  ' + pt1_noise_text(None if ew is None else round(total - ew, 3), len(marks)))
+            print('  ' + SELECTION_BIAS_LABEL)
             from src.paper_report import price_crosscheck
             check = price_crosscheck(paper.tx.entries(), paper.db)
             sm = check['summary']

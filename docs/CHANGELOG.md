@@ -46,6 +46,15 @@ journals.
     Scheduler "Last Run Result", `last_run.json`).
   - Shown in the dashboard and in the weekly report (data quality, part 20). The weekly report uses the state as
     known at its cutoff.
+- **0.3d Stage 3 power and PT1 noise band next to their figures** (`src/uncertainty.py`).
+  - Stage 3 design power, from the pre-registered design only and as an optimistic upper bound:
+    - P1, 20 sessions: 6% at an IC of 0.03; 80% only from an IC of 0.137;
+    - P2, 5 sessions: 19% at an IC of 0.03; 80% only from an IC of 0.068.
+  - PT1 noise band: the 95% band of the excess over the equal-weight universe from chance alone,
+    ±1.96 × 1.605% × √weeks, which is ±22.7% after 52 weeks. The weekly SD is estimated by
+    `scripts/estimate_pt1_noise.py` (random 8-stock portfolios, stored closes 2021–2026, no signal and no PT1
+    result).
+  - Shown in the weekly report (stage 3 table and PT1 table), the dashboard and `python main.py paper report`.
 
 ## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
 

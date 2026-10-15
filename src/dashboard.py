@@ -190,6 +190,7 @@ def _panel(title, rows, note=None):
 
 
 def system_panels(inp):
+    from .uncertainty import SELECTION_BIAS_LABEL, pt1_noise_text, stage3_power_text
     w = inp['weekly']
     out = []
     if w:
@@ -251,6 +252,8 @@ def system_panels(inp):
     out.append(_panel('Stage 3 prospective record', [
         ('Records', escape(f"{st3['n_entries']} (chain {'OK' if st3['chain_ok'] else 'BROKEN'})")),
         ('Latest', escape(max(st3['verified']) if st3['verified'] else 'none')),
+        ('Design power', escape(stage3_power_text())),
+        ('Label (R10)', escape(SELECTION_BIAS_LABEL)),
     ], 'The pre-registered test runs once, after 52 valid weekly records.') if st3 else
         _panel('Stage 3 prospective record', [('Ledger', _na(inp.get('stage3_error', 'not readable')))]))
     p = inp.get('paper')
@@ -261,6 +264,9 @@ def system_panels(inp):
             rows += [('Equity (USD)', _cell(perf['equity'], ',.2f')),
                      ('Return since start / max drawdown', escape(f"{perf['total_return_pct']}% / {perf['max_drawdown_pct']}%")),
                      ('SPY / equal-weight universe since start', escape(f"{b.get('spy_return_pct')}% / {b.get('ew_return_pct')}%")),
+                     ('Noise band', escape(pt1_noise_text(
+                         None if b.get('ew_return_pct') is None else round(perf['total_return_pct'] - b['ew_return_pct'], 3),
+                         perf.get('sessions')))),
                      ('Sharpe / Sortino', escape(f"{perf['sharpe']} / {perf['sortino']}" if perf['sharpe'] is not None
                                                  else f"need 20 daily returns ({perf['sessions']} marks)"))]
         elif perf.get('status') == 'NOT STARTED':
@@ -271,7 +277,8 @@ def system_panels(inp):
                   escape(f"in {x['entry_session']} @ {x['entry_price']:.2f}; P&L {x['pnl']} ({x['pnl_kind']}); worst "
                          f"{x['worst_drawdown_pct']}%")) for x in p['trades']]
         out.append(_panel('Paper trading PT1 (paper only, no real order)', rows,
-                          'Interim and descriptive: the pre-registered evaluation needs 52 weekly rebalances.'))
+                          'Interim and descriptive: the pre-registered evaluation needs 52 weekly rebalances. '
+                          + SELECTION_BIAS_LABEL))
         hrows = [('Predictions recorded', escape(f"{p['predictions']} over {p['weeks']} week(s)"))]
         hrows += [(f'{h} sessions', escape(f"{r['outcomes']} outcomes; top 8 {r['mean_top_pct']}% vs others "
                                            f"{r['mean_others_pct']}%; weekly rank correlation {r['mean_weekly_ic']}"))

@@ -23,6 +23,7 @@ import pandas as pd
 
 from ...common import history_dir, stamp, to_utc_iso
 from ...journal import Journal
+from ...uncertainty import SELECTION_BIAS_LABEL, pt1_noise_band, pt1_noise_text
 from ...paper_report import (CALIBRATION_STATUS, backtest_vs_paper, known_at, outcomes_by_horizon, performance,
                              price_crosscheck, trades)
 from ...risk import RISK_SCORE_STATUS, days_to_exit, portfolio_metrics, settings
@@ -91,6 +92,8 @@ def _paper(ctx, res, base):
     costs = sum(e.get('costs', 0) for e in entries if e['type'] in ('fill', 'stop_exit') and e['session'] <= m['session'])
     bench = m.get('bench_state') or {}
     total = (m['equity'] / capital - 1) * 100
+    ew = bench.get('ew_return_pct')
+    excess = None if ew is None else round(total - ew, 3)
     res.table('Paper strategy PT1 — interim, descriptive (prospective, paper only)',
               ['measure', 'value'], [['first mark', marks[0]['session']], ['last mark', m['session']],
                                      ['equity (USD)', m['equity']], ['total return (%)', round(total, 3)],
@@ -98,9 +101,13 @@ def _paper(ctx, res, base):
                                      ['equal-weight universe since start (%)', bench.get('ew_return_pct')],
                                      ['maximum drawdown (%)', round(mdd * 100, 3)], ['stops', stops],
                                      ['costs paid (USD)', round(costs, 2)], ['gross exposure (%)', m['gross_exposure_pct']],
-                                     ['positions', ', '.join(sorted(m['positions'])) or 'none']],
+                                     ['positions', ', '.join(sorted(m['positions'])) or 'none'],
+                                     ['excess over the equal-weight universe (%)', excess],
+                                     ['95% noise band at this length (±%, chance alone)',
+                                      pt1_noise_band(len(marks) / 5)]],
               question=11, note='docs/research/PAPER_STRATEGY_PT1.md. The pre-registered evaluation needs at least 52 '
-                                'weekly rebalances; interim figures are descriptive and say nothing about an edge.')
+                                'weekly rebalances; interim figures are descriptive and say nothing about an edge. '
+                                + pt1_noise_text(excess, len(marks)) + ' ' + SELECTION_BIAS_LABEL)
     res.add(conclude('overall', 11, f"Paper strategy PT1 (paper only) at the mark of {m['session']}: equity "
                                     f"{m['equity']:,.2f} USD ({total:+.2f}% since the start; SPY "
                                     f"{bench.get('spy_return_pct')}%, equal-weight universe {bench.get('ew_return_pct')}%), "

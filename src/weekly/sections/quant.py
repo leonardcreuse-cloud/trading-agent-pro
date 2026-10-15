@@ -52,6 +52,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ... import prospective as stage3
+from ...uncertainty import SELECTION_BIAS_LABEL, stage3_power_text
 from ...common import DATA_UNAVAILABLE, reports_dir, to_utc_iso
 from ...insider_tracker import (FORM4_METRIC, LOOKBACK_DAYS, InsiderTracker, form4_xml_url, insider_score,
                                 parse_form4)
@@ -541,7 +542,8 @@ def _prospective(ctx, res, base=None):
               ['hypothesis', 'horizon', 'valid weekly records evaluated', 'required', 'interim mean weekly IC',
                'weeks with positive IC (%)', 'pre-registered test', 'mean IC (test sample)', 't', 'two-sided p',
                'required p', 'result'], rows, question=11,
-              note=('Weekly cross-sectional Spearman IC of the ex-news combined score recorded at the close of s0 '
+              note=(stage3_power_text() + ' ' + SELECTION_BIAS_LABEL + ' ' +
+                    'Weekly cross-sectional Spearman IC of the ex-news combined score recorded at the close of s0 '
                     '(frozen universe), against the return from the close of the next session to H sessions later. '
                     'Interim figures carry no test: P1 (20 sessions) and P2 (5 sessions) are tested once each, on the '
                     f'first {stage3.MIN_RECORDS} valid records (Bonferroni over 2, IC > 0 required). Evaluation '

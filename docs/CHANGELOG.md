@@ -64,6 +64,17 @@ journals.
   - Labels shown next to the PT1 and stage 3 figures in the reports; the stage 3 pre-registration is not modified.
   - Future outputs of `experiment.py` and `heuristic_evaluation.py` carry a `label_r10` field (`src/labels.py`).
     `walk_forward.py` is unchanged because stage 3 imports it.
+- **0.5 Cancelled: the "Stage 3b"** (the same signal on about 400 to 500 stocks), proposed in
+  `docs/AUDIT_FIABILITE_2026-10-14.md` and in version 2 of the consigne. It is not launched; the framework of
+  `docs/REGLES_FONDATRICES.md` replaces it (registry R3, universe R1, gates R5).
+- **0.1 Test suite.** Cloud run: 629 passed, 0 failed, 0 skipped. On the PC, 1 or 3 tests are expected to be
+  skipped:
+  - `test_xnys_holidays_special_closures_and_early_closes` (exchange_calendars not installed);
+  - the 2 tests of `test_p73_reference_indicators.py` when stockstats is not installed (`requirements-dev.txt`).
+- **Untouched by phase 0** (checked with `git diff` since eadef14): `src/paper.py`, `src/prospective.py`,
+  `src/scoring_signal_fixed.py`, `src/walk_forward.py`, `src/risk.py`, `src/journal.py`, `src/market_data.py`, the
+  journals (`reports/paper`, `reports/prospective`), `docs/research/STAGE3_PREREGISTRATION.md` and the
+  configuration.
 
 ## Reliability audit and weekend catch-up of the stage 3 record (2026-10-14)
 

@@ -94,6 +94,14 @@
     false positives under the planning dependence. v4 corrects the standard error: truncated lag 1, floored,
     × M/(M − 2), with t(⌊M/2⌋ − 1).
   - Waiting for the owner's explicit approval before freezing. NOT RUN, no price downloaded.
+- 2026-10-15: founding rules and phase 0 of the consigne.
+  - `docs/REGLES_FONDATRICES.md` (version 1) was validated by the owner and committed in eadef14 (SHA-256
+    53997a1c...21d42). The consigne v3 is `docs/CONSIGNE_AGENT_2026-10-14.md`.
+  - Phase 0 is done (see `docs/CHANGELOG.md`): audit figures recomputed from raw files, nightly journal backup,
+    Cboe open/high/low and price cross-checks, freshness alerts, stage 3 power and PT1 noise band, R10 labels,
+    Stage 3b cancelled.
+  - The stage 1 figure (+0.054) is not reproducible: its inputs were not kept.
+  - **Phase 1 must not start before the owner validates phase 0.**
   - Blocked sources review: `docs/SOURCE_ACCESS_REVIEW.md`. It recommends USGS minerals data (priority 1) and,
     optionally, Treasury FiscalData; nothing else.
 
